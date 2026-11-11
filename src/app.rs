@@ -3,7 +3,9 @@
 use crate::buffer::{self, Buffer, Changed, EditKind, Pos};
 use crate::document::Document;
 use crate::encoding;
+use crate::blocks::{Block, BlockParams, BlockSearch, MAX_BLOCKS};
 use crate::search::{MAX_RESULTS, Params, Search};
+use crate::settings::Settings;
 use eframe::egui::{
     text::{CCursor, LayoutJob},
     *,
@@ -67,6 +69,8 @@ pub struct Tab {
     visible_rows: u64,
     detail_cache: Option<(u64, u64, String)>,
     save: Option<SaveJob>,
+    /// Cuenta todas las modificaciones (no se reinicia al guardar).
+    edit_gen: u64,
 }
 
 impl Tab {
@@ -94,6 +98,7 @@ impl Tab {
             visible_rows: 1,
             detail_cache: None,
             save: None,
+            edit_gen: 0,
         }
     }
 
@@ -384,6 +389,7 @@ impl Tab {
     /// Mantiene la búsqueda al día tras un cambio sin volver a recorrer el archivo.
     fn after_change(&mut self, ch: Changed) {
         self.detail_cache = None;
+        self.edit_gen += 1;
         let Some(s) = &self.search else { return };
         if !s.is_done() || ch.inserted > MAX_RECHECK_LINES {
             self.search_stale = true;
@@ -487,6 +493,7 @@ impl Tab {
             }
         })?;
         self.detail_cache = None;
+        self.edit_gen += 1;
         if n > 0 {
             self.search_stale = true;
             self.current = None;
@@ -562,6 +569,54 @@ impl Tab {
             }
             Err(e) => format!("Error al guardar: {e}"),
         })
+    }
+
+    // ---- Búsqueda avanzada (bloques) ----
+
+    fn goto_block(&mut self, b: Block) {
+        self.current = None;
+        self.select(b.s0, b.e1);
+        self.center_on = Some(b.s0.line);
+    }
+
+    /// Texto de los bloques según el modo de copia: (texto, nº de bloques).
+    fn blocks_text(&self, list: &[Block], mode: CopyMode, sep: Sep) -> Result<(String, usize), String> {
+        if list.is_empty() {
+            return Err("No hay bloque seleccionado".into());
+        }
+        let sep = match sep {
+            Sep::Newline => "\n",
+            Sep::Blank => "\n\n",
+            Sep::Nothing => "",
+        };
+        let mut out = String::new();
+        let mut n = 0;
+        // En «líneas completas», no repetir líneas ya copiadas.
+        let mut last_line: Option<u64> = None;
+        for b in list {
+            let (mut a, z) = block_range(b, mode);
+            if mode == CopyMode::Lines {
+                if let Some(l) = last_line {
+                    if z.line <= l {
+                        continue;
+                    }
+                    if a.line <= l {
+                        a = Pos::new(l + 1, 0);
+                    }
+                }
+                last_line = Some(z.line);
+            }
+            if n > 0 {
+                out.push_str(sep);
+            }
+            let left = MAX_COPY_BYTES.saturating_sub(out.len());
+            let t = self
+                .text(a, z, left)
+                .ok_or_else(|| format!("Demasiado texto para el portapapeles (> {})", human_size(MAX_COPY_BYTES as u64)))?;
+            out.push_str(&t);
+            n += 1;
+        }
+        Ok((out, n))
     }
 
     // ---- Teclado ----
@@ -672,6 +727,142 @@ impl Tab {
     }
 }
 
+/// Todos los atajos, con los nombres de tecla de la plataforma.
+fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
+    let c = if MAC { "Cmd" } else { "Ctrl" };
+    let alt = if MAC { "Opción" } else { "Alt" };
+    let word = if MAC { "Opción" } else { "Ctrl" };
+    let k = |s: &str| s.replace("C+", &format!("{c}+")).replace("A+", &format!("{alt}+")).replace("W+", &format!("{word}+"));
+    let mut edit = vec![
+        (k("C+Z"), "Deshacer"),
+        (k("C+Shift+Z"), "Rehacer"),
+        (k("C+C"), "Copiar (sin selección: la línea entera)"),
+        (k("C+X"), "Cortar (sin selección: la línea entera)"),
+        (k("C+V"), "Pegar"),
+        (k("C+A"), "Seleccionar todo"),
+        (k("Retroceso / Supr"), "Borrar carácter"),
+        (k("W+Retroceso / W+Supr"), "Borrar palabra"),
+        (k("Enter"), "Nueva línea"),
+        (k("Tab"), "Insertar tabulador"),
+    ];
+    if !MAC {
+        edit.insert(2, (k("C+Y"), "Rehacer"));
+    }
+    let (line_start, line_end, doc_start, doc_end) = if MAC {
+        ("Cmd+← / Inicio", "Cmd+→ / Fin", "Cmd+↑ / Cmd+Inicio", "Cmd+↓ / Cmd+Fin")
+    } else {
+        ("Inicio", "Fin", "Ctrl+Inicio", "Ctrl+Fin")
+    };
+    vec![
+        (
+            "Archivos",
+            vec![
+                (k("C+O"), "Abrir (también arrastrando archivos)"),
+                (k("C+S"), "Guardar"),
+                (k("C+Shift+S"), "Guardar como…"),
+                (k("C+W"), "Cerrar archivo"),
+                ("Ctrl+Tab".into(), "Siguiente archivo"),
+                (k("C+B"), "Mostrar/ocultar panel de archivos"),
+                (k("C+E"), "Activar/desactivar edición"),
+                ("Clic derecho en un archivo".into(), "Mostrar en carpeta, copiar ruta, duplicar…"),
+            ],
+        ),
+        (
+            "Buscar",
+            vec![
+                (k("C+F"), "Ir a la caja de búsqueda"),
+                ("Enter / F3".into(), "Buscar / siguiente coincidencia"),
+                ("Shift+Enter / Shift+F3".into(), "Coincidencia anterior"),
+                (if MAC { "Cmd+Opción+F".into() } else { "Ctrl+H".to_string() }, "Reemplazar"),
+                (k("C+Shift+F"), "Nueva ventana de búsqueda avanzada"),
+                (k("C+Enter"), "Buscar (búsqueda avanzada multilínea)"),
+                (k("C+G"), "Ir a línea"),
+            ],
+        ),
+        ("Edición", edit),
+        (
+            "Moverse y seleccionar",
+            vec![
+                ("← → ↑ ↓".into(), "Carácter / línea"),
+                (k("W+← / W+→"), "Palabra"),
+                (line_start.into(), "Inicio de línea (tras la sangría; otra vez: columna 1)"),
+                (line_end.into(), "Fin de línea"),
+                (doc_start.into(), "Inicio del archivo"),
+                (doc_end.into(), "Fin del archivo"),
+                ("RePág / AvPág".into(), "Página arriba / abajo"),
+                ("Shift + movimiento".into(), "Seleccionar"),
+                ("Esc".into(), "Quitar la selección"),
+            ],
+        ),
+        (
+            "Ratón",
+            vec![
+                ("Clic / arrastrar".into(), "Colocar el cursor / seleccionar"),
+                ("Shift+clic".into(), "Extender la selección"),
+                ("Doble clic".into(), "Seleccionar palabra"),
+                ("Clic en nº de línea".into(), "Seleccionar la línea entera"),
+                ("Clic derecho".into(), "Copiar, cortar, pegar, ver línea completa…"),
+                ("Clic en el minimapa".into(), "Ir al bloque más cercano (búsqueda avanzada)"),
+            ],
+        ),
+        (
+            "Vista",
+            vec![
+                (k("C++ / C+-"), "Letra más grande / más pequeña"),
+                ("F1".into(), "Esta lista de atajos"),
+            ],
+        ),
+    ]
+}
+
+#[derive(Clone, Copy)]
+enum FileAction {
+    Reveal(usize),
+    CopyPath(usize),
+    CopyName(usize),
+    Duplicate(usize),
+    Close(usize),
+    CloseOthers(usize),
+}
+
+const REVEAL_LABEL: &str = if MAC {
+    "Mostrar en Finder"
+} else if cfg!(windows) {
+    "Mostrar en el Explorador"
+} else {
+    "Abrir carpeta contenedora"
+};
+
+/// Abre el gestor de archivos con el archivo seleccionado (o su carpeta en Linux).
+fn reveal_in_file_manager(path: &std::path::Path) -> std::io::Result<()> {
+    use std::process::Command;
+    let mut c = if MAC {
+        let mut c = Command::new("open");
+        c.arg("-R").arg(path);
+        c
+    } else if cfg!(windows) {
+        let mut c = Command::new("explorer");
+        c.arg(format!("/select,{}", path.display()));
+        c
+    } else {
+        let mut c = Command::new("xdg-open");
+        c.arg(path.parent().unwrap_or(std::path::Path::new(".")));
+        c
+    };
+    c.spawn().map(|_| ())
+}
+
+/// «informe.log» → «informe copia.log», «informe copia 2.log»… (el primero libre).
+fn copy_name(path: &std::path::Path) -> PathBuf {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    (1..)
+        .map(|n| dir.join(if n == 1 { format!("{stem} copia{ext}") } else { format!("{stem} copia {n}{ext}") }))
+        .find(|p| !p.exists())
+        .unwrap()
+}
+
 #[derive(Clone, Copy)]
 enum Confirm {
     CloseTab(usize),
@@ -691,19 +882,33 @@ pub struct App {
     case_sensitive: bool,
     goto: String,
     font_size: f32,
+    theme: ThemePreference,
+    show_settings: bool,
+    show_keys: bool,
+    /// El editor tenía el foco en el último fotograma.
+    view_focused: bool,
+    /// Ventanas de búsqueda avanzada abiertas.
+    advs: Vec<AdvWin>,
+    next_adv: u64,
     message: Option<(String, Instant)>,
     focus_search: bool,
     focus_goto: bool,
     focus_view: bool,
     confirm: Option<Confirm>,
+    /// Duplicados en curso: (destino, resultado).
+    duplicating: Vec<(PathBuf, Arc<Mutex<Option<Result<(), String>>>>)>,
     allow_quit: bool,
     debug_frames: u64,
     debug_typed: bool,
+    #[cfg(target_os = "macos")]
+    menu: crate::macmenu::MacMenu,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         install_fallback_fonts(&cc.egui_ctx);
+        let settings = Settings::load();
+        cc.egui_ctx.set_theme(settings.theme);
         let mut app = App {
             tabs: Vec::new(),
             active: 0,
@@ -716,15 +921,24 @@ impl App {
             use_regex: false,
             case_sensitive: false,
             goto: String::new(),
-            font_size: 13.0,
+            font_size: settings.font_size,
+            theme: settings.theme,
+            show_settings: false,
+            show_keys: false,
+            view_focused: false,
+            advs: Vec::new(),
+            next_adv: 1,
             message: None,
             focus_search: false,
             focus_goto: false,
             focus_view: false,
             confirm: None,
+            duplicating: Vec::new(),
             allow_quit: false,
             debug_frames: 0,
             debug_typed: false,
+            #[cfg(target_os = "macos")]
+            menu: crate::macmenu::MacMenu::new(&cc.egui_ctx),
         };
         for f in files {
             app.open(f);
@@ -752,6 +966,17 @@ impl App {
             for f in files {
                 self.open(f);
             }
+        }
+    }
+
+    fn set_font(&mut self, f: f32) {
+        self.font_size = f.clamp(7.0, 40.0);
+        self.persist();
+    }
+
+    fn persist(&mut self) {
+        if let Err(e) = (Settings { theme: self.theme, font_size: self.font_size }).save() {
+            self.msg(format!("No se pudieron guardar los ajustes: {e}"));
         }
     }
 
@@ -866,8 +1091,18 @@ impl App {
             self.show_replace = true;
             self.focus_search = true;
         }
+        if pressed(sc(Modifiers::COMMAND, Key::Q)) {
+            // Pasa por la confirmación de cambios sin guardar.
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
+        if pressed(sc(Modifiers::NONE, Key::F1)) {
+            self.show_keys = !self.show_keys;
+        }
         if pressed(sc(Modifiers::COMMAND, Key::O)) {
             self.open_dialog();
+        }
+        if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::F)) {
+            self.new_adv_window();
         }
         if pressed(sc(Modifiers::COMMAND, Key::F)) {
             self.focus_search = true;
@@ -885,10 +1120,10 @@ impl App {
             self.close_tab(self.active, false);
         }
         if pressed(sc(Modifiers::COMMAND, Key::Plus)) || pressed(sc(Modifiers::COMMAND, Key::Equals)) {
-            self.font_size = (self.font_size + 1.0).min(40.0);
+            self.set_font(self.font_size + 1.0);
         }
         if pressed(sc(Modifiers::COMMAND, Key::Minus)) {
-            self.font_size = (self.font_size - 1.0).max(7.0);
+            self.set_font(self.font_size - 1.0);
         }
         if pressed(sc(Modifiers::CTRL, Key::Tab)) && !self.tabs.is_empty() {
             self.active = (self.active + 1) % self.tabs.len();
@@ -985,6 +1220,15 @@ impl App {
             }
             let rk = if MAC { "Cmd+Alt+F" } else { "Ctrl+H" };
             ui.toggle_value(&mut self.show_replace, "Reemplazar…").on_hover_text(rk);
+            let n_adv = self.advs.len();
+            let adv_label = if n_adv > 0 { format!("Avanzada… ({n_adv})") } else { "Avanzada…".to_string() };
+            if ui
+                .selectable_label(n_adv > 0, adv_label)
+                .on_hover_text("Nueva ventana de búsqueda por bloques (desde… hasta…, multilínea), con minimapa y copia en varias líneas (Ctrl+Shift+F). Puedes abrir varias.")
+                .clicked()
+            {
+                self.new_adv_window();
+            }
             if let Some(t) = self.tabs.get(self.active) {
                 if let Some(e) = &t.search_error {
                     ui.colored_label(ui.visuals().error_fg_color, format!("Regex inválida: {e}"));
@@ -1057,11 +1301,14 @@ impl App {
             ui.separator();
             ui.toggle_value(&mut self.show_results, "Resultados");
             ui.toggle_value(&mut self.show_detail, "Detalle").on_hover_text("Línea completa, seleccionable");
+            if ui.selectable_label(self.show_settings, "Ajustes").on_hover_text("Tema y tamaño de letra").clicked() {
+                self.show_settings = !self.show_settings;
+            }
             if ui.small_button("A-").clicked() {
-                self.font_size = (self.font_size - 1.0).max(7.0);
+                self.set_font(self.font_size - 1.0);
             }
             if ui.small_button("A+").clicked() {
-                self.font_size = (self.font_size + 1.0).min(40.0);
+                self.set_font(self.font_size + 1.0);
             }
         });
         if self.show_replace {
@@ -1096,6 +1343,93 @@ impl App {
         }
     }
 
+    /// Opciones elegidas en el menú de macOS y estado de sus marcas.
+    #[cfg(target_os = "macos")]
+    fn mac_menu(&mut self, ctx: &Context) {
+        use crate::macmenu::{Cmd, inject};
+        for c in self.menu.poll() {
+            match c {
+                Cmd::Settings => self.show_settings = true,
+                Cmd::ToggleResults => self.show_results = !self.show_results,
+                Cmd::ToggleDetail => self.show_detail = !self.show_detail,
+                c => inject(ctx, c),
+            }
+        }
+        let t = self.tabs.get(self.active);
+        self.menu.sync([
+            t.is_some_and(|t| t.dirty()),
+            t.is_some_and(|t| t.editable),
+            self.show_sidebar,
+            self.show_results,
+            self.show_detail,
+        ]);
+    }
+
+    fn file_action(&mut self, ctx: &Context, a: FileAction) {
+        match a {
+            FileAction::Reveal(i) => {
+                if let Err(e) = reveal_in_file_manager(&self.tabs[i].doc.path) {
+                    self.msg(format!("No se pudo abrir la carpeta: {e}"));
+                }
+            }
+            FileAction::CopyPath(i) => {
+                let p = self.tabs[i].doc.path.display().to_string();
+                ctx.copy_text(p.clone());
+                self.msg(format!("Ruta copiada: {p}"));
+            }
+            FileAction::CopyName(i) => {
+                let n = self.tabs[i].doc.name.clone();
+                ctx.copy_text(n.clone());
+                self.msg(format!("Nombre copiado: {n}"));
+            }
+            FileAction::Duplicate(i) => self.duplicate(i),
+            FileAction::Close(i) => self.close_tab(i, false),
+            FileAction::CloseOthers(i) => {
+                // Del final al principio para no desplazar índices; las que
+                // tienen cambios piden confirmación y se quedan.
+                for j in (0..self.tabs.len()).rev() {
+                    if j != i && !self.tabs[j].dirty() && self.tabs[j].save.is_none() {
+                        self.tabs.remove(j);
+                    }
+                }
+                self.active = self.tabs.iter().position(|t| t.doc.path == self.tabs[i.min(self.tabs.len() - 1)].doc.path).unwrap_or(0);
+                if self.tabs.len() > 1 {
+                    self.msg("Las pestañas con cambios sin guardar no se cerraron");
+                }
+            }
+        }
+    }
+
+    /// Copia el archivo junto al original («nombre copia.ext») en segundo
+    /// plano y lo abre al terminar. Con cambios sin guardar, la copia los incluye.
+    fn duplicate(&mut self, i: usize) {
+        let t = &self.tabs[i];
+        let target = copy_name(&t.doc.path);
+        let result: Arc<Mutex<Option<Result<(), String>>>> = Default::default();
+        let r = result.clone();
+        let spawned = if let Some(buf) = t.buf.as_ref().filter(|b| b.is_dirty()) {
+            let (pieces, src, index, nl) = (buf.snapshot(), t.doc.src.clone(), t.doc.index.clone(), t.doc.newline_bytes());
+            let target = target.clone();
+            std::thread::Builder::new().name("duplicar".into()).spawn(move || {
+                let res = buffer::save_file(&pieces, &src, &index, &nl, &target, &AtomicU64::new(0), &AtomicBool::new(false));
+                *r.lock().unwrap() = Some(res.map(|_| ()));
+            })
+        } else {
+            let (from, target) = (t.doc.path.clone(), target.clone());
+            // En APFS/btrfs `fs::copy` clona el archivo: instantáneo aunque pese GB.
+            std::thread::Builder::new().name("duplicar".into()).spawn(move || {
+                *r.lock().unwrap() = Some(std::fs::copy(&from, &target).map(|_| ()).map_err(|e| e.to_string()));
+            })
+        };
+        match spawned {
+            Ok(_) => {
+                self.msg(format!("Duplicando como {}…", target.file_name().unwrap_or_default().to_string_lossy()));
+                self.duplicating.push((target, result));
+            }
+            Err(e) => self.msg(format!("No se pudo duplicar: {e}")),
+        }
+    }
+
     fn sidebar(&mut self, ui: &mut Ui) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -1107,18 +1441,55 @@ impl App {
             });
         });
         ui.separator();
-        let mut close = None;
+        let mut action = None;
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (i, t) in self.tabs.iter().enumerate() {
-                ui.horizontal(|ui| {
+                let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
+                ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
+                    // El botón de cerrar, pegado a la derecha; el nombre ocupa el resto.
                     if ui.small_button("×").on_hover_text("Cerrar (Ctrl+W)").clicked() {
-                        close = Some(i);
+                        action = Some(FileAction::Close(i));
                     }
                     let name = if t.dirty() { format!("● {}", t.doc.name) } else { t.doc.name.clone() };
-                    let r = ui.selectable_label(i == self.active, RichText::new(name).strong());
-                    if r.on_hover_text(t.doc.path.display().to_string()).clicked() {
+                    let r = ui
+                        .with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.style_mut().wrap_mode = Some(TextWrapMode::Truncate);
+                            ui.selectable_label(i == self.active, RichText::new(name).strong())
+                        })
+                        .inner
+                        .on_hover_text(format!("{}\nClic derecho: más opciones", t.doc.path.display()));
+                    if r.clicked() {
                         self.active = i;
                     }
+                    r.context_menu(|ui| {
+                        let mut chosen = None;
+                        if ui.button(REVEAL_LABEL).clicked() {
+                            chosen = Some(FileAction::Reveal(i));
+                        }
+                        if ui.button("Copiar ruta").clicked() {
+                            chosen = Some(FileAction::CopyPath(i));
+                        }
+                        if ui.button("Copiar nombre").clicked() {
+                            chosen = Some(FileAction::CopyName(i));
+                        }
+                        ui.separator();
+                        let dup = ui.button("Duplicar");
+                        let dup = if t.dirty() { dup.on_hover_text("La copia incluye los cambios sin guardar; el original no se modifica") } else { dup };
+                        if dup.clicked() {
+                            chosen = Some(FileAction::Duplicate(i));
+                        }
+                        ui.separator();
+                        if ui.button("Cerrar").clicked() {
+                            chosen = Some(FileAction::Close(i));
+                        }
+                        if ui.add_enabled(self.tabs.len() > 1, Button::new("Cerrar los demás")).clicked() {
+                            chosen = Some(FileAction::CloseOthers(i));
+                        }
+                        if chosen.is_some() {
+                            action = chosen;
+                            ui.close();
+                        }
+                    });
                 });
                 let idx = if t.doc.indexing_done() {
                     format!("{} líneas", fmt_num(t.total()))
@@ -1143,13 +1514,14 @@ impl App {
                 ui.weak("Sin archivos.\nUsa «Abrir…» o arrastra archivos aquí.");
             }
         });
-        if let Some(i) = close {
-            self.close_tab(i, false);
+        if let Some(a) = action {
+            self.file_action(ui.ctx(), a);
         }
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
+            let full = ui.max_rect();
             if let Some(t) = self.tabs.get(self.active) {
                 let d = &t.doc;
                 ui.label(RichText::new(if t.editable { "EDICIÓN" } else { "SOLO LECTURA" }).small().strong());
@@ -1204,6 +1576,16 @@ impl App {
                     ui.label(RichText::new(m).small().color(ui.visuals().warn_fg_color));
                 }
             }
+            // Botón de atajos, pegado a la esquina inferior derecha (al final,
+            // para no desplazar lo demás).
+            let r = Rect::from_min_size(pos2(full.right() - 22.0, full.center().y - 9.0), vec2(20.0, 18.0));
+            if ui
+                .put(r, Button::new(RichText::new("?").small().strong()).small().selected(self.show_keys))
+                .on_hover_text("Atajos de teclado (F1)")
+                .clicked()
+            {
+                self.show_keys = !self.show_keys;
+            }
         });
     }
 
@@ -1255,6 +1637,26 @@ impl App {
         let Ok(path) = std::env::var("BUSCADOR_SCREENSHOT") else { return };
         self.debug_frames += 1;
         if self.debug_frames == 2 {
+            if let Ok(t) = std::env::var("BUSCADOR_THEME") {
+                ctx.set_theme(if t == "oscuro" { ThemePreference::Dark } else { ThemePreference::Light });
+            }
+            self.show_settings = std::env::var("BUSCADOR_SETTINGS").is_ok();
+            self.show_keys = std::env::var("BUSCADOR_KEYS").is_ok();
+            if let Ok(a) = std::env::var("BUSCADOR_ADV") {
+                // «desde|hasta»; «\n» en el texto = salto de línea (activa multilínea).
+                let a = a.replace("\\n", "\n");
+                let (from, to) = a.split_once('|').unwrap_or((&a, ""));
+                self.new_adv_window();
+                let w = self.advs.last_mut().unwrap();
+                w.from = from.into();
+                w.to = to.into();
+                w.multiline = a.contains('\n');
+                w.sep = Sep::Blank;
+                w.detached = std::env::var("BUSCADOR_ADV_APARTE").is_ok();
+                if let Some(t) = self.tabs.get(self.active) {
+                    w.start(t);
+                }
+            }
             if let Ok(q) = std::env::var("BUSCADOR_QUERY") {
                 self.query = q;
                 self.show_detail = true;
@@ -1278,7 +1680,16 @@ impl App {
                 }
             }
         }
-        if self.debug_frames < 40 || busy || (std::env::var("BUSCADOR_TYPE").is_ok() && !self.debug_typed) {
+        if self.debug_frames == 60 {
+            if let (Some(w), Some(t)) = (self.advs.last_mut(), self.tabs.get_mut(self.active)) {
+                if let Some(b) = w.get(3) {
+                    w.cur = Some(3);
+                    w.scroll_to = Some(3);
+                    t.goto_block(b);
+                }
+            }
+        }
+        if self.debug_frames < 70 || busy || (std::env::var("BUSCADOR_TYPE").is_ok() && !self.debug_typed) {
             ctx.request_repaint();
             return;
         }
@@ -1308,10 +1719,35 @@ impl eframe::App for App {
             }
         }
 
+        #[cfg(target_os = "macos")]
+        self.mac_menu(&ctx);
+
         // Guardados terminados.
         let done: Vec<String> = self.tabs.iter_mut().filter_map(|t| t.poll_save()).collect();
         for m in done {
             self.msg(m);
+        }
+
+        // Duplicados terminados: abrirlos.
+        let finished: Vec<(PathBuf, Result<(), String>)> = {
+            let mut out = Vec::new();
+            self.duplicating.retain(|(p, r)| match r.lock().unwrap().take() {
+                Some(res) => {
+                    out.push((p.clone(), res));
+                    false
+                }
+                None => true,
+            });
+            out
+        };
+        for (p, res) in finished {
+            match res {
+                Ok(()) => {
+                    self.open(p.clone());
+                    self.msg(format!("Duplicado: {}", p.display()));
+                }
+                Err(e) => self.msg(format!("No se pudo duplicar: {e}")),
+            }
         }
 
         // Archivos arrastrados a la ventana.
@@ -1321,6 +1757,7 @@ impl eframe::App for App {
         }
         if self.confirm.is_none() {
             self.handle_shortcuts(&ctx);
+            self.escape_closes_popup(&ctx);
         }
 
         Panel::top("toolbar").show(ui, |ui| {
@@ -1351,20 +1788,25 @@ impl eframe::App for App {
         }
 
         let mut message = None;
+        let mut view_focused = false;
         let show_detail = &mut self.show_detail;
         let focus_view = std::mem::take(&mut self.focus_view);
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
-                message = log_view(ui, t, &font, show_detail, focus_view);
+                (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view);
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.heading("Arrastra archivos aquí, o pulsa Ctrl+O");
                 });
             }
         });
+        self.view_focused = view_focused;
         if let Some(m) = message {
             self.msg(m);
         }
+        self.settings_window(&ctx);
+        self.keys_window(&ctx);
+        self.adv_windows(&ctx);
         self.confirm_dialog(&ctx);
 
         // Saltar a la primera coincidencia en cuanto aparezca.
@@ -1387,7 +1829,13 @@ impl eframe::App for App {
         let busy = self
             .tabs
             .iter()
-            .any(|t| !t.doc.indexing_done() || t.save.is_some() || t.search.as_ref().is_some_and(|s| !s.is_done()));
+            .any(|t| {
+                !self.duplicating.is_empty()
+                    || !t.doc.indexing_done()
+                    || t.save.is_some()
+                    || t.search.as_ref().is_some_and(|s| !s.is_done())
+            })
+            || self.advs.iter().any(|w| w.is_busy());
         if busy {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
@@ -1396,7 +1844,8 @@ impl eframe::App for App {
 }
 
 /// Vista virtual del texto: sólo se leen y pintan las líneas visibles.
-fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool, focus: bool) -> Option<String> {
+/// Devuelve un mensaje para la barra de estado y si el editor tiene el foco.
+fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool, focus: bool) -> (Option<String>, bool) {
     let mut message = None;
     let ctx = ui.ctx().clone();
     let (row_h, char_w) = ctx.fonts_mut(|f| (f.row_height(font).ceil(), f.glyph_width(font, '0')));
@@ -1697,7 +2146,7 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool, f
             visuals.weak_text_color(),
         );
     }
-    message
+    (message, resp.has_focus())
 }
 
 /// Recorta una línea muy larga para maquetarla (igual que al pintarla).
@@ -1863,6 +2312,611 @@ fn describe_span(a: Pos, b: Pos, bytes: usize) -> String {
     } else {
         format!("{} líneas ({})", fmt_num(b.line - a.line + 1), human_size(bytes as u64))
     }
+}
+
+/// Qué parte de cada bloque se copia.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CopyMode {
+    /// Desde el inicio de «desde» hasta el final de «hasta».
+    Full,
+    /// Sólo el texto entre los delimitadores.
+    Inner,
+    /// Las líneas completas que ocupa el bloque.
+    Lines,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sep {
+    Newline,
+    Blank,
+    Nothing,
+}
+
+/// Una ventana de búsqueda avanzada (puede haber varias, cada una con su
+/// archivo y sus resultados, dentro de la ventana principal o aparte).
+struct AdvWin {
+    id: u64,
+    open: bool,
+    /// En una ventana propia del sistema (se puede llevar a otro monitor).
+    detached: bool,
+    from: String,
+    to: String,
+    regex: bool,
+    case_sensitive: bool,
+    multiline: bool,
+    mode: CopyMode,
+    sep: Sep,
+    focus: bool,
+    /// Desplazar la lista hasta este bloque.
+    scroll_to: Option<usize>,
+    /// Archivo elegido (por defecto, el activo al abrir la ventana).
+    file: Option<PathBuf>,
+    /// Búsqueda en curso o terminada: (búsqueda, `edit_gen` del archivo, archivo).
+    search: Option<(BlockSearch, u64, PathBuf)>,
+    error: Option<String>,
+    cur: Option<usize>,
+    /// Densidad del minimapa: (nº bloques, alto, líneas, bloques por fila).
+    minimap_cache: Option<(usize, usize, u64, Vec<u32>)>,
+}
+
+impl AdvWin {
+    fn new(id: u64, file: Option<PathBuf>) -> Self {
+        AdvWin {
+            id,
+            open: true,
+            detached: false,
+            from: String::new(),
+            to: String::new(),
+            regex: false,
+            case_sensitive: false,
+            multiline: false,
+            mode: CopyMode::Full,
+            sep: Sep::Newline,
+            focus: true,
+            scroll_to: None,
+            file,
+            search: None,
+            error: None,
+            cur: None,
+            minimap_cache: None,
+        }
+    }
+
+    fn title(&self) -> String {
+        let name = self.file.as_ref().and_then(|p| p.file_name()).map(|n| format!(" — {}", n.to_string_lossy()));
+        format!("Búsqueda avanzada {}{}", self.id, name.unwrap_or_default())
+    }
+
+    fn is_busy(&self) -> bool {
+        self.search.as_ref().is_some_and(|(s, _, _)| !s.is_done())
+    }
+
+    /// Pestaña sobre la que trabaja esta ventana.
+    fn tab_index(&self, tabs: &[Tab], active: usize) -> Option<usize> {
+        let want = self.search.as_ref().map(|s| &s.2).or(self.file.as_ref());
+        match want {
+            Some(p) => tabs.iter().position(|t| &t.doc.path == p),
+            None => (active < tabs.len()).then_some(active),
+        }
+    }
+
+    fn start(&mut self, tab: &Tab) {
+        let params = BlockParams {
+            from: self.from.clone(),
+            to: self.to.clone(),
+            regex: self.regex,
+            case_sensitive: self.case_sensitive,
+            multiline: self.multiline,
+        };
+        let edits = tab.buf.as_ref().map(|b| (b.snapshot(), tab.doc.index.clone()));
+        self.cur = None;
+        self.minimap_cache = None;
+        self.scroll_to = Some(0);
+        match BlockSearch::start(tab.doc.src.clone(), edits, params) {
+            Ok(b) => {
+                self.search = Some((b, tab.edit_gen, tab.doc.path.clone()));
+                self.error = None;
+            }
+            Err(e) => {
+                self.search = None;
+                self.error = Some(e);
+            }
+        }
+    }
+
+    fn get(&self, i: usize) -> Option<Block> {
+        self.search.as_ref().and_then(|(s, _, _)| s.get(i))
+    }
+
+    fn count(&self) -> usize {
+        self.search.as_ref().map_or(0, |(s, _, _)| s.count())
+    }
+}
+
+/// Lo que una ventana avanzada pide a la aplicación.
+#[derive(Default)]
+struct AdvOut {
+    msg: Option<String>,
+    activate: Option<usize>,
+    focus_view: bool,
+    new_window: bool,
+}
+
+fn block_range(b: &Block, mode: CopyMode) -> (Pos, Pos) {
+    match mode {
+        CopyMode::Full => (b.s0, b.e1),
+        CopyMode::Inner => (b.s1, b.e0.max(b.s1)),
+        CopyMode::Lines => (Pos::new(b.s0.line, 0), Pos::new(b.e1.line, usize::MAX)),
+    }
+}
+
+fn settings_window_id() -> Id {
+    Id::NULL.with("ventana_ajustes")
+}
+
+fn keys_window_id() -> Id {
+    Id::NULL.with("ventana_atajos")
+}
+
+fn adv_window_id(n: u64) -> Id {
+    Id::NULL.with(("ventana_avanzada", n))
+}
+
+const MINIMAP_GREEN: Color32 = Color32::from_rgb(40, 190, 80);
+
+impl App {
+    fn settings_window(&mut self, ctx: &Context) {
+        if !self.show_settings {
+            return;
+        }
+        let mut open = true;
+        let (mut theme, mut font) = (self.theme, self.font_size);
+        Window::new("Ajustes").id(settings_window_id()).open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+            ui.strong("Tema");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut theme, ThemePreference::System, "Sistema");
+                ui.radio_value(&mut theme, ThemePreference::Light, "Claro");
+                ui.radio_value(&mut theme, ThemePreference::Dark, "Oscuro");
+            });
+            ui.add_space(8.0);
+            ui.strong("Tamaño de letra del texto");
+            ui.add(Slider::new(&mut font, 7.0..=40.0).step_by(1.0));
+            ui.add_space(8.0);
+            ui.weak("Los ajustes se guardan automáticamente.");
+        });
+        self.show_settings = open;
+        if theme != self.theme {
+            self.theme = theme;
+            ctx.set_theme(theme);
+            self.persist();
+        }
+        if font != self.font_size {
+            self.set_font(font);
+        }
+    }
+
+    /// Escape cierra la ventana emergente que está delante (si el foco no
+    /// está en el editor, donde Escape quita la selección).
+    fn escape_closes_popup(&mut self, ctx: &Context) {
+        if self.view_focused || !ctx.input(|i| i.key_pressed(Key::Escape)) {
+            return;
+        }
+        let inline: Vec<Id> = self.advs.iter().filter(|w| !w.detached).map(|w| adv_window_id(w.id)).collect();
+        let open: Vec<Id> = [self.show_keys.then(keys_window_id), self.show_settings.then(settings_window_id)]
+            .into_iter()
+            .flatten()
+            .chain(inline)
+            .collect();
+        if open.is_empty() {
+            return;
+        }
+        // La de delante; si no se sabe, la última abierta.
+        let top = ctx.memory(|m| m.areas().top_layer_id(Order::Middle)).map(|l| l.id).filter(|id| open.contains(id));
+        let target = top.unwrap_or(*open.last().unwrap());
+        if target == keys_window_id() {
+            self.show_keys = false;
+        } else if target == settings_window_id() {
+            self.show_settings = false;
+        } else if let Some(w) = self.advs.iter_mut().find(|w| adv_window_id(w.id) == target) {
+            w.open = false;
+        }
+    }
+
+    fn keys_window(&mut self, ctx: &Context) {
+        if !self.show_keys {
+            return;
+        }
+        let mut open = true;
+        Window::new("Atajos de teclado")
+            .id(keys_window_id())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([520.0, 560.0])
+            .anchor(Align2::RIGHT_BOTTOM, vec2(-8.0, -30.0))
+            .show(ctx, |ui| {
+                ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    for (section, keys) in shortcut_list() {
+                        ui.add_space(4.0);
+                        ui.strong(section);
+                        Grid::new(section).num_columns(2).striped(true).spacing([16.0, 3.0]).min_col_width(230.0).show(ui, |ui| {
+                            for (k, what) in keys {
+                                ui.label(RichText::new(k).monospace());
+                                ui.label(what);
+                                ui.end_row();
+                            }
+                        });
+                    }
+                });
+            });
+        self.show_keys = open;
+    }
+
+    fn new_adv_window(&mut self) {
+        let file = self.tabs.get(self.active).map(|t| t.doc.path.clone());
+        self.advs.push(AdvWin::new(self.next_adv, file));
+        self.next_adv += 1;
+    }
+
+    /// Dibuja todas las ventanas de búsqueda avanzada.
+    fn adv_windows(&mut self, ctx: &Context) {
+        let mut wins = std::mem::take(&mut self.advs);
+        let mut outs = Vec::new();
+        for w in wins.iter_mut() {
+            let title = w.title();
+            let mut out = AdvOut::default();
+            let (tabs, active) = (&mut self.tabs, self.active);
+            if w.detached {
+                let vid = ViewportId::from_hash_of(("adv", w.id));
+                let builder = ViewportBuilder::default().with_title(&title).with_inner_size([680.0, 600.0]).with_min_inner_size([420.0, 300.0]);
+                ctx.show_viewport_immediate(vid, builder, |ui, _| {
+                    CentralPanel::default().show(ui, |ui| out = adv_ui(ui, w, tabs, active));
+                    // Escape cierra también la ventana aparte.
+                    if ui.ctx().input(|i| i.viewport().close_requested() || i.key_pressed(Key::Escape)) {
+                        w.open = false;
+                    }
+                });
+            } else {
+                let mut open = true;
+                Window::new(&title)
+                    .id(adv_window_id(w.id))
+                    .open(&mut open)
+                    .default_size([640.0, 560.0])
+                    .max_width(ctx.content_rect().width() * 0.9)
+                    .min_size([420.0, 300.0])
+                    .resizable(true)
+                    .collapsible(false)
+                    .show(ctx, |ui| out = adv_ui(ui, w, tabs, active));
+                w.open &= open;
+            }
+            outs.push(out);
+        }
+        wins.retain(|w| w.open);
+        self.advs = wins;
+        for o in outs {
+            if let Some(m) = o.msg {
+                self.msg(m);
+            }
+            if let Some(i) = o.activate {
+                self.active = i;
+            }
+            self.focus_view |= o.focus_view;
+            if o.new_window {
+                self.new_adv_window();
+            }
+        }
+    }
+}
+
+fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOut {
+    let mut out = AdvOut::default();
+    // Archivo, ventana aparte, nueva ventana.
+    ui.horizontal(|ui| {
+        ui.label("Archivo:");
+        let cur_name = w
+            .tab_index(tabs, active)
+            .map(|i| tabs[i].doc.name.clone())
+            .unwrap_or_else(|| "(ninguno)".into());
+        let mut chosen = None;
+        ComboBox::from_id_salt(("adv_file", w.id)).selected_text(cur_name).width(220.0).show_ui(ui, |ui| {
+            for t in tabs.iter() {
+                if ui.selectable_label(w.file.as_ref() == Some(&t.doc.path), &t.doc.name).clicked() {
+                    chosen = Some(t.doc.path.clone());
+                }
+            }
+        });
+        if let Some(p) = chosen {
+            if w.file.as_ref() != Some(&p) {
+                w.file = Some(p);
+                w.search = None;
+                w.cur = None;
+                w.minimap_cache = None;
+            }
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui.button("+ Nueva").on_hover_text("Abrir otra ventana de búsqueda avanzada").clicked() {
+                out.new_window = true;
+            }
+            let label = if w.detached { "Integrar" } else { "Ventana aparte" };
+            let hint = if w.detached {
+                "Volver a mostrarla dentro de la ventana principal"
+            } else {
+                "Mostrarla en una ventana propia (puedes llevarla a otro monitor)"
+            };
+            if ui.button(label).on_hover_text(hint).clicked() {
+                w.detached = !w.detached;
+            }
+        });
+    });
+    let Some(ti) = w.tab_index(tabs, active) else {
+        ui.weak("Abre un archivo primero (o el archivo elegido se cerró).");
+        return out;
+    };
+
+    let mut run = false;
+    let field = |ui: &mut Ui, text: &mut String, hint: &str, multiline: bool| -> Response {
+        if multiline {
+            ui.add(TextEdit::multiline(text).desired_width(360.0).desired_rows(3).hint_text(hint).font(TextStyle::Monospace))
+        } else {
+            ui.add(TextEdit::singleline(text).desired_width(360.0).hint_text(hint).font(TextStyle::Monospace))
+        }
+    };
+    let enter = |ui: &Ui, r: &Response, multiline: bool| {
+        if multiline {
+            r.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && i.modifiers.command)
+        } else {
+            r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))
+        }
+    };
+    Grid::new(("adv_grid", w.id)).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        ui.label("Desde:");
+        ui.horizontal(|ui| {
+            let r = field(ui, &mut w.from, "inicio del bloque (texto o regex)", w.multiline);
+            if std::mem::take(&mut w.focus) {
+                r.request_focus();
+            }
+            run |= enter(ui, &r, w.multiline);
+            ui.toggle_value(&mut w.case_sensitive, "Aa").on_hover_text("Distinguir mayúsculas");
+            ui.toggle_value(&mut w.regex, ".*").on_hover_text("Expresión regular");
+            ui.toggle_value(&mut w.multiline, "Multilínea").on_hover_text(
+                "Cada patrón puede ocupar varias líneas (hasta 1 MB).\nTexto: escribe los saltos tal cual (sirve para LF y CRLF); busca con Ctrl+Enter.\nRegex: usa \\n o \\r?\\n; (?s) para que «.» cruce líneas.",
+            );
+        });
+        ui.end_row();
+        ui.label("Hasta:");
+        let r = field(ui, &mut w.to, "fin del bloque, puede estar en otra línea (opcional)", w.multiline);
+        run |= enter(ui, &r, w.multiline);
+        ui.end_row();
+    });
+    ui.horizontal(|ui| {
+        run |= ui.button("Buscar").clicked();
+        if let Some(e) = &w.error {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        } else if let Some((s, edit_gen, _)) = &w.search {
+            let n = s.count();
+            let pos = w.cur.map(|i| format!("{}/", fmt_num(i as u64 + 1))).unwrap_or_default();
+            let mut t = format!("{pos}{} bloques", fmt_num(n as u64));
+            if s.truncated.load(Ordering::Relaxed) {
+                t += &format!(" (límite {})", fmt_num(MAX_BLOCKS as u64));
+            }
+            if !s.is_done() {
+                let p = s.progress.load(Ordering::Relaxed) as f64 / s.total.max(1) as f64;
+                t += &format!(" · buscando {:.0}%", p * 100.0);
+            } else {
+                t += &format!(" · {:.2}s", s.elapsed.lock().unwrap().as_secs_f32());
+                if s.unclosed.load(Ordering::Relaxed) > 0 {
+                    t += " · el último inicio no tiene fin";
+                }
+            }
+            ui.label(t);
+            if *edit_gen != tabs[ti].edit_gen {
+                ui.colored_label(ui.visuals().warn_fg_color, "desactualizada (Buscar para repetir)");
+            }
+        }
+    });
+    if run {
+        w.start(&tabs[ti]);
+    }
+    ui.separator();
+
+    // Opciones de copia.
+    let has_end = !w.to.is_empty();
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Copiar:");
+        ui.radio_value(&mut w.mode, CopyMode::Full, if has_end { "desde… hasta (incluidos)" } else { "coincidencia" });
+        ui.add_enabled_ui(has_end, |ui| {
+            ui.radio_value(&mut w.mode, CopyMode::Inner, "solo lo de en medio").on_hover_text("Sin los textos de «Desde» y «Hasta»");
+        });
+        ui.radio_value(&mut w.mode, CopyMode::Lines, "líneas completas");
+    });
+    if !has_end && w.mode == CopyMode::Inner {
+        w.mode = CopyMode::Full;
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Separar bloques con:");
+        ui.radio_value(&mut w.sep, Sep::Newline, "salto de línea");
+        ui.radio_value(&mut w.sep, Sep::Blank, "línea en blanco");
+        ui.radio_value(&mut w.sep, Sep::Nothing, "nada");
+    });
+    let count = w.count();
+    let tab = &mut tabs[ti];
+    let mut go = None;
+    ui.horizontal_wrapped(|ui| {
+        if ui.add_enabled(count > 0, Button::new("◀")).on_hover_text("Bloque anterior").clicked() {
+            go = Some(w.cur.map_or(count - 1, |i| if i == 0 { count - 1 } else { i - 1 }));
+        }
+        if ui.add_enabled(count > 0, Button::new("▶")).on_hover_text("Bloque siguiente").clicked() {
+            go = Some(w.cur.map_or(0, |i| (i + 1) % count));
+        }
+        let cur = w.cur.filter(|&i| i < count);
+        if ui
+            .add_enabled(cur.is_some(), Button::new("Seleccionar en el editor"))
+            .on_hover_text("Selecciona el bloque actual (según «Copiar») para copiarlo o editarlo")
+            .clicked()
+        {
+            if let Some(b) = cur.and_then(|i| w.get(i)) {
+                let (a, z) = block_range(&b, w.mode);
+                let z = Pos::new(z.line, z.col.min(tab.line_len(z.line)));
+                tab.select(a, z);
+                tab.center_on = Some(a.line);
+                out.focus_view = true;
+                out.activate = Some(ti);
+            }
+        }
+        let ctx = ui.ctx().clone();
+        let copy = |only: Option<usize>| -> String {
+            let Some((s, _, _)) = &w.search else { return "Busca algo primero".into() };
+            if only.is_none() && !s.is_done() {
+                return "Espera a que termine la búsqueda".into();
+            }
+            let all = s.blocks.lock().unwrap();
+            let list = match only {
+                Some(i) => all.get(i..=i).unwrap_or(&[]),
+                None => &all[..],
+            };
+            match tab.blocks_text(list, w.mode, w.sep) {
+                Ok((t, n)) => {
+                    let m = format!("Copiados {} bloques ({})", fmt_num(n as u64), human_size(t.len() as u64));
+                    ctx.copy_text(t);
+                    m
+                }
+                Err(e) => e,
+            }
+        };
+        if ui.add_enabled(cur.is_some(), Button::new("Copiar bloque")).clicked() {
+            out.msg = Some(copy(cur));
+        }
+        if ui.add_enabled(count > 0, Button::new(format!("Copiar todos ({})", fmt_num(count as u64)))).clicked() {
+            out.msg = Some(copy(None));
+        }
+    });
+    ui.separator();
+
+    // Lista de bloques + minimapa, en rectángulos fijos.
+    let rest = ui.available_rect_before_wrap();
+    let rest = Rect::from_min_max(rest.min, pos2(rest.max.x, rest.max.y.max(rest.min.y + 80.0)));
+    ui.allocate_rect(rest, Sense::hover());
+    let map_w = 56.0;
+    let list_rect = Rect::from_min_max(rest.min, pos2(rest.max.x - map_w - 8.0, rest.max.y));
+    let map_rect = Rect::from_min_max(pos2(rest.max.x - map_w, rest.min.y), rest.max);
+    ui.scope_builder(UiBuilder::new().max_rect(list_rect).layout(Layout::top_down_justified(Align::Min)), |ui| {
+        ui.style_mut().wrap_mode = Some(TextWrapMode::Truncate);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.spacing_mut().button_padding.y = 2.0;
+        let row_h = ui.text_style_height(&TextStyle::Monospace) + 4.0;
+        let mut area = ScrollArea::vertical().id_salt(("adv_list", w.id)).auto_shrink([false, false]);
+        if let Some(i) = w.scroll_to.take() {
+            area = area.vertical_scroll_offset((i as f32 * row_h - list_rect.height() / 3.0).max(0.0));
+        }
+        area.show_rows(ui, row_h, count, |ui, range| {
+            let list: Vec<Block> = w
+                .search
+                .as_ref()
+                .map(|(s, _, _)| {
+                    let v = s.blocks.lock().unwrap();
+                    v[range.start.min(v.len())..range.end.min(v.len())].to_vec()
+                })
+                .unwrap_or_default();
+            for (k, b) in list.iter().enumerate() {
+                let i = range.start + k;
+                let lines = if b.s0.line == b.e1.line {
+                    fmt_num(b.s0.line + 1)
+                } else {
+                    format!("{}–{}", fmt_num(b.s0.line + 1), fmt_num(b.e1.line + 1))
+                };
+                let t = tab.rows(b.s0.line, 1, 400).into_iter().next().map(|r| r.1).unwrap_or_default();
+                let preview = sanitize(&t[buffer::floor_char(&t, b.s0.col)..]);
+                let text = RichText::new(format!("{lines:>15}  {preview}")).monospace();
+                if ui.selectable_label(w.cur == Some(i), text).clicked() {
+                    go = Some(i);
+                }
+            }
+        });
+    });
+    let resp = ui.interact(map_rect, ui.scope_id().with(("minimap", w.id)), Sense::click_and_drag());
+    if let Some(line) = minimap(ui, map_rect, &resp, tab, w) {
+        // Ir al bloque más cercano a ese punto.
+        let i = w.search.as_ref().map(|(s, _, _)| s.first_at_or_after(Pos::new(line, 0))).unwrap_or(0);
+        if i < count {
+            go = Some(i);
+            w.scroll_to = Some(i);
+        } else {
+            tab.center_on = Some(line);
+            out.activate = Some(ti);
+        }
+    }
+    if let Some(i) = go {
+        if let Some(b) = w.get(i) {
+            w.cur = Some(i);
+            if w.scroll_to.is_none() && !ui.rect_contains_pointer(list_rect) {
+                w.scroll_to = Some(i);
+            }
+            tab.goto_block(b);
+            out.activate = Some(ti);
+        }
+    }
+    out
+}
+
+/// Minimapa del documento entero: en verde, dónde están los bloques
+/// encontrados (más intenso = más bloques); el recuadro es la parte visible.
+/// Devuelve la línea pulsada.
+fn minimap(ui: &mut Ui, rect: Rect, resp: &Response, tab: &Tab, w: &mut AdvWin) -> Option<u64> {
+    let visuals = ui.visuals().clone();
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+    painter.rect_stroke(rect, 2.0, visuals.widgets.noninteractive.bg_stroke, StrokeKind::Inside);
+    let total = tab.total().max(1);
+    let inner = rect.shrink2(vec2(4.0, 2.0));
+    let h = inner.height().max(1.0) as usize;
+    let y_of = |line: u64| inner.top() + (line as f64 / total as f64 * h as f64) as f32;
+
+    if let Some((s, _, _)) = &w.search {
+        let count = s.count();
+        let fresh = w.minimap_cache.as_ref().is_some_and(|c| c.0 == count && c.1 == h && c.2 == total);
+        if !fresh {
+            // Nº de bloques que caen en cada fila de píxeles.
+            let mut marks = vec![0u32; h];
+            for b in s.blocks.lock().unwrap().iter() {
+                let a = (b.s0.line as f64 / total as f64 * h as f64) as usize;
+                let z = (b.e1.line as f64 / total as f64 * h as f64) as usize;
+                for m in &mut marks[a.min(h - 1)..=z.min(h - 1)] {
+                    *m += 1;
+                }
+            }
+            w.minimap_cache = Some((count, h, total, marks));
+        }
+        let marks = &w.minimap_cache.as_ref().unwrap().3;
+        let max = marks.iter().copied().max().unwrap_or(0).max(1) as f32;
+        for (y, &c) in marks.iter().enumerate() {
+            if c == 0 {
+                continue;
+            }
+            let k = 0.3 + 0.7 * (c as f32 / max).sqrt();
+            let r = Rect::from_min_max(pos2(inner.left(), inner.top() + y as f32), pos2(inner.right(), inner.top() + y as f32 + 1.0));
+            painter.rect_filled(r, 0.0, MINIMAP_GREEN.gamma_multiply(k));
+        }
+        // Bloque actual.
+        if let Some(b) = w.cur.and_then(|i| s.get(i)) {
+            let r = Rect::from_min_max(pos2(rect.left(), y_of(b.s0.line) - 1.5), pos2(rect.right(), y_of(b.e1.line) + 1.5));
+            painter.rect_stroke(r, 1.0, Stroke::new(2.0, visuals.strong_text_color()), StrokeKind::Outside);
+        }
+    }
+    // Parte visible en el editor.
+    let view = Rect::from_min_max(
+        pos2(rect.left() + 1.0, y_of(tab.top)),
+        pos2(rect.right() - 1.0, y_of(tab.top + tab.visible_rows).max(y_of(tab.top) + 3.0)),
+    );
+    painter.rect_filled(view, 1.0, visuals.selection.bg_fill.gamma_multiply(0.25));
+    painter.rect_stroke(view, 1.0, Stroke::new(1.0, visuals.selection.stroke.color), StrokeKind::Inside);
+
+    let r = resp.clone().on_hover_text("Verde: bloques encontrados (más intenso = más bloques) · recuadro: lo que se ve · clic: ir allí");
+    if r.clicked() || r.dragged() {
+        let p = r.interact_pointer_pos()?;
+        let frac = ((p.y - inner.top()) / inner.height()).clamp(0.0, 1.0) as f64;
+        return Some(((frac * total as f64) as u64).min(total - 1));
+    }
+    None
 }
 
 /// Lista virtual de líneas con coincidencias.
@@ -2122,6 +3176,46 @@ mod tests {
         assert!(t.buf.is_none() && !t.dirty());
         assert_eq!(std::fs::read(&p).unwrap(), "¡Adiósmundo\r\nsegunda\r\n".as_bytes());
         assert!(t.start_save(p).is_err(), "sin cambios no se guarda");
+    }
+
+    #[test]
+    fn copy_blocks_modes() {
+        let (t, _) = tab_with("cb.txt", "a <x>uno\ndos</x> b <x>tres</x>\nfin\n");
+        let run = |to: &str| {
+            let mut w = AdvWin::new(1, None);
+            w.from = "<x>".into();
+            w.to = to.into();
+            w.case_sensitive = true;
+            w.start(&t);
+            while w.is_busy() {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let v = w.search.as_ref().unwrap().0.blocks.lock().unwrap().clone();
+            v
+        };
+        let v = run("</x>");
+        let txt = |m, s| t.blocks_text(&v, m, s).unwrap();
+        assert_eq!(txt(CopyMode::Full, Sep::Blank), ("<x>uno\ndos</x>\n\n<x>tres</x>".to_string(), 2));
+        assert_eq!(txt(CopyMode::Inner, Sep::Newline).0, "uno\ndos\ntres");
+        // Líneas completas: la línea 2 no se repite aunque tenga dos bloques.
+        assert_eq!(txt(CopyMode::Lines, Sep::Newline), ("a <x>uno\ndos</x> b <x>tres</x>".to_string(), 1));
+        assert_eq!(t.blocks_text(&v[1..], CopyMode::Inner, Sep::Nothing).unwrap().0, "tres");
+        // Sin «hasta»: cada coincidencia es un bloque.
+        let v = run("");
+        assert_eq!(t.blocks_text(&v, CopyMode::Full, Sep::Nothing).unwrap(), ("<x><x>".to_string(), 2));
+    }
+
+    #[test]
+    fn duplicate_names() {
+        let dir = std::env::temp_dir().join("buscador-tests").join("dup");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("informe.log");
+        std::fs::write(&p, "x").unwrap();
+        assert_eq!(copy_name(&p), dir.join("informe copia.log"));
+        std::fs::write(dir.join("informe copia.log"), "x").unwrap();
+        assert_eq!(copy_name(&p), dir.join("informe copia 2.log"));
+        assert_eq!(copy_name(&dir.join("LEEME")), dir.join("LEEME copia"));
     }
 
     #[test]

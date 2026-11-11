@@ -18,3 +18,7 @@ lto = "thin"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Menú nativo en la barra superior de macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.21", default-features = false }

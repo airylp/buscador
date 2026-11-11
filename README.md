@@ -15,6 +15,17 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
   el original nunca queda a medio escribir. Conserva encoding, BOM y CRLF/LF
 - Reemplazar (Ctrl+H; Cmd+Alt+F en macOS) uno a uno o en todas las líneas encontradas, con `$1` en modo regex
 - Selección de líneas completas haciendo clic en los números de línea
+- Búsqueda avanzada (Ctrl+Shift+F): bloques «desde… hasta…» que pueden ocupar varias líneas,
+  patrones multilínea opcionales, minimapa del archivo con los bloques en verde (más intenso =
+  más bloques), y copia de uno o todos los bloques: incluidos los delimitadores, solo lo de en
+  medio o líneas completas. Puedes abrir varias a la vez, cada una sobre un archivo, y sacarlas
+  a ventanas propias (otro monitor). Escape cierra la ventana emergente de delante
+- Clic derecho en un archivo: mostrar en Finder/Explorador, copiar ruta o nombre, duplicar
+  (incluye los cambios sin guardar), cerrar los demás
+- Ícono propio (una «B» pixelada) en Cmd+Tab, el Dock y la barra de tareas
+- En macOS, menú nativo en la barra superior (Archivo, Edición, Buscar, Ver, Ventana, Ayuda)
+- Botón «?» (o F1) con todos los atajos de teclado
+- Ajustes: tema Sistema / Claro / Oscuro y tamaño de letra (se recuerdan)
 - Panel «Detalle» para ver y copiar parte de una línea larga
 - Ir a línea (Ctrl+G), tamaño de letra (Ctrl+ / Ctrl−), arrastrar y soltar archivos
 
@@ -27,6 +38,13 @@ curl -fsSL https://raw.githubusercontent.com/airylp/buscador/main/install.sh | s
 ```
 
 Requisitos: `curl`, `tar` y un compilador C (`build-essential` en Debian/Ubuntu).
+
+En macOS, para tener `buscador.app` (con ícono en el Dock, Launchpad y Cmd+Tab):
+
+```sh
+./empaquetar-mac.sh             # crea target/release/buscador.app
+./empaquetar-mac.sh --instalar  # además la copia a ~/Applications
+```
 
 O manualmente:
 
