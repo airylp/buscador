@@ -9,6 +9,8 @@ mod fonts;
 mod icon;
 #[cfg(target_os = "macos")]
 mod macmenu;
+#[cfg(target_os = "macos")]
+mod macopen;
 mod search;
 mod settings;
 mod syntax;
@@ -28,6 +30,8 @@ fn main() -> eframe::Result {
     files.retain(|f| !f.to_string_lossy().starts_with("-psn_"));
     // En modo captura (pruebas) la ventana no se activa: no roba el teclado.
     let testing = std::env::var_os("BUSCADOR_SCREENSHOT").is_some();
+    #[cfg(target_os = "macos")]
+    macopen::install();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_active(!testing)

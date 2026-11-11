@@ -23,3 +23,6 @@ opt-level = 2
 # Menú nativo en la barra superior de macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }
+# Abrir archivos desde Finder («Abrir con»): ver src/macopen.rs.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSURL", "NSString"] }

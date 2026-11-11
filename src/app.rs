@@ -1362,7 +1362,11 @@ impl App {
             show_keys: false,
             settings_was_open: false,
             updater: None,
-            ctx: cc.egui_ctx.clone(),
+            ctx: {
+                #[cfg(target_os = "macos")]
+                crate::macopen::set_context(&cc.egui_ctx);
+                cc.egui_ctx.clone()
+            },
             dialog: None,
             map: Default::default(),
             view_focused: false,
@@ -2615,6 +2619,11 @@ impl eframe::App for App {
         }
 
         self.poll_dialog();
+        // Archivos abiertos desde Finder («Abrir con…»).
+        #[cfg(target_os = "macos")]
+        for p in crate::macopen::take() {
+            self.open(p);
+        }
         // Archivos arrastrados a la ventana.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         for p in dropped {

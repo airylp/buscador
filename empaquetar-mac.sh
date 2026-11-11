@@ -127,6 +127,20 @@ crear() {
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
+    <!-- Aparece en «Abrir con…» para cualquier archivo, sin volverse la app predeterminada. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>Archivo</string>
+            <key>CFBundleTypeRole</key><string>Editor</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.data</string>
+                <string>public.content</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST
