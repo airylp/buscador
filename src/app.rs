@@ -686,6 +686,64 @@ impl Tab {
         true
     }
 
+    // ---- Embellecer ----
+
+    /// Tipo de embellecedor para este archivo: (nombre, ¿HTML?).
+    fn beautifier(&self) -> Option<(&'static str, bool)> {
+        let ext = self.doc.name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+        match self.lang {
+            syntax::Lang::Json => Some(("JSON", false)),
+            syntax::Lang::Xml if matches!(ext.as_str(), "html" | "htm" | "vue") => Some(("HTML", true)),
+            syntax::Lang::Xml => Some(("XML", false)),
+            _ => None,
+        }
+    }
+
+    /// Valida y embellece la selección (o el archivo entero). Si está mal
+    /// formado, no cambia nada y lleva el cursor al error.
+    fn beautify(&mut self) -> Result<String, String> {
+        let Some((kind, html)) = self.beautifier() else {
+            return Err("El embellecedor está disponible para JSON y XML/HTML (el tipo se cambia en la barra de estado)".into());
+        };
+        let (a, b) = self.selection().unwrap_or((Pos::default(), self.end_pos()));
+        let text = self
+            .text(a, b, MAX_COPY_BYTES)
+            .ok_or_else(|| format!("Demasiado grande para embellecer (máx. {})", human_size(MAX_COPY_BYTES as u64)))?;
+        let res = if kind == "JSON" {
+            crate::beautify::format_json(&text, "  ")
+        } else {
+            crate::beautify::format_xml(&text, "  ", html)
+        };
+        let mut out = match res {
+            Ok(o) => o,
+            Err(e) => {
+                // Posición del error en el documento.
+                let pos = e.pos.min(text.len());
+                let (l, c) = crate::beautify::line_col(&text, pos);
+                let line_start = text[..pos].rfind('\n').map_or(0, |i| i + 1);
+                let col = pos - line_start + if l == 1 { a.col } else { 0 };
+                let p = Pos::new(a.line + l as u64 - 1, col);
+                self.select(p, p);
+                self.center_on = Some(p.line);
+                let c = if l == 1 { c + a.col } else { c };
+                return Err(format!("{kind} mal formado en la línea {}, columna {c}: {}", fmt_num(p.line + 1), e.msg));
+            }
+        };
+        if text.ends_with('\n') && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        if out == text {
+            return Ok(format!("{kind} bien formado; ya estaba embellecido"));
+        }
+        if !self.editable {
+            return Ok(format!("{kind} bien formado. Activa «Editar» (Ctrl+E) para embellecerlo"));
+        }
+        self.replace_range(a, b, &out, EditKind::Other)?;
+        self.select(a, a);
+        self.center_on = Some(a.line);
+        Ok(format!("{kind} embellecido: {} líneas (Ctrl+Z para deshacer)", fmt_num(out.lines().count() as u64)))
+    }
+
     // ---- Búsqueda avanzada (bloques) ----
 
     fn goto_block(&mut self, b: Block) {
@@ -901,6 +959,7 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
         (k("C+X"), "Cortar (sin selección: la línea entera)"),
         (k("C+V"), "Pegar"),
         (k("C+A"), "Seleccionar todo"),
+        (k("C+Shift+B"), "Embellecer JSON / XML (valida y sangra)"),
         (k("Retroceso / Supr"), "Borrar carácter"),
         (k("W+Retroceso / W+Supr"), "Borrar palabra"),
         (k("Enter"), "Nueva línea"),
@@ -1109,6 +1168,8 @@ pub struct App {
     show_keys: bool,
     /// La ventana de ajustes estaba abierta en el fotograma anterior.
     settings_was_open: bool,
+    /// Actualización desde la interfaz (ventana abierta si hay `Some`).
+    updater: Option<crate::update::Updater>,
     /// El editor tenía el foco en el último fotograma.
     view_focused: bool,
     /// Ventanas de búsqueda avanzada abiertas.
@@ -1162,6 +1223,7 @@ impl App {
             show_settings: false,
             show_keys: false,
             settings_was_open: false,
+            updater: None,
             view_focused: false,
             advs: Vec::new(),
             next_adv: 1,
@@ -1315,6 +1377,13 @@ impl App {
         }
     }
 
+    fn beautify(&mut self) {
+        let Some(t) = self.tabs.get_mut(self.active) else { return };
+        let m = t.beautify().unwrap_or_else(|e| e);
+        self.msg(m);
+        self.focus_view = true;
+    }
+
     fn toggle_edit(&mut self) {
         let Some(t) = self.tabs.get_mut(self.active) else { return };
         t.editable = !t.editable;
@@ -1381,6 +1450,9 @@ impl App {
         }
         if pressed(sc(Modifiers::COMMAND, Key::O)) {
             self.open_dialog();
+        }
+        if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::B)) {
+            self.beautify();
         }
         if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::F)) {
             self.new_adv_window();
@@ -1472,7 +1544,7 @@ impl App {
             }
         });
         // Con poco espacio, los botones muestran solo el ícono (el texto queda en el tooltip).
-        let compact = full.width() < 1360.0;
+        let compact = full.width() < 1480.0;
         let lb = |icon: &str, text: &str| if compact { icon.to_string() } else { format!("{icon} {text}") };
         ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.set_clip_rect(left.intersect(ui.clip_rect()));
@@ -1535,6 +1607,19 @@ impl App {
                     }
                 }
                 self.focus_view = true;
+            }
+            let beaut = self.tabs.get(self.active).and_then(|t| t.beautifier()).map(|b| b.0);
+            let bhint = match beaut {
+                Some(k) => format!("Embellecer {k}: comprueba que esté bien formado y lo ordena con sangría (Ctrl+Shift+B). Se aplica a la selección o a todo el archivo; Ctrl+Z lo deshace."),
+                None => "Embellecer: disponible para JSON y XML/HTML".to_string(),
+            };
+            if ui
+                .add_enabled(beaut.is_some(), Button::new(lb("✨", "Embellecer")))
+                .on_hover_text(&bhint)
+                .on_disabled_hover_text(&bhint)
+                .clicked()
+            {
+                self.beautify();
             }
             ui.separator();
 
@@ -1658,6 +1743,7 @@ impl App {
         for c in self.menu.poll() {
             match c {
                 Cmd::Settings => self.show_settings = true,
+                Cmd::Update => self.open_updater(ctx),
                 Cmd::ToggleResults => self.show_results = !self.show_results,
                 Cmd::ToggleDetail => self.show_detail = !self.show_detail,
                 c => inject(ctx, c),
@@ -1964,6 +2050,13 @@ impl App {
                     let p = job.progress.load(Ordering::Relaxed) as f32 / job.total.max(1) as f32;
                     ui.add(ProgressBar::new(p.min(1.0)).desired_width(140.0).text("guardando…"));
                 }
+                // Los mensajes van antes de la ruta para que no se corten.
+                if let Some((m, when)) = &self.message {
+                    if when.elapsed() < Duration::from_secs(8) {
+                        ui.separator();
+                        ui.label(RichText::new(m).small().color(ui.visuals().warn_fg_color));
+                    }
+                }
                 ui.separator();
                 if t.untitled {
                     ui.label(RichText::new("sin guardar en disco · Ctrl+S para elegir dónde").small().weak());
@@ -1971,10 +2064,11 @@ impl App {
                     ui.label(RichText::new(d.path.display().to_string()).small().weak()).on_hover_text("Ruta del archivo");
                 }
             }
-            if let Some((m, t)) = &self.message {
-                if t.elapsed() < Duration::from_secs(6) {
-                    ui.separator();
-                    ui.label(RichText::new(m).small().color(ui.visuals().warn_fg_color));
+            if self.tabs.is_empty() {
+                if let Some((m, when)) = &self.message {
+                    if when.elapsed() < Duration::from_secs(8) {
+                        ui.label(RichText::new(m).small().color(ui.visuals().warn_fg_color));
+                    }
                 }
             }
             if let (Some(l), Some(t)) = (set_lang, self.tabs.get_mut(self.active)) {
@@ -2107,6 +2201,12 @@ impl App {
                     t.select(Pos::new(l, 2), Pos::new(l, 9));
                 }
             }
+        }
+        if self.debug_frames == 45 && std::env::var("BUSCADOR_EMBELLECER").is_ok() {
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                t.editable = true;
+            }
+            self.beautify();
         }
         if self.debug_frames == 60 {
             if let (Some(w), Some(t)) = (self.advs.last_mut(), self.tabs.get_mut(self.active)) {
@@ -2259,6 +2359,7 @@ impl eframe::App for App {
             self.msg(m);
         }
         self.settings_window(&ctx);
+        self.update_window(&ctx);
         self.keys_window(&ctx);
         self.adv_windows(&ctx);
         self.confirm_dialog(&ctx);
@@ -3059,6 +3160,7 @@ impl App {
         let mut family = self.text_font.clone();
         let (mut custom, mut bg, mut fg) = (self.custom_colors, self.text_bg, self.text_fg);
         let mut syn = self.syntax_on;
+        let mut open_update = false;
         let mut reset = false;
         let mut win = Window::new("Ajustes").id(settings_window_id()).pivot(Align2::CENTER_CENTER);
         if just_opened {
@@ -3121,6 +3223,18 @@ impl App {
             });
             ui.add_space(8.0);
             ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(format!("Versión {}", crate::update::version_label()));
+                if MAC {
+                    if ui.button("⟳ Buscar actualizaciones…").on_hover_text("Descarga la última versión de GitHub, la compila y la instala").clicked() {
+                        open_update = true;
+                    }
+                }
+            });
+            if !MAC {
+                ui.weak("Para actualizar en Linux/Windows vuelve a ejecutar install.sh.");
+            }
+            ui.separator();
             if ui.button("↺ Restablecer ajustes predeterminados").on_hover_text("Tema del sistema, Hack 13, sin colores propios").clicked() {
                 reset = true;
             }
@@ -3128,6 +3242,9 @@ impl App {
             ui.weak("Los ajustes se guardan automáticamente.");
         });
         self.show_settings = open;
+        if open_update {
+            self.open_updater(ctx);
+        }
         if reset {
             let d = Settings::default();
             self.theme = d.theme;
@@ -3196,6 +3313,99 @@ impl App {
             self.show_settings = false;
         } else if let Some(w) = self.advs.iter_mut().find(|w| adv_window_id(w.id) == target) {
             w.open = false;
+        }
+    }
+
+    fn open_updater(&mut self, ctx: &Context) {
+        if self.updater.as_ref().is_some_and(|u| u.stage() == crate::update::Stage::Running) {
+            return; // ya está en marcha
+        }
+        self.updater = Some(crate::update::Updater::check(ctx.clone()));
+    }
+
+    fn update_window(&mut self, ctx: &Context) {
+        use crate::update::Stage;
+        let Some(u) = &self.updater else { return };
+        let stage = u.stage();
+        let mut open = true;
+        let (mut run, mut restart) = (false, false);
+        let dirty = self.tabs.iter().any(|t| t.dirty() || t.save.is_some());
+        Window::new("Actualizar buscador")
+            .id(Id::NULL.with("ventana_actualizar"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([560.0, 360.0])
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!("Versión instalada: {}", crate::update::version_label()));
+                ui.add_space(6.0);
+                match &stage {
+                    Stage::Checking => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Comprobando la última versión en GitHub…");
+                        });
+                    }
+                    Stage::UpToDate(h) => {
+                        ui.label(format!("✔ Ya tienes la última versión ({h})."));
+                        run = ui.button("Reinstalar de todos modos").clicked();
+                    }
+                    Stage::Available(h) => {
+                        ui.strong(format!("Hay una versión nueva: {h}"));
+                        ui.label("Se descarga el código a una carpeta temporal, se compila (la primera vez tarda unos minutos) y se reemplaza la app instalada. Puedes seguir trabajando mientras tanto.");
+                        run = ui.button("⬇ Descargar, compilar e instalar").clicked();
+                    }
+                    Stage::Running => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Descargando, compilando e instalando…");
+                        });
+                    }
+                    Stage::Done(p) => {
+                        ui.strong(format!("✔ Instalada en {}", p.display()));
+                        let b = ui.add_enabled(!dirty, Button::new("⟳ Reiniciar ahora"));
+                        let b = if dirty { b.on_disabled_hover_text("Guarda o descarta los cambios abiertos antes de reiniciar") } else { b };
+                        restart = b.clicked();
+                        if dirty {
+                            ui.weak("Hay cambios sin guardar: guárdalos antes de reiniciar.");
+                        }
+                    }
+                    Stage::Failed(e) => {
+                        ui.colored_label(ui.visuals().error_fg_color, format!("No se pudo actualizar: {e}"));
+                        run = ui.button("Reintentar").clicked();
+                    }
+                }
+                let log = u.log.lock().unwrap();
+                if !log.is_empty() {
+                    ui.add_space(6.0);
+                    ui.weak("Registro:");
+                    ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).max_height(220.0).show(ui, |ui| {
+                        for l in log.iter() {
+                            ui.label(RichText::new(l).monospace().small());
+                        }
+                    });
+                }
+            });
+        if run {
+            u.run(ctx.clone());
+        }
+        if restart {
+            if let Stage::Done(p) = &stage {
+                match std::process::Command::new("open").arg("-n").arg(p).spawn() {
+                    Ok(_) => {
+                        self.allow_quit = true;
+                        ctx.send_viewport_cmd(ViewportCommand::Close);
+                    }
+                    Err(e) => self.msg(format!("No se pudo abrir la versión nueva: {e}")),
+                }
+            }
+        }
+        let running = stage == Stage::Running;
+        if !open && !running {
+            self.updater = None;
+        } else if !open && running {
+            self.msg("La actualización sigue en segundo plano; vuelve a abrirla desde Ajustes");
         }
     }
 

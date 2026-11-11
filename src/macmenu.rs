@@ -20,6 +20,7 @@ pub enum Cmd {
     ToggleResults,
     ToggleDetail,
     Settings,
+    Update,
 }
 
 pub struct MacMenu {
@@ -56,6 +57,7 @@ impl MacMenu {
         let sep = PredefinedMenuItem::separator;
 
         let settings = item("Ajustes…", "Cmd+,", Cmd::Settings);
+        let update = item("Buscar actualizaciones…", "", Cmd::Update);
         let quit = item("Salir de buscador", "Cmd+Q", Cmd::Key(Modifiers::COMMAND, Key::Q));
         let about = PredefinedMenuItem::about(
             Some("Acerca de buscador"),
@@ -71,6 +73,7 @@ impl MacMenu {
             true,
             &[
                 &about,
+                &update,
                 &sep(),
                 &settings,
                 &sep(),
@@ -99,12 +102,13 @@ impl MacMenu {
         let copy = item("Copiar", "Cmd+C", Cmd::Copy);
         let paste = item("Pegar", "Cmd+V", Cmd::Paste);
         let all = item("Seleccionar todo", "Cmd+A", cmd(Key::A));
+        let beautify = item("Embellecer JSON / XML", "Cmd+Shift+B", cmd_shift(Key::B));
         let edit = CheckMenuItem::new("Permitir edición", true, false, accel("Cmd+E"));
         items.borrow_mut().push((edit.id().clone(), cmd(Key::E)));
         let edit_menu = Submenu::with_items(
             "Edición",
             true,
-            &[&undo, &redo, &sep(), &cut, &copy, &paste, &all, &sep(), &edit],
+            &[&undo, &redo, &sep(), &cut, &copy, &paste, &all, &sep(), &beautify, &edit],
         )
         .unwrap();
 
@@ -200,6 +204,6 @@ pub fn inject(ctx: &Context, c: Cmd) {
         Cmd::Copy => ctx.input_mut(|i| i.events.push(Event::Copy)),
         Cmd::Cut => ctx.input_mut(|i| i.events.push(Event::Cut)),
         Cmd::Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
-        Cmd::ToggleResults | Cmd::ToggleDetail | Cmd::Settings => {}
+        Cmd::ToggleResults | Cmd::ToggleDetail | Cmd::Settings | Cmd::Update => {}
     }
 }

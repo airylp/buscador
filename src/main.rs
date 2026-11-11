@@ -1,4 +1,5 @@
 mod app;
+mod beautify;
 mod blocks;
 mod buffer;
 mod document;
@@ -10,6 +11,7 @@ mod macmenu;
 mod search;
 mod settings;
 mod syntax;
+mod update;
 
 use std::path::PathBuf;
 
@@ -23,8 +25,11 @@ fn main() -> eframe::Result {
     }
     // macOS añade «-psn_…» al abrir una .app en algunas versiones.
     files.retain(|f| !f.to_string_lossy().starts_with("-psn_"));
+    // En modo captura (pruebas) la ventana no se activa: no roba el teclado.
+    let testing = std::env::var_os("BUSCADOR_SCREENSHOT").is_some();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
+            .with_active(!testing)
             .with_title("Buscador de logs")
             .with_app_id("buscador")
             .with_inner_size([1280.0, 800.0])
