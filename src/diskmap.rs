@@ -591,6 +591,19 @@ impl DiskMap {
                         f.cancel.store(true, Ordering::Relaxed);
                     }
                 }
+            } else if self.scan.is_some() {
+                // Aún se está leyendo la carpeta: la búsqueda queda en espera y
+                // empieza sola al terminar el mapa.
+                let b = ui
+                    .add(Button::new(if self.search_when_ready { "⏳ En espera" } else { "🔍 Buscar" }).selected(self.search_when_ready))
+                    .on_hover_text("La búsqueda empieza sola cuando termine de leerse la carpeta (clic otra vez para no buscar)");
+                if b.clicked() || enter {
+                    if self.needle.is_empty() {
+                        out.msg = Some("Escribe el texto a buscar".into());
+                    } else {
+                        self.search_when_ready = if enter { true } else { !self.search_when_ready };
+                    }
+                }
             } else if ui.add_enabled(self.tree.is_some(), Button::new("🔍 Buscar")).clicked() || (enter && self.tree.is_some()) {
                 out.msg = self.start_find(&ctx).or(out.msg.take());
             }
@@ -601,7 +614,12 @@ impl DiskMap {
                 self.selected.clear();
             }
         });
-        if let Some(f) = &self.find {
+        if self.search_when_ready && self.scan.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!("Se buscará «{}» en cuanto termine de generarse el mapa", self.needle));
+            });
+        } else if let Some(f) = &self.find {
             let n = f.found.lock().unwrap().len();
             let done = f.done_files.load(Ordering::Relaxed);
             let mut s = if f.is_done() {
