@@ -96,6 +96,8 @@ pub struct Tab {
     lines_shown: u64,
     /// Modo bloque activo (botón «Bloque» con letra monoespaciada).
     col_mode: bool,
+    /// Ajuste de línea de este archivo (cada pestaña tiene el suyo).
+    wrap: Wrap,
     /// El arrastre en curso selecciona un bloque.
     col_dragging: bool,
     /// Cuenta todas las modificaciones (no se reinicia al guardar).
@@ -138,6 +140,7 @@ impl Tab {
             layout_map: Vec::new(),
             lines_shown: 1,
             col_mode: false,
+            wrap: Wrap::Off,
             col_dragging: false,
             edit_gen: 0,
         }
@@ -1406,7 +1409,9 @@ impl App {
         }
         match Document::open(&path) {
             Ok(doc) => {
-                self.tabs.push(Tab::new(doc));
+                let mut t = Tab::new(doc);
+                t.wrap = self.wrap;
+                self.tabs.push(t);
                 self.active = self.tabs.len() - 1;
                 self.focus_view = true;
             }
@@ -1428,6 +1433,7 @@ impl App {
                 t.untitled = true;
                 t.editable = true;
                 t.pending_text = text.filter(|s| !s.is_empty());
+                t.wrap = self.wrap;
                 self.tabs.push(t);
                 self.active = self.tabs.len() - 1;
                 self.focus_view = true;
@@ -1531,17 +1537,20 @@ impl App {
         }
     }
 
+    /// Ajuste de línea del archivo activo.
+    fn cur_wrap(&self) -> Wrap {
+        self.tabs.get(self.active).map_or(Wrap::Off, |t| t.wrap)
+    }
+
+    /// Activa/desactiva el ajuste de línea solo en el archivo seleccionado.
     fn toggle_wrap(&mut self) {
-        self.wrap = if self.wrap == Wrap::Off { self.wrap_last } else { Wrap::Off };
-        if self.wrap != Wrap::Off {
-            self.wrap_last = self.wrap;
-        }
-        for t in &mut self.tabs {
-            t.content_width = 0.0;
-            t.colsel = None;
-        }
-        self.persist();
-        self.msg(match self.wrap {
+        let last = self.wrap_last;
+        let Some(t) = self.tabs.get_mut(self.active) else { return };
+        t.wrap = if t.wrap == Wrap::Off { last } else { Wrap::Off };
+        t.content_width = 0.0;
+        t.colsel = None;
+        let w = t.wrap;
+        self.msg(match w {
             Wrap::Off => "Ajuste de línea desactivado".to_string(),
             Wrap::Window => "Ajuste de línea al ancho de la ventana".to_string(),
             Wrap::Columns(n) => format!("Ajuste de línea a {n} columnas"),
@@ -1762,8 +1771,8 @@ impl App {
             {
                 self.toggle_edit();
             }
-            let mono = self.mono_font() && self.wrap == Wrap::Off;
-            let block_hint = if self.wrap != Wrap::Off {
+            let mono = self.mono_font() && self.cur_wrap() == Wrap::Off;
+            let block_hint = if self.cur_wrap() != Wrap::Off {
                 "La selección en bloque no está disponible con el ajuste de línea activado"
             } else if mono {
                 "Selección en bloque: arrastra para marcar un rectángulo de texto (como una matriz). Al copiar se copia solo el texto real, línea por línea. También: Opción/Alt+arrastrar."
@@ -2019,6 +2028,11 @@ impl App {
                 if ui.small_button("«").on_hover_text("Ocultar (Ctrl+B)").clicked() {
                     self.show_sidebar = false;
                 }
+                let on = self.cur_wrap() != Wrap::Off;
+                let r = ui.add_enabled(!self.tabs.is_empty(), Button::new(RichText::new("↩ Ajuste").small()).small().selected(on));
+                if r.on_hover_text("Ajuste de línea del archivo seleccionado (Ctrl+Alt+Z)").clicked() {
+                    self.toggle_wrap();
+                }
             });
         });
         ui.separator();
@@ -2138,7 +2152,7 @@ impl App {
                     _ => "al ancho de la ventana".into(),
                 }
             );
-            if ui.selectable_label(self.wrap != Wrap::Off, RichText::new("↩ Ajuste").small()).on_hover_text(wrap_hint).clicked() {
+            if ui.selectable_label(self.cur_wrap() != Wrap::Off, RichText::new("↩ Ajuste").small()).on_hover_text(wrap_hint).clicked() {
                 self.toggle_wrap();
             }
             ui.toggle_value(&mut self.show_detail, RichText::new("📄 Detalle").small())
@@ -2349,6 +2363,9 @@ impl App {
             }
             if let Ok(w) = std::env::var("BUSCADOR_AJUSTE") {
                 self.wrap = Wrap::parse(&w);
+                for t in &mut self.tabs {
+                    t.wrap = self.wrap;
+                }
             }
             if let Ok(f) = std::env::var("BUSCADOR_FUENTE") {
                 ctx.set_fonts(crate::fonts::build(&f, &self.fallback_fonts).0);
@@ -2517,15 +2534,15 @@ impl eframe::App for App {
         let mut view_focused = false;
         let colors = self.text_colors();
         let syntax_on = self.syntax_on;
-        let wrap = self.wrap;
-        let col_mode = self.column_mode && self.mono_font() && wrap == Wrap::Off;
+        let col_mode = self.column_mode && self.mono_font();
         for t in &mut self.tabs {
-            t.col_mode = col_mode;
+            t.col_mode = col_mode && t.wrap == Wrap::Off;
         }
         let show_detail = &mut self.show_detail;
         let focus_view = std::mem::take(&mut self.focus_view);
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
+                let wrap = t.wrap;
                 (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors, syntax_on, wrap);
             } else {
                 ui.centered_and_justified(|ui| {
@@ -3414,6 +3431,10 @@ fn block_range(b: &Block, mode: CopyMode) -> (Pos, Pos) {
     }
 }
 
+fn update_window_id() -> Id {
+    Id::NULL.with("ventana_actualizar")
+}
+
 fn settings_window_id() -> Id {
     Id::NULL.with("ventana_ajustes")
 }
@@ -3566,11 +3587,13 @@ impl App {
             return;
         }
         if wrap != self.wrap {
+            // Ajustes: modo por defecto de los archivos que se abran y del activo.
             self.wrap = wrap;
             if wrap != Wrap::Off {
                 self.wrap_last = wrap;
             }
-            for t in &mut self.tabs {
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                t.wrap = wrap;
                 t.content_width = 0.0;
                 t.colsel = None;
             }
@@ -3609,7 +3632,16 @@ impl App {
     /// Escape cierra la ventana emergente que está delante (si el foco no
     /// está en el editor, donde Escape quita la selección).
     fn escape_closes_popup(&mut self, ctx: &Context) {
-        if self.view_focused || !ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if !ctx.input(|i| i.key_pressed(Key::Escape)) {
+            return;
+        }
+        // La de actualizar se abre desde el menú con el foco aún en el texto:
+        // Escape la cierra igual (si no está instalando).
+        if self.updater.as_ref().is_some_and(|u| u.stage() != crate::update::Stage::Running) {
+            self.updater = None;
+            return;
+        }
+        if self.view_focused {
             return;
         }
         let inline: Vec<Id> = self.advs.iter().filter(|w| !w.detached).map(|w| adv_window_id(w.id)).collect();
@@ -3628,6 +3660,7 @@ impl App {
             self.show_keys = false;
         } else if target == settings_window_id() {
             self.show_settings = false;
+
         } else if let Some(w) = self.advs.iter_mut().find(|w| adv_window_id(w.id) == target) {
             w.open = false;
         }
@@ -3648,7 +3681,7 @@ impl App {
         let (mut run, mut restart) = (false, false);
         let dirty = self.tabs.iter().any(|t| t.dirty() || t.save.is_some());
         Window::new("Actualizar buscador")
-            .id(Id::NULL.with("ventana_actualizar"))
+            .id(update_window_id())
             .open(&mut open)
             .collapsible(false)
             .resizable(true)

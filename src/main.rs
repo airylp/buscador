@@ -30,7 +30,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_active(!testing)
-            .with_title("Buscador de logs")
+            .with_title("Buscador")
             .with_app_id("buscador")
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([960.0, 480.0])
