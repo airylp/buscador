@@ -875,6 +875,10 @@ impl Tab {
         let mut msg = None;
         for ev in events {
             let r: Result<(), String> = match ev {
+                // Pulsar solo una tecla modificadora (Cmd, Mayús, Opción, Ctrl…) no
+                // hace nada: egui también las envía como teclas, y antes deshacían
+                // la selección (p. ej. al ir a pulsar Cmd+C).
+                Event::Key { key, .. } if is_modifier_key(key) => Ok(()),
                 Event::Text(t) => {
                     self.preedit.clear();
                     self.colsel = None;
@@ -948,6 +952,24 @@ impl Tab {
         }
         msg
     }
+}
+
+/// Teclas que solo modifican a otras.
+fn is_modifier_key(k: Key) -> bool {
+    matches!(
+        k,
+        Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::ControlLeft
+            | Key::ControlRight
+            | Key::AltLeft
+            | Key::AltRight
+            | Key::SuperLeft
+            | Key::SuperRight
+            | Key::CapsLock
+            | Key::NumLock
+            | Key::ScrollLock
+    )
 }
 
 /// Todos los atajos, con los nombres de tecla de la plataforma.
@@ -4349,13 +4371,44 @@ mod copy_keeps_selection {
     #[test]
     fn drag_select_then_ctrl_c() {
         let ctrl_c = || vec![key(Key::C, Modifiers::CTRL, true), key(Key::C, Modifiers::CTRL, false)];
-        let cmd_c = || vec![key(Key::C, Modifiers::MAC_CMD | Modifiers::COMMAND, true), Event::Copy];
+        let cmd_c = || {
+            vec![
+                key(Key::SuperLeft, Modifiers::NONE, true),
+                key(Key::C, Modifiers::MAC_CMD | Modifiers::COMMAND, true),
+                Event::Copy,
+                key(Key::SuperLeft, Modifiers::NONE, false),
+            ]
+        };
         for (name, evs) in [("Ctrl+C", ctrl_c()), ("Cmd+C", cmd_c())] {
             let t = drag_then(evs, false);
             assert!(t.selection().is_some(), "{name}: se perdió la selección");
             let t = drag_then(if name == "Ctrl+C" { ctrl_c() } else { cmd_c() }, true);
             assert!(t.block().is_some(), "{name}: se perdió el bloque");
         }
+    }
+
+    #[test]
+    fn modifier_keys_alone_keep_selection() {
+        // Como llegan de macOS: la tecla Cmd sola, todavía sin el modificador activo.
+        for k in [Key::SuperLeft, Key::SuperRight, Key::ShiftLeft, Key::AltLeft, Key::ControlLeft] {
+            let mut t = tab();
+            t.select(Pos::new(0, 0), Pos::new(0, 4));
+            t.col_mode = true;
+            t.colsel = Some(ColSel { a: (0, 0), b: (1, 4) });
+            run(&mut t, vec![key(k, Modifiers::NONE, true), key(k, Modifiers::NONE, false)]);
+            assert_eq!(t.selection(), Some((Pos::new(0, 0), Pos::new(0, 4))), "{k:?}: selección");
+            assert!(t.block().is_some(), "{k:?}: bloque");
+        }
+        // Cmd (sola) y luego Cmd+C copia el bloque, no la línea.
+        let mut t = tab();
+        t.col_mode = true;
+        t.colsel = Some(ColSel { a: (0, 0), b: (1, 4) });
+        let copied = run(
+            &mut t,
+            vec![key(Key::SuperLeft, Modifiers::NONE, true), key(Key::C, Modifiers::MAC_CMD | Modifiers::COMMAND, true), Event::Copy],
+        );
+        assert_eq!(copied.as_deref(), Some("hola
+segu"));
     }
 
     #[test]
