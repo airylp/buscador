@@ -50,12 +50,12 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 Todo con un solo comando (macOS; instala Rust con rustup si hace falta):
 
 ```sh
-# Instalar o actualizar: compila y deja buscador.app en /Applications
 curl -fsSL https://raw.githubusercontent.com/airylp/buscador/main/install.sh | sh
-
-# Desinstalar (pregunta si borrar también la configuración)
-curl -fsSL https://raw.githubusercontent.com/airylp/buscador/main/install.sh | sh -s -- desinstalar
 ```
+
+Si buscador no está instalado, pregunta si instalarlo en /Applications; si ya lo está, ofrece
+**actualizar** o **desinstalar** (y al desinstalar pregunta si borrar también la configuración).
+Sin preguntas: `… | sh -s -- instalar` o `… | sh -s -- desinstalar`.
 
 Una vez instalada, se actualiza desde la propia app: ⚙ Ajustes → «Buscar actualizaciones…»
 (o el menú buscador). Descarga la última versión, la compila y reemplaza la app; luego ofrece

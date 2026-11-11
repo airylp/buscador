@@ -1,10 +1,12 @@
 #!/usr/bin/env sh
 # buscador: instalar, actualizar o desinstalar con un solo comando.
 #
-#   Instalar o actualizar:
 #     curl -fsSL https://raw.githubusercontent.com/airylp/buscador/main/install.sh | sh
-#   Desinstalar (pregunta si borrar la configuración):
-#     curl -fsSL https://raw.githubusercontent.com/airylp/buscador/main/install.sh | sh -s -- desinstalar
+#
+#   Pregunta qué hacer: si ya está instalado ofrece actualizar o desinstalar; si
+#   no, instalarlo. También se puede indicar directamente (sin preguntas):
+#     … | sh -s -- instalar        (instalar o actualizar)
+#     … | sh -s -- desinstalar     (pregunta si borrar también la configuración)
 #
 #   macOS: crea buscador.app (con ícono) en /Applications (o ~/Applications sin permiso).
 #   Linux: instala ~/.local/bin/buscador con ícono y entrada en el menú de aplicaciones.
@@ -16,7 +18,7 @@ set -eu
 
 REPO="${BUSCADOR_REPO:-airylp/buscador}"
 REF="${BUSCADOR_REF:-main}"
-ACCION="${1:-instalar}"
+ACCION="${1:-}"
 OS="$(uname)"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -45,12 +47,55 @@ else
     CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/buscador-compilacion"
 fi
 
+# ------------------------------------------------------------ ¿qué hacer?
+# Sin acción indicada y con terminal, se pregunta. (La actualización desde la
+# app indica «instalar» y no pregunta nada.)
+hay_terminal() { (: < /dev/tty) 2>/dev/null; }
+leer() { # leer "pregunta" → respuesta en $r
+    printf '%s' "$1" > /dev/tty
+    read -r r < /dev/tty || r=""
+}
+if [ -z "$ACCION" ]; then
+    ACCION=instalar
+    if hay_terminal; then
+        instalada=""
+        if [ "$OS" = "Darwin" ]; then
+            for d in $APP_DIRS; do
+                [ -d "$d/buscador.app" ] && { instalada="$d/buscador.app"; break; }
+            done
+            [ -n "$instalada" ] && version=$(defaults read "$instalada/Contents/Info" CFBundleVersion 2>/dev/null || echo "?")
+        elif [ -x "$BIN_DIR/buscador" ]; then
+            instalada="$BIN_DIR/buscador"
+            version="?"
+        fi
+        if [ -n "$instalada" ]; then
+            {
+                echo "buscador ya está instalado: $instalada (versión $version)"
+                echo "  1) Actualizar a la última versión"
+                echo "  2) Desinstalar"
+                echo "  3) Cancelar"
+            } > /dev/tty
+            leer "Elige [1-3] (Enter = 1): "
+            case "${r:-1}" in
+                1) ACCION=instalar ;;
+                2) ACCION=desinstalar ;;
+                *) echo "Cancelado."; exit 0 ;;
+            esac
+        else
+            destino="/Applications"
+            [ "$OS" = "Darwin" ] || destino="$BIN_DIR"
+            leer "Se va a instalar buscador en ${BUSCADOR_DESTINO:-$destino}. ¿Continuar? [S/n] "
+            case "$r" in n|N|no|No) echo "Cancelado."; exit 0 ;; esac
+        fi
+    fi
+fi
+
 # ------------------------------------------------------------ desinstalar
 if [ "$ACCION" = "desinstalar" ] || [ "$ACCION" = "--desinstalar" ]; then
     if [ "$OS" = "Darwin" ]; then
         for d in $APP_DIRS; do
             if [ -d "$d/buscador.app" ]; then
-                osascript -e 'tell application id "io.github.airylp.buscador" to quit' >/dev/null 2>&1 || true
+                [ -n "${BUSCADOR_DESTINO:-}" ] || osascript -e 'tell application id "io.github.airylp.buscador" to quit' >/dev/null 2>&1 || true
                 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$d/buscador.app" >/dev/null 2>&1 || true
                 rm -rf "${d:?}/buscador.app" && info "Quitada $d/buscador.app"
             fi
