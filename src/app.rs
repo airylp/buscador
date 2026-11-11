@@ -1313,6 +1313,8 @@ pub struct App {
     /// Duplicados en curso: (destino, resultado).
     duplicating: Vec<(PathBuf, Arc<Mutex<Option<Result<(), String>>>>)>,
     allow_quit: bool,
+    /// «Reiniciar ahora»: versión nueva que se abre cuando esta termine (`on_exit`).
+    relaunch: Option<PathBuf>,
     debug_frames: u64,
     debug_typed: bool,
     #[cfg(target_os = "macos")]
@@ -1374,6 +1376,7 @@ impl App {
             confirm: None,
             duplicating: Vec::new(),
             allow_quit: false,
+            relaunch: None,
             debug_frames: 0,
             debug_typed: false,
             #[cfg(target_os = "macos")]
@@ -2413,7 +2416,12 @@ impl App {
                     }
                 }
             }
-            Some(false) => self.confirm = None,
+            Some(false) => {
+                if matches!(c, Confirm::Quit) {
+                    self.relaunch = None; // se canceló el cierre: no reiniciar
+                }
+                self.confirm = None;
+            }
             None => {}
         }
     }
@@ -2551,16 +2559,27 @@ impl App {
 impl eframe::App for App {
     fn on_exit(&mut self) {
         self.save_session(true);
+        if let Some(p) = self.relaunch.take() {
+            if let Err(e) = crate::update::relaunch_after_exit(&p) {
+                eprintln!("No se pudo abrir la versión nueva: {e}");
+            }
+        }
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
         // Cerrar la ventana con cambios sin guardar pide confirmación.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_quit {
-            if self.tabs.iter().any(|t| t.dirty() || t.save.is_some()) {
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if !self.allow_quit && self.tabs.iter().any(|t| t.dirty() || t.save.is_some()) {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
                 self.confirm = Some(Confirm::Quit);
+            } else if let Some(p) = self.relaunch.take() {
+                // Se cierra de verdad: el relanzador espera a que este proceso termine.
+                self.save_session(true);
+                if let Err(e) = crate::update::relaunch_after_exit(&p) {
+                    self.msg(format!("No se pudo abrir la versión nueva: {e}"));
+                }
             }
         }
 
@@ -3826,11 +3845,12 @@ impl App {
                     }
                     Stage::Done(p) => {
                         ui.strong(format!("✔ Instalada en {}", p.display()));
-                        let b = ui.add_enabled(!dirty, Button::new("⟳ Reiniciar ahora"));
-                        let b = if dirty { b.on_disabled_hover_text("Guarda o descarta los cambios abiertos antes de reiniciar") } else { b };
-                        restart = b.clicked();
+                        restart = ui
+                            .button("⟳ Reiniciar ahora")
+                            .on_hover_text("Cierra buscador y lo abre con la versión nueva (recupera los archivos abiertos)")
+                            .clicked();
                         if dirty {
-                            ui.weak("Hay cambios sin guardar: guárdalos antes de reiniciar.");
+                            ui.weak("Hay cambios sin guardar: al reiniciar se preguntará si descartarlos (o cancela y guárdalos).");
                         }
                     }
                     Stage::Failed(e) => {
@@ -3854,13 +3874,10 @@ impl App {
         }
         if restart {
             if let Stage::Done(p) = &stage {
-                match crate::update::relaunch(p) {
-                    Ok(_) => {
-                        self.allow_quit = true;
-                        ctx.send_viewport_cmd(ViewportCommand::Close);
-                    }
-                    Err(e) => self.msg(format!("No se pudo abrir la versión nueva: {e}")),
-                }
+                // Se cierra como siempre (con la confirmación si hay cambios) y la
+                // versión nueva se abre en `on_exit`, cuando esta ya terminó.
+                self.relaunch = Some(p.clone());
+                ctx.send_viewport_cmd(ViewportCommand::Close);
             }
         }
         let running = stage == Stage::Running;

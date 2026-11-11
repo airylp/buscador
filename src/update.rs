@@ -196,18 +196,64 @@ impl Updater {
     }
 }
 
-/// Abre la versión recién instalada (después hay que cerrar la actual).
-pub fn relaunch(installed: &std::path::Path) -> std::io::Result<()> {
-    if cfg!(target_os = "macos") {
-        Command::new("open").arg("-n").arg(installed).spawn().map(|_| ())
-    } else {
-        Command::new(installed).spawn().map(|_| ())
+/// Abre la versión recién instalada en cuanto termine este proceso: un `sh`
+/// aparte espera a que muera el PID actual (así no conviven las dos y la sesión
+/// ya está guardada) y entonces la abre. En macOS, con `open` y sin `-n`: abrir
+/// otra instancia del mismo .app mientras la vieja seguía viva no funcionaba.
+pub fn relaunch_after_exit(installed: &std::path::Path) -> std::io::Result<()> {
+    let open = if cfg!(target_os = "macos") { "exec open \"$2\"" } else { "exec \"$2\"" };
+    let script = format!("i=0; while kill -0 \"$1\" 2>/dev/null && [ $i -lt 150 ]; do sleep 0.2; i=$((i+1)); done; {open}");
+    let mut c = Command::new("/bin/sh");
+    c.arg("-c").arg(script).arg("sh").arg(std::process::id().to_string()).arg(installed);
+    c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0); // que no le lleguen las señales del grupo de la app
     }
+    c.spawn().map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// El relanzador espera a que termine el proceso y entonces abre el programa.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn relanzar_al_salir() {
+        let dir = std::env::temp_dir().join(format!("buscador-relanzar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (prog, marca) = (dir.join("nuevo.sh"), dir.join("abierto"));
+        std::fs::write(&prog, format!("#!/bin/sh\necho si > '{}'\n", marca.display())).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Un hijo hace de «app vieja»: relanza y sale a los 0.5 s.
+        let exe = std::env::current_exe().unwrap();
+        let mut viejo = Command::new(exe)
+            .args(["--exact", "update::tests::hijo_relanza", "--ignored", "--nocapture"])
+            .env("BUSCADOR_RELANZAR", &prog)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!marca.exists(), "se abrió antes de que terminara la vieja");
+        viejo.wait().unwrap();
+        let t = std::time::Instant::now();
+        while !marca.exists() && t.elapsed().as_secs() < 5 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(marca.exists(), "no se abrió la versión nueva");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn hijo_relanza() {
+        let Ok(p) = std::env::var("BUSCADOR_RELANZAR") else { return };
+        relaunch_after_exit(std::path::Path::new(&p)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(800));
+    }
 
     #[test]
     fn ansi_codes_removed() {
