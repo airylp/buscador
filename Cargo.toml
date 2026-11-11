@@ -1,0 +1,20 @@
+[package]
+name = "buscador"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chardetng = "1.0.0"
+eframe = "0.37"
+encoding_rs = "0.8.44"
+memchr = "2.8.3"
+memmap2 = "0.9.12"
+regex = "1.13.1"
+rfd = "0.17.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.dev.package."*"]
+opt-level = 2
