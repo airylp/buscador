@@ -1,10 +1,17 @@
 //! Interfaz gráfica (egui).
 
+use crate::buffer::{self, Buffer, Changed, EditKind, Pos};
 use crate::document::Document;
 use crate::encoding;
 use crate::search::{MAX_RESULTS, Params, Search};
-use eframe::egui::{text::LayoutJob, *};
+use eframe::egui::{
+    text::{CCursor, LayoutJob},
+    *,
+};
+use std::borrow::Cow;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Bytes máximos de una línea que se pintan (el resto se indica como truncado).
@@ -13,18 +20,44 @@ const MAX_DISPLAY_BYTES: usize = 16 * 1024;
 const MAX_DETAIL_BYTES: usize = 1 << 20;
 /// Límite de lo que se copia al portapapeles.
 const MAX_COPY_BYTES: usize = 256 << 20;
+/// Los archivos mayores se abren en solo lectura (la edición se activa con Ctrl+E).
+const EDIT_BY_DEFAULT_MAX: usize = 64 << 20;
+/// «Reemplazar todo» guarda en RAM cada línea modificada; por encima de esto se rechaza.
+const MAX_REPLACE_LINES: usize = 2_000_000;
+/// Tras una edición, se recomprueban como mucho estas líneas para la búsqueda.
+const MAX_RECHECK_LINES: u64 = 10_000;
+const TAB_WIDTH: usize = 4;
 const SCROLLBAR: f32 = 12.0;
+const MAC: bool = cfg!(target_os = "macos");
+
+struct SaveJob {
+    target: PathBuf,
+    progress: Arc<AtomicU64>,
+    total: u64,
+    result: Arc<Mutex<Option<Result<usize, String>>>>,
+}
 
 pub struct Tab {
     doc: Document,
+    /// Ediciones sobre el archivo; `None` mientras no se haya modificado nada.
+    buf: Option<Buffer>,
+    editable: bool,
     top: u64,
     scroll_frac: f32,
     hscroll: f32,
     content_width: f32,
-    anchor: Option<u64>,
-    cursor: Option<u64>,
+    anchor: Option<Pos>,
+    cursor: Option<Pos>,
+    /// Columna visual a mantener al subir/bajar.
+    goal: Option<usize>,
+    /// Hay que desplazar la vista para que se vea el cursor.
+    reveal: bool,
+    /// Texto en composición del IME (aún no confirmado).
+    preedit: String,
     search: Option<Search>,
     search_error: Option<String>,
+    /// La búsqueda no refleja las últimas ediciones.
+    search_stale: bool,
     /// Línea de la coincidencia actual.
     current: Option<u64>,
     /// Ir a la primera coincidencia en cuanto aparezca.
@@ -32,49 +65,177 @@ pub struct Tab {
     center_on: Option<u64>,
     results_top: u64,
     visible_rows: u64,
-    detail_cache: Option<(u64, String)>,
+    detail_cache: Option<(u64, u64, String)>,
+    save: Option<SaveJob>,
 }
 
 impl Tab {
     fn new(doc: Document) -> Self {
         Tab {
+            editable: doc.len() <= EDIT_BY_DEFAULT_MAX,
             doc,
+            buf: None,
             top: 0,
             scroll_frac: 0.0,
             hscroll: 0.0,
             content_width: 0.0,
             anchor: None,
             cursor: None,
+            goal: None,
+            reveal: false,
+            preedit: String::new(),
             search: None,
             search_error: None,
+            search_stale: false,
             current: None,
             pending_first: false,
             center_on: None,
             results_top: 0,
             visible_rows: 1,
             detail_cache: None,
+            save: None,
         }
     }
 
-    fn selection(&self) -> Option<(u64, u64)> {
+    // ---- Acceso al texto (editado o, si no hay cambios, el original) ----
+
+    fn total(&self) -> u64 {
+        match &self.buf {
+            Some(b) => b.line_count(),
+            None => self.doc.line_count(),
+        }
+    }
+
+    fn version(&self) -> u64 {
+        self.buf.as_ref().map_or(0, |b| b.version)
+    }
+
+    fn dirty(&self) -> bool {
+        self.buf.as_ref().is_some_and(|b| b.is_dirty())
+    }
+
+    fn line(&self, n: u64) -> String {
+        match &self.buf {
+            Some(b) => b.line(&self.doc, n),
+            None => self.doc.line_text(n),
+        }
+    }
+
+    fn line_len(&self, n: u64) -> usize {
+        self.line(n).len()
+    }
+
+    /// Líneas visibles: (nº, texto recortado a `cap` bytes, recortada).
+    fn rows(&self, first: u64, count: usize, cap: usize) -> Vec<(u64, String, bool)> {
+        match &self.buf {
+            Some(b) => b.rows(&self.doc, first, count, cap),
+            None => self
+                .doc
+                .lines(first, count)
+                .into_iter()
+                .map(|(n, s, e)| {
+                    let (t, tr) = self.doc.src.decode_capped(s, e, cap);
+                    (n, t, tr)
+                })
+                .collect(),
+        }
+    }
+
+    fn end_pos(&self) -> Pos {
+        let last = self.total().saturating_sub(1);
+        Pos::new(last, self.line_len(last))
+    }
+
+    /// Texto entre dos posiciones; `None` si supera `max` bytes.
+    fn text(&self, a: Pos, b: Pos, max: usize) -> Option<String> {
+        let mut out = String::new();
+        let mut n = a.line;
+        while n <= b.line {
+            let chunk = self.rows(n, ((b.line - n + 1) as usize).min(4096), usize::MAX);
+            if chunk.is_empty() {
+                break;
+            }
+            for (ln, t, _) in chunk {
+                let lo = if ln == a.line { buffer::floor_char(&t, a.col) } else { 0 };
+                let hi = if ln == b.line { buffer::floor_char(&t, b.col).max(lo) } else { t.len() };
+                if ln != a.line {
+                    out.push('\n');
+                }
+                out.push_str(&t[lo..hi]);
+                if out.len() > max {
+                    return None;
+                }
+                n = ln + 1;
+            }
+        }
+        Some(out)
+    }
+
+    // ---- Cursor y selección ----
+
+    fn selection(&self) -> Option<(Pos, Pos)> {
         let (a, c) = (self.anchor?, self.cursor?);
-        Some((a.min(c), a.max(c)))
+        if a == c { None } else { Some((a.min(c), a.max(c))) }
+    }
+
+    fn cursor_or_top(&self) -> Pos {
+        self.cursor.unwrap_or(Pos::new(self.top, 0))
+    }
+
+    fn set_cursor(&mut self, p: Pos, extend: bool) {
+        if !extend || self.anchor.is_none() {
+            self.anchor = Some(p);
+        }
+        self.cursor = Some(p);
+        self.reveal = true;
+    }
+
+    fn select(&mut self, a: Pos, b: Pos) {
+        self.anchor = Some(a);
+        self.cursor = Some(b);
+        self.goal = None;
+        self.reveal = true;
     }
 
     fn goto_line(&mut self, line: u64) {
-        self.anchor = Some(line);
-        self.cursor = Some(line);
+        let p = Pos::new(line, 0);
+        self.select(p, p);
+        self.center_on = Some(line);
+    }
+
+    /// Selecciona la coincidencia `m` (rango de bytes) de la línea `line`.
+    fn goto_match_at(&mut self, line: u64, m: (usize, usize)) {
+        self.current = Some(line);
+        self.select(Pos::new(line, m.0), Pos::new(line, m.1));
         self.center_on = Some(line);
     }
 
     fn goto_match(&mut self, line: u64) {
-        self.current = Some(line);
-        self.goto_line(line);
+        let t = self.line(line);
+        let m = self.search.as_ref().and_then(|s| s.highlight.find(&t)).map(|m| (m.start(), m.end()));
+        self.goto_match_at(line, m.unwrap_or((0, 0)));
     }
 
     fn next_match(&mut self) {
         let Some(s) = &self.search else { return };
-        let from = self.current.or(self.cursor).unwrap_or(self.top);
+        // Siguiente coincidencia en la misma línea.
+        let mut same_line = None;
+        if let Some(c) = self.cursor {
+            if s.index_of(c.line).is_some() {
+                let t = self.line(c.line);
+                let sel_is_match = |m: &regex::Match| m.start() == c.col && self.anchor.is_some_and(|a| a.col == m.end());
+                same_line = s
+                    .highlight
+                    .find_iter(&t)
+                    .find(|m| m.start() >= c.col && m.end() > m.start() && !sel_is_match(m))
+                    .map(|m| (c.line, (m.start(), m.end())));
+            }
+        }
+        if let Some((l, m)) = same_line {
+            self.goto_match_at(l, m);
+            return;
+        }
+        let from = self.current.or(self.cursor.map(|c| c.line)).unwrap_or(self.top);
         let inclusive = self.current.is_none() && self.cursor.is_none();
         let hit = s.next_after(from, inclusive).or_else(|| s.get(0).map(|l| (0, l)));
         if let Some((_, l)) = hit {
@@ -82,30 +243,439 @@ impl Tab {
         }
     }
 
+    /// Última coincidencia de la línea `l` que termina antes de `before`.
+    fn last_match_in(&self, l: u64, before: usize) -> Option<(usize, usize)> {
+        let s = self.search.as_ref()?;
+        let t = self.line(l);
+        s.highlight.find_iter(&t).filter(|m| m.end() <= before && m.end() > m.start()).last().map(|m| (m.start(), m.end()))
+    }
+
     fn prev_match(&mut self) {
         let Some(s) = &self.search else { return };
-        let from = self.current.or(self.cursor).unwrap_or(self.top);
+        let start = self.selection().map(|s| s.0).or(self.cursor);
+        if let Some(c) = start.filter(|c| s.index_of(c.line).is_some()) {
+            if let Some(m) = self.last_match_in(c.line, c.col) {
+                self.goto_match_at(c.line, m);
+                return;
+            }
+        }
+        let from = self.current.or(self.cursor.map(|c| c.line)).unwrap_or(self.top);
         let n = s.count();
         let hit = s.prev_before(from).or_else(|| n.checked_sub(1).and_then(|i| s.get(i).map(|l| (i, l))));
         if let Some((_, l)) = hit {
-            self.goto_match(l);
+            let m = self.last_match_in(l, usize::MAX);
+            self.goto_match_at(l, m.unwrap_or((0, 0)));
         }
     }
 
-    fn copy_selection(&self, ctx: &Context) -> String {
-        let Some((lo, hi)) = self.selection() else {
-            return "Nada seleccionado".into();
-        };
-        match self.doc.text_of_lines(lo, hi, MAX_COPY_BYTES) {
-            Some(t) => {
-                let n = hi - lo + 1;
-                let bytes = t.len();
-                ctx.copy_text(t);
-                format!("Copiadas {n} líneas ({})", human_size(bytes as u64))
-            }
-            None => format!("Selección demasiado grande (> {})", human_size(MAX_COPY_BYTES as u64)),
+    // ---- Movimiento ----
+
+    fn char_left(&self, p: Pos) -> Pos {
+        if p.col > 0 {
+            Pos::new(p.line, prev_boundary(&self.line(p.line), p.col))
+        } else if p.line > 0 {
+            Pos::new(p.line - 1, self.line_len(p.line - 1))
+        } else {
+            p
         }
     }
+
+    fn char_right(&self, p: Pos) -> Pos {
+        let t = self.line(p.line);
+        if p.col < t.len() {
+            Pos::new(p.line, next_boundary(&t, p.col))
+        } else if p.line + 1 < self.total() {
+            Pos::new(p.line + 1, 0)
+        } else {
+            p
+        }
+    }
+
+    fn word_left(&self, p: Pos) -> Pos {
+        if p.col == 0 { self.char_left(p) } else { Pos::new(p.line, word_left_in(&self.line(p.line), p.col)) }
+    }
+
+    fn word_right(&self, p: Pos) -> Pos {
+        let t = self.line(p.line);
+        if p.col >= t.len() { self.char_right(p) } else { Pos::new(p.line, word_right_in(&t, p.col)) }
+    }
+
+    /// Mueve `delta` líneas manteniendo la columna visual.
+    fn vertical(&self, p: Pos, delta: i64) -> (Pos, Option<usize>) {
+        let last = self.total().saturating_sub(1);
+        let goal = self.goal.unwrap_or_else(|| disp_col(&self.line(p.line), p.col));
+        let line = add_signed(p.line, delta).min(last);
+        if line == p.line {
+            // En el borde del documento: ir al inicio/fin.
+            return (if delta < 0 { Pos::new(line, 0) } else { Pos::new(line, self.line_len(line)) }, None);
+        }
+        (Pos::new(line, col_from_disp(&self.line(line), goal)), Some(goal))
+    }
+
+    // ---- Edición ----
+
+    fn can_edit(&mut self) -> Result<(), String> {
+        if !self.editable {
+            return Err("Solo lectura: pulsa «Editar» (Ctrl+E) para modificar".into());
+        }
+        if self.save.is_some() {
+            return Err("Guardando… espera a que termine".into());
+        }
+        if self.buf.is_none() {
+            if !self.doc.indexing_done() {
+                return Err("Espera a que termine de indexar para editar".into());
+            }
+            self.buf = Some(Buffer::new(&self.doc));
+        }
+        Ok(())
+    }
+
+    fn replace_range(&mut self, a: Pos, b: Pos, text: &str, kind: EditKind) -> Result<(), String> {
+        self.can_edit()?;
+        let before = (self.anchor.unwrap_or(a), self.cursor.unwrap_or(b));
+        let buf = self.buf.as_mut().unwrap();
+        let (end, ch) = buf.replace(&self.doc, a, b, text, kind, before)?;
+        self.select(end, end);
+        self.after_change(ch);
+        Ok(())
+    }
+
+    fn insert(&mut self, text: &str, kind: EditKind) -> Result<(), String> {
+        let (a, b) = self.selection().unwrap_or_else(|| {
+            let c = self.cursor_or_top();
+            (c, c)
+        });
+        let kind = if a != b || text.contains('\n') { EditKind::Other } else { kind };
+        self.replace_range(a, b, text, kind)
+    }
+
+    fn delete(&mut self, forward: bool, word: bool) -> Result<(), String> {
+        self.can_edit()?;
+        if let Some((a, b)) = self.selection() {
+            return self.replace_range(a, b, "", EditKind::Other);
+        }
+        let c = self.cursor_or_top();
+        let o = match (forward, word) {
+            (false, false) => self.char_left(c),
+            (false, true) => self.word_left(c),
+            (true, false) => self.char_right(c),
+            (true, true) => self.word_right(c),
+        };
+        if o == c {
+            return Ok(());
+        }
+        self.replace_range(o.min(c), o.max(c), "", EditKind::Deleting)
+    }
+
+    fn undo_redo(&mut self, redo: bool) -> Result<(), String> {
+        self.can_edit()?;
+        let now = (self.anchor.unwrap_or_default(), self.cursor.unwrap_or_default());
+        let buf = self.buf.as_mut().unwrap();
+        let r = if redo { buf.redo(now) } else { buf.undo(now) };
+        let Some(((a, c), ch)) = r else {
+            return Err(if redo { "Nada que rehacer" } else { "Nada que deshacer" }.into());
+        };
+        self.select(a, c);
+        self.center_on = Some(c.line);
+        self.after_change(ch);
+        Ok(())
+    }
+
+    /// Mantiene la búsqueda al día tras un cambio sin volver a recorrer el archivo.
+    fn after_change(&mut self, ch: Changed) {
+        self.detail_cache = None;
+        let Some(s) = &self.search else { return };
+        if !s.is_done() || ch.inserted > MAX_RECHECK_LINES {
+            self.search_stale = true;
+            return;
+        }
+        let (buf, doc) = (self.buf.as_ref().unwrap(), &self.doc);
+        s.adjust(ch.at, ch.removed, ch.inserted, |n| s.highlight.is_match(&buf.line(doc, n)));
+        if let Some(c) = self.current {
+            if c >= ch.at {
+                self.current = if c < ch.at + ch.removed { None } else { Some(c - ch.removed + ch.inserted) };
+            }
+        }
+    }
+
+    fn copy(&self, ctx: &Context) -> String {
+        let (a, b) = match self.selection() {
+            Some(s) => s,
+            None => {
+                let Some(c) = self.cursor else { return "Nada seleccionado".into() };
+                (Pos::new(c.line, 0), Pos::new(c.line, usize::MAX))
+            }
+        };
+        match self.text(a, b, MAX_COPY_BYTES) {
+            Some(t) => {
+                let msg = format!("Copiado: {}", describe_span(a, b, t.len()));
+                ctx.copy_text(t);
+                msg
+            }
+            None => format!("Selección demasiado grande para copiar (> {})", human_size(MAX_COPY_BYTES as u64)),
+        }
+    }
+
+    fn cut(&mut self, ctx: &Context) -> Result<String, String> {
+        self.can_edit()?;
+        let (a, b) = match self.selection() {
+            Some(s) => s,
+            None => {
+                // Sin selección: cortar la línea entera.
+                let c = self.cursor_or_top();
+                if c.line + 1 < self.total() {
+                    (Pos::new(c.line, 0), Pos::new(c.line + 1, 0))
+                } else if c.line > 0 {
+                    (Pos::new(c.line - 1, self.line_len(c.line - 1)), Pos::new(c.line, self.line_len(c.line)))
+                } else {
+                    (Pos::new(0, 0), Pos::new(0, self.line_len(0)))
+                }
+            }
+        };
+        let t = self.text(a, b, MAX_COPY_BYTES).ok_or("Selección demasiado grande para cortar")?;
+        let msg = format!("Cortado: {}", describe_span(a, b, t.len()));
+        ctx.copy_text(t);
+        self.replace_range(a, b, "", EditKind::Other)?;
+        Ok(msg)
+    }
+
+    // ---- Reemplazar ----
+
+    fn replace_current(&mut self, repl: &str, regex_mode: bool) -> Result<(), String> {
+        let Some(s) = &self.search else { return Err("Busca algo primero".into()) };
+        if let Some((a, b)) = self.selection().filter(|(a, b)| a.line == b.line) {
+            let t = self.line(a.line);
+            let sel = &t[buffer::floor_char(&t, a.col)..buffer::floor_char(&t, b.col)];
+            let new = s.highlight.captures(sel).filter(|c| c.get(0).unwrap().as_str().len() == sel.len()).map(|caps| {
+                if regex_mode {
+                    let mut out = String::new();
+                    caps.expand(repl, &mut out);
+                    out
+                } else {
+                    repl.to_string()
+                }
+            });
+            if let Some(new) = new {
+                self.replace_range(a, b, &new, EditKind::Other)?;
+            }
+        }
+        self.next_match();
+        Ok(())
+    }
+
+    fn replace_all(&mut self, repl: &str, regex_mode: bool) -> Result<String, String> {
+        let Some(s) = &self.search else { return Err("Busca algo primero".into()) };
+        if !s.is_done() {
+            return Err("Espera a que termine la búsqueda".into());
+        }
+        if self.search_stale {
+            return Err("La búsqueda está desactualizada: pulsa Enter en «Buscar» para repetirla".into());
+        }
+        if s.truncated.load(Ordering::Relaxed) || s.count() > MAX_REPLACE_LINES {
+            return Err(format!("Demasiadas líneas para reemplazar de una vez (máx. {})", fmt_num(MAX_REPLACE_LINES as u64)));
+        }
+        let lines = s.results.lock().unwrap().clone();
+        let re = s.highlight.clone();
+        self.can_edit()?;
+        let cur = (self.anchor.unwrap_or_default(), self.cursor.unwrap_or_default());
+        let buf = self.buf.as_mut().unwrap();
+        let n = buf.replace_lines(&self.doc, &lines, cur, |t| {
+            let r = if regex_mode { re.replace_all(t, repl) } else { re.replace_all(t, regex::NoExpand(repl)) };
+            match r {
+                Cow::Owned(o) if o != t => Some(o),
+                _ => None,
+            }
+        })?;
+        self.detail_cache = None;
+        if n > 0 {
+            self.search_stale = true;
+            self.current = None;
+        }
+        Ok(format!("Reemplazado en {} líneas (Ctrl+Z para deshacer)", fmt_num(n as u64)))
+    }
+
+    // ---- Guardar ----
+
+    fn start_save(&mut self, target: PathBuf) -> Result<(), String> {
+        if self.save.is_some() {
+            return Err("Ya se está guardando".into());
+        }
+        let same = target == self.doc.path;
+        if self.buf.is_none() {
+            if same {
+                return Err("No hay cambios que guardar".into());
+            }
+            if !self.doc.indexing_done() {
+                return Err("Espera a que termine de indexar".into());
+            }
+            self.buf = Some(Buffer::new(&self.doc));
+        }
+        let buf = self.buf.as_ref().unwrap();
+        if same && !buf.is_dirty() {
+            return Err("No hay cambios que guardar".into());
+        }
+        let (pieces, src, index, nl) = (buf.snapshot(), self.doc.src.clone(), self.doc.index.clone(), self.doc.newline_bytes());
+        let job = SaveJob {
+            target: target.clone(),
+            progress: Default::default(),
+            total: self.doc.len() as u64,
+            result: Default::default(),
+        };
+        let (progress, result) = (job.progress.clone(), job.result.clone());
+        std::thread::Builder::new()
+            .name("save".into())
+            .spawn(move || {
+                let r = buffer::save_file(&pieces, &src, &index, &nl, &target, &progress, &AtomicBool::new(false));
+                *result.lock().unwrap() = Some(r);
+            })
+            .map_err(|e| e.to_string())?;
+        self.save = Some(job);
+        Ok(())
+    }
+
+    /// Si terminó un guardado, reabre el archivo nuevo (libera la RAM de las
+    /// ediciones; el historial de deshacer se reinicia).
+    fn poll_save(&mut self) -> Option<String> {
+        let job = self.save.as_ref()?;
+        let r = job.result.lock().unwrap().take()?;
+        let target = job.target.clone();
+        self.save = None;
+        Some(match r {
+            Ok(lossy) => {
+                let enc = self.doc.src.encoding;
+                match Document::open(&target) {
+                    Ok(mut doc) => {
+                        if doc.src.encoding != enc {
+                            doc.set_encoding(enc);
+                        }
+                        self.doc = doc;
+                        self.buf = None;
+                        self.detail_cache = None;
+                        let mut m = format!("Guardado {} ({})", self.doc.name, human_size(self.doc.len() as u64));
+                        if lossy > 0 {
+                            m += &format!(" · {lossy} caracteres no representables se guardaron como «?»");
+                        }
+                        m
+                    }
+                    Err(e) => format!("Guardado, pero no se pudo reabrir: {e}"),
+                }
+            }
+            Err(e) => format!("Error al guardar: {e}"),
+        })
+    }
+
+    // ---- Teclado ----
+
+    fn handle_key(&mut self, key: Key, m: Modifiers, page: i64) -> Result<(), String> {
+        let word = if MAC { m.alt } else { m.ctrl };
+        let shift = m.shift;
+        if self.total() == 0 {
+            return Ok(());
+        }
+        let c = self.cursor_or_top();
+        let sel = self.selection();
+        let mut goal = None;
+        let target = match key {
+            Key::ArrowLeft if MAC && m.command => Some(Pos::new(c.line, 0)),
+            Key::ArrowRight if MAC && m.command => Some(Pos::new(c.line, self.line_len(c.line))),
+            Key::ArrowUp if MAC && m.command => Some(Pos::default()),
+            Key::ArrowDown if MAC && m.command => Some(self.end_pos()),
+            Key::ArrowLeft => Some(match sel {
+                Some((a, _)) if !shift => a,
+                _ if word => self.word_left(c),
+                _ => self.char_left(c),
+            }),
+            Key::ArrowRight => Some(match sel {
+                Some((_, b)) if !shift => b,
+                _ if word => self.word_right(c),
+                _ => self.char_right(c),
+            }),
+            Key::ArrowUp | Key::ArrowDown | Key::PageUp | Key::PageDown => {
+                let d = match key {
+                    Key::ArrowUp => -1,
+                    Key::ArrowDown => 1,
+                    Key::PageUp => -page,
+                    _ => page,
+                };
+                if matches!(key, Key::PageUp | Key::PageDown) {
+                    self.top = add_signed(self.top, d);
+                }
+                let (p, g) = self.vertical(c, d);
+                goal = g;
+                Some(p)
+            }
+            Key::Home if m.command => Some(Pos::default()),
+            Key::End if m.command => Some(self.end_pos()),
+            Key::Home => {
+                // Inicio «inteligente»: primero tras la sangría, luego columna 0.
+                let t = self.line(c.line);
+                let indent = t.len() - t.trim_start().len();
+                Some(Pos::new(c.line, if c.col == indent { 0 } else { indent }))
+            }
+            Key::End => Some(Pos::new(c.line, self.line_len(c.line))),
+            Key::A if m.command => {
+                self.select(Pos::default(), self.end_pos());
+                self.reveal = false;
+                return Ok(());
+            }
+            Key::Z if m.command => return self.undo_redo(shift),
+            Key::Y if m.command && !MAC => return self.undo_redo(true),
+            Key::Enter if !m.command => return self.insert("\n", EditKind::Other),
+            Key::Tab if !m.command && !m.ctrl => return self.insert("\t", EditKind::Typing),
+            Key::Backspace => return self.delete(false, word),
+            Key::Delete => return self.delete(true, word),
+            Key::Escape => {
+                self.anchor = self.cursor;
+                return Ok(());
+            }
+            _ => None,
+        };
+        if let Some(t) = target {
+            self.set_cursor(t, shift);
+            self.goal = goal;
+        }
+        Ok(())
+    }
+
+    /// Procesa los eventos de teclado/IME/portapapeles con el foco en la vista.
+    fn handle_events(&mut self, ctx: &Context, page: i64) -> Option<String> {
+        let events = ctx.input(|i| i.events.clone());
+        let mut msg = None;
+        for ev in events {
+            let r: Result<(), String> = match ev {
+                Event::Text(t) => {
+                    self.preedit.clear();
+                    self.insert(&t, EditKind::Typing)
+                }
+                Event::Ime(ImeEvent::Preedit { text, .. }) => {
+                    self.preedit = text;
+                    Ok(())
+                }
+                Event::Ime(ImeEvent::Commit(t)) => {
+                    self.preedit.clear();
+                    if t.is_empty() || t == "\n" || t == "\r" { Ok(()) } else { self.insert(&t, EditKind::Typing) }
+                }
+                Event::Paste(t) => self.insert(&t, EditKind::Other),
+                Event::Copy => {
+                    msg = Some(self.copy(ctx));
+                    Ok(())
+                }
+                Event::Cut => self.cut(ctx).map(|m| msg = Some(m)),
+                Event::Key { key, pressed: true, modifiers, .. } => self.handle_key(key, modifiers, page),
+                _ => Ok(()),
+            };
+            if let Err(e) = r {
+                msg = Some(e);
+            }
+        }
+        msg
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Confirm {
+    CloseTab(usize),
+    Quit,
 }
 
 pub struct App {
@@ -114,7 +684,9 @@ pub struct App {
     show_sidebar: bool,
     show_results: bool,
     show_detail: bool,
+    show_replace: bool,
     query: String,
+    replacement: String,
     use_regex: bool,
     case_sensitive: bool,
     goto: String,
@@ -122,7 +694,11 @@ pub struct App {
     message: Option<(String, Instant)>,
     focus_search: bool,
     focus_goto: bool,
+    focus_view: bool,
+    confirm: Option<Confirm>,
+    allow_quit: bool,
     debug_frames: u64,
+    debug_typed: bool,
 }
 
 impl App {
@@ -134,7 +710,9 @@ impl App {
             show_sidebar: true,
             show_results: true,
             show_detail: false,
+            show_replace: false,
             query: String::new(),
+            replacement: String::new(),
             use_regex: false,
             case_sensitive: false,
             goto: String::new(),
@@ -142,7 +720,11 @@ impl App {
             message: None,
             focus_search: false,
             focus_goto: false,
+            focus_view: false,
+            confirm: None,
+            allow_quit: false,
             debug_frames: 0,
+            debug_typed: false,
         };
         for f in files {
             app.open(f);
@@ -159,13 +741,14 @@ impl App {
             Ok(doc) => {
                 self.tabs.push(Tab::new(doc));
                 self.active = self.tabs.len() - 1;
+                self.focus_view = true;
             }
             Err(e) => self.msg(format!("No se pudo abrir {}: {e}", path.display())),
         }
     }
 
     fn open_dialog(&mut self) {
-        if let Some(files) = rfd::FileDialog::new().set_title("Abrir logs").pick_files() {
+        if let Some(files) = rfd::FileDialog::new().set_title("Abrir archivos").pick_files() {
             for f in files {
                 self.open(f);
             }
@@ -193,14 +776,16 @@ impl App {
             tab.current = None;
             return;
         }
-        if tab.search.as_ref().is_some_and(|s| s.params == params) {
+        if !tab.search_stale && tab.search.as_ref().is_some_and(|s| s.params == params) {
             tab.next_match();
             return;
         }
-        match Search::start(tab.doc.src.clone(), params) {
+        let edits = tab.buf.as_ref().map(|b| (b.snapshot(), tab.doc.index.clone()));
+        match Search::start(tab.doc.src.clone(), edits, params) {
             Ok(s) => {
                 tab.search = Some(s);
                 tab.search_error = None;
+                tab.search_stale = false;
                 tab.current = None;
                 tab.results_top = 0;
                 tab.pending_first = true;
@@ -213,18 +798,74 @@ impl App {
         }
     }
 
-    fn close_tab(&mut self, i: usize) {
-        if i < self.tabs.len() {
-            self.tabs.remove(i);
-            if self.active >= self.tabs.len() {
-                self.active = self.tabs.len().saturating_sub(1);
+    fn close_tab(&mut self, i: usize, force: bool) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        if !force && (self.tabs[i].dirty() || self.tabs[i].save.is_some()) {
+            self.active = i;
+            self.confirm = Some(Confirm::CloseTab(i));
+            return;
+        }
+        self.tabs.remove(i);
+        if self.active >= self.tabs.len() {
+            self.active = self.tabs.len().saturating_sub(1);
+        }
+    }
+
+    fn toggle_edit(&mut self) {
+        let Some(t) = self.tabs.get_mut(self.active) else { return };
+        t.editable = !t.editable;
+        let m = if t.editable {
+            if t.doc.len() > EDIT_BY_DEFAULT_MAX {
+                format!(
+                    "Edición activada. Las líneas que cambies se guardan en RAM; al guardar se escribe una copia completa ({}) y se renombra",
+                    human_size(t.doc.len() as u64)
+                )
+            } else {
+                "Edición activada".to_string()
             }
+        } else {
+            "Solo lectura".to_string()
+        };
+        self.msg(m);
+        self.focus_view = true;
+    }
+
+    fn save(&mut self, save_as: bool) {
+        let Some(t) = self.tabs.get_mut(self.active) else { return };
+        let target = if save_as {
+            let mut d = rfd::FileDialog::new().set_title("Guardar como").set_file_name(&t.doc.name);
+            if let Some(dir) = t.doc.path.parent() {
+                d = d.set_directory(dir);
+            }
+            match d.save_file() {
+                Some(p) => p,
+                None => return,
+            }
+        } else {
+            t.doc.path.clone()
+        };
+        if let Err(e) = t.start_save(target) {
+            self.msg(e);
         }
     }
 
     fn handle_shortcuts(&mut self, ctx: &Context) {
         let sc = |m, k| KeyboardShortcut::new(m, k);
         let pressed = |s: KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(&s));
+        // Las combinaciones con más modificadores van primero (consume_shortcut
+        // ignora modificadores de más).
+        if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::S)) {
+            self.save(true);
+        } else if pressed(sc(Modifiers::COMMAND, Key::S)) {
+            self.save(false);
+        }
+        let replace_key = if MAC { sc(Modifiers::COMMAND | Modifiers::ALT, Key::F) } else { sc(Modifiers::COMMAND, Key::H) };
+        if pressed(replace_key) {
+            self.show_replace = true;
+            self.focus_search = true;
+        }
         if pressed(sc(Modifiers::COMMAND, Key::O)) {
             self.open_dialog();
         }
@@ -237,8 +878,11 @@ impl App {
         if pressed(sc(Modifiers::COMMAND, Key::B)) {
             self.show_sidebar = !self.show_sidebar;
         }
+        if pressed(sc(Modifiers::COMMAND, Key::E)) {
+            self.toggle_edit();
+        }
         if pressed(sc(Modifiers::COMMAND, Key::W)) {
-            self.close_tab(self.active);
+            self.close_tab(self.active, false);
         }
         if pressed(sc(Modifiers::COMMAND, Key::Plus)) || pressed(sc(Modifiers::COMMAND, Key::Equals)) {
             self.font_size = (self.font_size + 1.0).min(40.0);
@@ -272,12 +916,41 @@ impl App {
             if ui.button("Abrir…").on_hover_text("Ctrl+O · también puedes arrastrar archivos").clicked() {
                 self.open_dialog();
             }
+            let has_tab = !self.tabs.is_empty();
+            let (editable, dirty, can_undo, can_redo) = self.tabs.get(self.active).map_or((false, false, false, false), |t| {
+                (
+                    t.editable,
+                    t.dirty(),
+                    t.buf.as_ref().is_some_and(|b| b.can_undo()),
+                    t.buf.as_ref().is_some_and(|b| b.can_redo()),
+                )
+            });
+            if ui
+                .add_enabled(has_tab, Button::selectable(editable, "Editar"))
+                .on_hover_text("Activar/desactivar edición (Ctrl+E)")
+                .clicked()
+            {
+                self.toggle_edit();
+            }
+            if ui.add_enabled(dirty, Button::new("Guardar")).on_hover_text("Ctrl+S · Guardar como: Ctrl+Shift+S").clicked() {
+                self.save(false);
+            }
+            if ui.add_enabled(can_undo && editable, Button::new("↶")).on_hover_text("Deshacer (Ctrl+Z)").clicked() {
+                if let Some(Err(e)) = self.tab().map(|t| t.undo_redo(false)) {
+                    self.msg(e);
+                }
+            }
+            if ui.add_enabled(can_redo && editable, Button::new("↷")).on_hover_text("Rehacer (Ctrl+Shift+Z)").clicked() {
+                if let Some(Err(e)) = self.tab().map(|t| t.undo_redo(true)) {
+                    self.msg(e);
+                }
+            }
             ui.separator();
 
             ui.label("Buscar:");
             let r = ui.add(
                 TextEdit::singleline(&mut self.query)
-                    .desired_width(280.0)
+                    .desired_width(260.0)
                     .hint_text("texto o regex  (Ctrl+F, Enter, F3)")
                     .font(TextStyle::Monospace),
             );
@@ -300,7 +973,6 @@ impl App {
             if ui.button("Buscar").clicked() {
                 self.search_or_next();
             }
-            let has_tab = !self.tabs.is_empty();
             if ui.add_enabled(has_tab, Button::new("◀")).on_hover_text("Anterior (Shift+F3)").clicked() {
                 if let Some(t) = self.tab() {
                     t.prev_match();
@@ -311,23 +983,28 @@ impl App {
                     t.next_match();
                 }
             }
+            let rk = if MAC { "Cmd+Alt+F" } else { "Ctrl+H" };
+            ui.toggle_value(&mut self.show_replace, "Reemplazar…").on_hover_text(rk);
             if let Some(t) = self.tabs.get(self.active) {
                 if let Some(e) = &t.search_error {
                     ui.colored_label(ui.visuals().error_fg_color, format!("Regex inválida: {e}"));
                 } else if let Some(s) = &t.search {
                     let n = s.count();
                     let pos = t.current.and_then(|l| s.index_of(l)).map(|i| format!("{}/", i + 1)).unwrap_or_default();
-                    let mut txt = format!("{pos}{} coincidencias", fmt_num(n as u64));
-                    if s.truncated.load(std::sync::atomic::Ordering::Relaxed) {
+                    let mut txt = format!("{pos}{} líneas", fmt_num(n as u64));
+                    if s.truncated.load(Ordering::Relaxed) {
                         txt += &format!(" (límite {})", fmt_num(MAX_RESULTS as u64));
                     }
                     if !s.is_done() {
-                        let p = s.progress.load(std::sync::atomic::Ordering::Relaxed) as f64 / s.total.max(1) as f64;
+                        let p = s.progress.load(Ordering::Relaxed) as f64 / s.total.max(1) as f64;
                         txt += &format!(" · buscando {:.0}%", p * 100.0);
                     } else {
                         txt += &format!(" · {:.2}s", s.elapsed.lock().unwrap().as_secs_f32());
                     }
                     ui.label(txt);
+                    if t.search_stale {
+                        ui.colored_label(ui.visuals().warn_fg_color, "desactualizada (Enter para repetir)");
+                    }
                 }
             }
             ui.separator();
@@ -341,12 +1018,14 @@ impl App {
             if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                 let n: Option<u64> = self.goto.trim().replace(['.', ',', '_'], "").parse().ok();
                 if let (Some(n), Some(t)) = (n, self.tabs.get_mut(self.active)) {
-                    let last = t.doc.line_count().saturating_sub(1);
+                    let last = t.total().saturating_sub(1);
                     t.goto_line(n.saturating_sub(1).min(last));
+                    self.focus_view = true;
                 }
             }
             ui.separator();
 
+            let mut msg = None;
             if let Some(t) = self.tabs.get_mut(self.active) {
                 let mut enc = t.doc.src.encoding;
                 ComboBox::from_id_salt("encoding")
@@ -358,14 +1037,22 @@ impl App {
                         }
                     })
                     .response
-                    .on_hover_text("Encoding del archivo");
+                    .on_hover_text("Encoding con el que se lee el archivo");
                 if enc != t.doc.src.encoding {
-                    t.doc.set_encoding(enc);
-                    t.search = None;
-                    t.current = None;
-                    t.detail_cache = None;
-                    t.content_width = 0.0;
+                    if t.dirty() || t.save.is_some() {
+                        msg = Some("Guarda o deshaz los cambios antes de reabrir con otro encoding");
+                    } else {
+                        t.buf = None;
+                        t.doc.set_encoding(enc);
+                        t.search = None;
+                        t.current = None;
+                        t.detail_cache = None;
+                        t.content_width = 0.0;
+                    }
                 }
+            }
+            if let Some(m) = msg {
+                self.msg(m);
             }
             ui.separator();
             ui.toggle_value(&mut self.show_results, "Resultados");
@@ -377,6 +1064,36 @@ impl App {
                 self.font_size = (self.font_size + 1.0).min(40.0);
             }
         });
+        if self.show_replace {
+            ui.horizontal(|ui| {
+                ui.label("Reemplazar por:");
+                let r = ui.add(
+                    TextEdit::singleline(&mut self.replacement)
+                        .desired_width(260.0)
+                        .hint_text(if self.use_regex { "texto ($1, $2… para grupos)" } else { "texto" })
+                        .font(TextStyle::Monospace),
+                );
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                let (repl, re) = (self.replacement.clone(), self.use_regex);
+                if ui.button("Reemplazar").on_hover_text("Reemplaza la coincidencia seleccionada y va a la siguiente").clicked() || enter
+                {
+                    if let Some(Err(e)) = self.tab().map(|t| t.replace_current(&repl, re)) {
+                        self.msg(e);
+                    }
+                    if enter {
+                        r.request_focus();
+                    }
+                }
+                if ui.button("Reemplazar todo").on_hover_text("En todas las líneas encontradas · se deshace con Ctrl+Z").clicked() {
+                    if let Some(r) = self.tab().map(|t| t.replace_all(&repl, re)) {
+                        self.msg(r.unwrap_or_else(|e| e));
+                    }
+                }
+                if ui.small_button("×").clicked() {
+                    self.show_replace = false;
+                }
+            });
+        }
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
@@ -394,26 +1111,28 @@ impl App {
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (i, t) in self.tabs.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    if ui.small_button("✕").on_hover_text("Cerrar (Ctrl+W)").clicked() {
+                    if ui.small_button("×").on_hover_text("Cerrar (Ctrl+W)").clicked() {
                         close = Some(i);
                     }
-                    let r = ui.selectable_label(i == self.active, RichText::new(&t.doc.name).strong());
+                    let name = if t.dirty() { format!("● {}", t.doc.name) } else { t.doc.name.clone() };
+                    let r = ui.selectable_label(i == self.active, RichText::new(name).strong());
                     if r.on_hover_text(t.doc.path.display().to_string()).clicked() {
                         self.active = i;
                     }
                 });
                 let idx = if t.doc.indexing_done() {
-                    format!("{} líneas", fmt_num(t.doc.line_count()))
+                    format!("{} líneas", fmt_num(t.total()))
                 } else {
-                    let p = t.doc.progress.load(std::sync::atomic::Ordering::Relaxed) as f64 / t.doc.len().max(1) as f64;
+                    let p = t.doc.progress.load(Ordering::Relaxed) as f64 / t.doc.len().max(1) as f64;
                     format!("indexando {:.0}%", p * 100.0)
                 };
                 ui.label(
                     RichText::new(format!(
-                        "   {} · {} · {}",
+                        "   {} · {} · {}{}",
                         human_size(t.doc.len() as u64),
                         t.doc.src.encoding.name(),
-                        idx
+                        idx,
+                        if t.editable { "" } else { " · solo lectura" }
                     ))
                     .small()
                     .weak(),
@@ -425,7 +1144,7 @@ impl App {
             }
         });
         if let Some(i) = close {
-            self.close_tab(i);
+            self.close_tab(i, false);
         }
     }
 
@@ -433,40 +1152,105 @@ impl App {
         ui.horizontal(|ui| {
             if let Some(t) = self.tabs.get(self.active) {
                 let d = &t.doc;
+                ui.label(RichText::new(if t.editable { "EDICIÓN" } else { "SOLO LECTURA" }).small().strong());
+                ui.separator();
                 ui.label(RichText::new(d.path.display().to_string()).small());
                 ui.separator();
                 ui.label(RichText::new(human_size(d.len() as u64)).small());
                 ui.separator();
                 ui.label(RichText::new(format!("{} ({})", encoding::label(d.src.encoding), d.detect_reason)).small());
                 ui.separator();
-                let lines = fmt_num(d.line_count());
+                let lines = fmt_num(t.total());
                 if d.indexing_done() {
                     ui.label(RichText::new(format!("{lines} líneas")).small());
                 } else {
-                    let p = d.progress.load(std::sync::atomic::Ordering::Relaxed) as f32 / d.len().max(1) as f32;
+                    let p = d.progress.load(Ordering::Relaxed) as f32 / d.len().max(1) as f32;
                     ui.add(ProgressBar::new(p).desired_width(120.0).text(format!("indexando… {lines} líneas")));
                 }
-                if let Some((lo, hi)) = t.selection() {
+                if let Some(c) = t.cursor {
                     ui.separator();
-                    ui.label(
-                        RichText::new(format!("Línea {} · {} seleccionadas", fmt_num(t.cursor.unwrap_or(lo) + 1), fmt_num(hi - lo + 1)))
-                            .small(),
-                    );
+                    let line = t.rows(c.line, 1, c.col.max(1)).into_iter().next().map(|r| r.1).unwrap_or_default();
+                    let col = line[..buffer::floor_char(&line, c.col)].chars().count() + 1;
+                    let mut s = format!("Lín {}, Col {}", fmt_num(c.line + 1), fmt_num(col as u64));
+                    if let Some((a, b)) = t.selection() {
+                        s += &if a.line == b.line {
+                            format!(" · {} seleccionados", fmt_num((b.col - a.col) as u64))
+                        } else {
+                            format!(" · {} líneas seleccionadas", fmt_num(b.line - a.line + 1))
+                        };
+                    }
+                    ui.label(RichText::new(s).small());
+                }
+                if let Some(b) = &t.buf {
+                    if b.is_dirty() {
+                        ui.separator();
+                        let (pieces, bytes) = b.memory();
+                        ui.label(RichText::new("● sin guardar").small().color(ui.visuals().warn_fg_color)).on_hover_text(format!(
+                            "{} piezas · {} de texto editado en RAM",
+                            fmt_num(pieces as u64),
+                            human_size(bytes as u64)
+                        ));
+                    }
+                }
+                if let Some(job) = &t.save {
+                    ui.separator();
+                    let p = job.progress.load(Ordering::Relaxed) as f32 / job.total.max(1) as f32;
+                    ui.add(ProgressBar::new(p.min(1.0)).desired_width(140.0).text("guardando…"));
                 }
             }
             if let Some((m, t)) = &self.message {
-                if t.elapsed() < Duration::from_secs(5) {
+                if t.elapsed() < Duration::from_secs(6) {
                     ui.separator();
                     ui.label(RichText::new(m).small().color(ui.visuals().warn_fg_color));
                 }
             }
         });
     }
+
+    fn confirm_dialog(&mut self, ctx: &Context) {
+        let Some(c) = self.confirm else { return };
+        let names: Vec<String> = match c {
+            Confirm::CloseTab(i) => self.tabs.get(i).map(|t| t.doc.name.clone()).into_iter().collect(),
+            Confirm::Quit => self.tabs.iter().filter(|t| t.dirty() || t.save.is_some()).map(|t| t.doc.name.clone()).collect(),
+        };
+        let mut choice = None;
+        Modal::new(Id::NULL.with("confirm")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading("Cambios sin guardar");
+            ui.add_space(6.0);
+            ui.label(format!("Hay cambios sin guardar en: {}", names.join(", ")));
+            ui.label("Si continúas se perderán. Para conservarlos, cancela y pulsa Ctrl+S.");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Descartar cambios").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancelar").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                    choice = Some(false);
+                }
+            });
+        });
+        match choice {
+            Some(true) => {
+                self.confirm = None;
+                match c {
+                    Confirm::CloseTab(i) => self.close_tab(i, true),
+                    Confirm::Quit => {
+                        self.allow_quit = true;
+                        ctx.send_viewport_cmd(ViewportCommand::Close);
+                    }
+                }
+            }
+            Some(false) => self.confirm = None,
+            None => {}
+        }
+    }
 }
 
 impl App {
-    /// Depuración: BUSCADOR_SCREENSHOT=ruta.rgba [BUSCADOR_QUERY=texto] guarda una
-    /// captura cruda (ancho, alto u32 LE + RGBA) cuando todo está listo y sale.
+    /// Depuración: BUSCADOR_SCREENSHOT=ruta.rgba [BUSCADOR_QUERY=texto]
+    /// [BUSCADOR_TYPE=texto a teclear en la línea 2] guarda una captura cruda
+    /// (ancho, alto u32 LE + RGBA) cuando todo está listo y sale.
     fn debug_screenshot(&mut self, ctx: &Context, busy: bool) {
         let Ok(path) = std::env::var("BUSCADOR_SCREENSHOT") else { return };
         self.debug_frames += 1;
@@ -477,11 +1261,28 @@ impl App {
                 self.search_or_next();
             }
         }
-        if self.debug_frames < 40 || busy {
+        let indexed = self.tabs.get(self.active).is_some_and(|t| t.doc.indexing_done());
+        if self.debug_frames >= 30 && self.debug_frames < 1000 && !self.debug_typed && indexed {
+            self.debug_typed = true;
+            if let (Ok(txt), Some(t)) = (std::env::var("BUSCADOR_TYPE"), self.tabs.get_mut(self.active)) {
+                t.editable = true;
+                let p = Pos::new(1, 0);
+                t.select(p, p);
+                if let Err(e) = t.insert(&txt, EditKind::Typing) {
+                    self.msg(e);
+                }
+                // Selección de ejemplo en la línea siguiente.
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    let l = t.cursor.unwrap().line + 1;
+                    t.select(Pos::new(l, 2), Pos::new(l, 9));
+                }
+            }
+        }
+        if self.debug_frames < 40 || busy || (std::env::var("BUSCADOR_TYPE").is_ok() && !self.debug_typed) {
             ctx.request_repaint();
             return;
         }
-        if self.debug_frames == 40 || self.debug_frames < 1000 {
+        if self.debug_frames < 1000 {
             self.debug_frames = 1000;
             ctx.send_viewport_cmd(ViewportCommand::Screenshot(ScreenshotCallback::new(move |img| {
                 let mut out = Vec::with_capacity(8 + img.pixels.len() * 4);
@@ -499,12 +1300,28 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // Cerrar la ventana con cambios sin guardar pide confirmación.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_quit {
+            if self.tabs.iter().any(|t| t.dirty() || t.save.is_some()) {
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                self.confirm = Some(Confirm::Quit);
+            }
+        }
+
+        // Guardados terminados.
+        let done: Vec<String> = self.tabs.iter_mut().filter_map(|t| t.poll_save()).collect();
+        for m in done {
+            self.msg(m);
+        }
+
         // Archivos arrastrados a la ventana.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         for p in dropped {
             self.open(p);
         }
-        self.handle_shortcuts(&ctx);
+        if self.confirm.is_none() {
+            self.handle_shortcuts(&ctx);
+        }
 
         Panel::top("toolbar").show(ui, |ui| {
             ui.add_space(3.0);
@@ -535,24 +1352,26 @@ impl eframe::App for App {
 
         let mut message = None;
         let show_detail = &mut self.show_detail;
+        let focus_view = std::mem::take(&mut self.focus_view);
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
-                message = log_view(ui, t, &font, show_detail);
+                message = log_view(ui, t, &font, show_detail, focus_view);
             } else {
                 ui.centered_and_justified(|ui| {
-                    ui.heading("Arrastra archivos de log aquí, o pulsa Ctrl+O");
+                    ui.heading("Arrastra archivos aquí, o pulsa Ctrl+O");
                 });
             }
         });
         if let Some(m) = message {
             self.msg(m);
         }
+        self.confirm_dialog(&ctx);
 
         // Saltar a la primera coincidencia en cuanto aparezca.
         if let Some(t) = self.tabs.get_mut(self.active) {
             if t.pending_first {
                 if let Some(s) = &t.search {
-                    let from = t.cursor.unwrap_or(t.top);
+                    let from = t.cursor.map(|c| c.line).unwrap_or(t.top);
                     if let Some((_, l)) = s.next_after(from, true) {
                         t.pending_first = false;
                         t.goto_match(l);
@@ -565,7 +1384,10 @@ impl eframe::App for App {
         }
 
         // Mientras haya trabajo en segundo plano, refrescar periódicamente.
-        let busy = self.tabs.iter().any(|t| !t.doc.indexing_done() || t.search.as_ref().is_some_and(|s| !s.is_done()));
+        let busy = self
+            .tabs
+            .iter()
+            .any(|t| !t.doc.indexing_done() || t.save.is_some() || t.search.as_ref().is_some_and(|s| !s.is_done()));
         if busy {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
@@ -573,8 +1395,8 @@ impl eframe::App for App {
     }
 }
 
-/// Vista virtual del log: sólo se leen y pintan las líneas visibles.
-fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool) -> Option<String> {
+/// Vista virtual del texto: sólo se leen y pintan las líneas visibles.
+fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool, focus: bool) -> Option<String> {
     let mut message = None;
     let ctx = ui.ctx().clone();
     let (row_h, char_w) = ctx.fonts_mut(|f| (f.row_height(font).ceil(), f.glyph_width(font, '0')));
@@ -586,15 +1408,39 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool) -
 
     let id = ui.scope_id().with("logview");
     let resp = ui.interact(text_area, id, Sense::click_and_drag());
-
-    let total = tab.doc.line_count();
+    if focus {
+        resp.request_focus();
+    }
     let visible = ((text_area.height() / row_h).floor() as u64).max(1);
     tab.visible_rows = visible;
-    let max_top = |total: u64| total.saturating_sub(visible);
+
+    // Teclado (antes de medir: puede cambiar el número de líneas).
+    if resp.has_focus() {
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true })
+        });
+        message = tab.handle_events(&ctx, visible.saturating_sub(1).max(1) as i64);
+    }
+
+    let total = tab.total();
+    let max_top = total.saturating_sub(visible);
+    let digits = fmt_num(total.max(1)).chars().count().max(4);
+    let gutter_w = char_w * digits as f32 + 14.0;
+    let text_x = text_area.left() + gutter_w + 6.0;
+    let view_w = (text_area.right() - text_x).max(char_w * 4.0);
 
     if let Some(l) = tab.center_on.take() {
         if l < tab.top || l >= tab.top + visible {
             tab.top = l.saturating_sub(visible / 2);
+        }
+    }
+    if tab.reveal {
+        if let Some(c) = tab.cursor {
+            if c.line < tab.top {
+                tab.top = c.line;
+            } else if c.line >= tab.top + visible {
+                tab.top = c.line + 1 - visible;
+            }
         }
     }
 
@@ -608,105 +1454,55 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool) -
         tab.hscroll = (tab.hscroll - d.x).max(0.0);
     }
 
-    // Teclado.
-    if resp.has_focus() {
-        ui.memory_mut(|m| {
-            m.set_focus_lock_filter(
-                id,
-                EventFilter { tab: false, horizontal_arrows: true, vertical_arrows: true, escape: false },
-            )
-        });
-        let (mods, delta, home, end, left, right, esc) = ui.input(|i| {
-            let page = visible.saturating_sub(1).max(1) as i64;
-            let mut d = 0i64;
-            if i.key_pressed(Key::ArrowUp) {
-                d -= 1;
-            }
-            if i.key_pressed(Key::ArrowDown) {
-                d += 1;
-            }
-            if i.key_pressed(Key::PageUp) {
-                d -= page;
-            }
-            if i.key_pressed(Key::PageDown) {
-                d += page;
-            }
-            (
-                i.modifiers,
-                d,
-                i.key_pressed(Key::Home),
-                i.key_pressed(Key::End),
-                i.key_pressed(Key::ArrowLeft),
-                i.key_pressed(Key::ArrowRight),
-                i.key_pressed(Key::Escape),
-            )
-        });
-        let last = total.saturating_sub(1);
-        let target = if home && mods.command {
-            Some(0)
-        } else if end && mods.command {
-            Some(last)
-        } else if home {
-            tab.hscroll = 0.0;
-            None
-        } else if delta != 0 {
-            Some(add_signed(tab.cursor.unwrap_or(tab.top), delta).min(last))
-        } else {
-            None
-        };
-        if let Some(t) = target {
-            if total > 0 {
-                if !mods.shift || tab.anchor.is_none() {
-                    tab.anchor = Some(t);
-                }
-                tab.cursor = Some(t);
-                if t < tab.top {
-                    tab.top = t;
-                } else if t >= tab.top + visible {
-                    tab.top = t + 1 - visible;
-                }
-            }
-        }
-        if left {
-            tab.hscroll = (tab.hscroll - char_w * 8.0).max(0.0);
-        }
-        if right {
-            tab.hscroll += char_w * 8.0;
-        }
-        if esc {
-            tab.anchor = None;
-            tab.cursor = None;
-        }
-        if ui.input(|i| i.events.iter().any(|e| matches!(e, Event::Copy))) {
-            message = Some(tab.copy_selection(&ctx));
-        }
-    }
-
-    // Ratón: selección por líneas (clic, Shift+clic, arrastrar).
+    // Ratón: cursor por carácter; en el margen de números, líneas completas.
     let row_at = |top: u64, y: f32| -> u64 {
         let r = ((y - text_area.top()) / row_h).floor().max(0.0) as u64;
         (top + r).min(total.saturating_sub(1))
     };
+    let pos_at = |tab: &Tab, top: u64, p: Pos2| -> Pos {
+        let line = row_at(top, p.y);
+        let (t, _) = cap_line(tab.line(line));
+        let g = ui.painter().layout_job(plain_job(&t, font));
+        let idx = g.cursor_from_pos(vec2(p.x - text_x + tab.hscroll, row_h / 2.0)).index.0;
+        Pos::new(line, col_from_disp(&t, idx))
+    };
     if total > 0 {
         let shift = ui.input(|i| i.modifiers.shift);
-        if resp.drag_started() || resp.clicked() || resp.secondary_clicked() {
+        let press = if resp.drag_started() { ui.input(|i| i.pointer.press_origin()) } else { None };
+        if let Some(p) = press.or_else(|| (resp.clicked() || resp.secondary_clicked()).then(|| resp.interact_pointer_pos()).flatten())
+        {
             resp.request_focus();
-            let p = if resp.drag_started() { ui.input(|i| i.pointer.press_origin()) } else { resp.interact_pointer_pos() };
-            if let Some(p) = p {
-                let r = row_at(tab.top, p.y);
-                let in_sel = tab.selection().is_some_and(|(lo, hi)| (lo..=hi).contains(&r));
+            tab.goal = None;
+            tab.preedit.clear();
+            if p.x < text_area.left() + gutter_w {
+                // Clic en el número de línea: seleccionar la línea entera.
+                let l = row_at(tab.top, p.y);
+                let end = if l + 1 < total { Pos::new(l + 1, 0) } else { Pos::new(l, tab.line_len(l)) };
                 if shift && tab.anchor.is_some() {
-                    tab.cursor = Some(r);
+                    let a = tab.anchor.unwrap();
+                    tab.cursor = Some(if Pos::new(l, 0) < a { Pos::new(l, 0) } else { end });
+                } else {
+                    tab.select(Pos::new(l, 0), end);
+                }
+            } else {
+                let pos = pos_at(tab, tab.top, p);
+                let in_sel = tab.selection().is_some_and(|(a, b)| a <= pos && pos <= b);
+                if shift && tab.anchor.is_some() {
+                    tab.cursor = Some(pos);
                 } else if !(resp.secondary_clicked() && in_sel) {
-                    tab.anchor = Some(r);
-                    tab.cursor = Some(r);
+                    tab.select(pos, pos);
                 }
             }
         }
         if resp.double_clicked() {
-            *show_detail = true;
+            if let Some(p) = resp.interact_pointer_pos().filter(|p| p.x >= text_area.left() + gutter_w) {
+                let pos = pos_at(tab, tab.top, p);
+                let t = tab.line(pos.line);
+                let (a, b) = word_at(&t, pos.col);
+                tab.select(Pos::new(pos.line, a), Pos::new(pos.line, b));
+            }
         }
-        if resp.dragged() {
+        if resp.dragged_by(PointerButton::Primary) {
             if let Some(p) = resp.interact_pointer_pos() {
                 // Auto-desplazamiento al arrastrar fuera del área.
                 if p.y < text_area.top() {
@@ -714,15 +1510,44 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool) -
                 } else if p.y > text_area.bottom() {
                     tab.top += 1 + ((p.y - text_area.bottom()) / row_h) as u64;
                 }
-                tab.top = tab.top.min(max_top(total));
-                tab.cursor = Some(row_at(tab.top, p.y.clamp(text_area.top(), text_area.bottom() - 1.0)));
+                if p.x > text_area.right() {
+                    tab.hscroll += char_w * 2.0;
+                } else if p.x < text_x && tab.hscroll > 0.0 && p.x > text_area.left() + gutter_w {
+                    tab.hscroll = (tab.hscroll - char_w * 2.0).max(0.0);
+                }
+                tab.top = tab.top.min(max_top);
+                let clamped = pos2(p.x.max(text_x), p.y.clamp(text_area.top(), text_area.bottom() - 1.0));
+                if press.is_none() {
+                    tab.cursor = Some(pos_at(tab, tab.top, clamped));
+                }
                 ctx.request_repaint();
             }
         }
     }
     resp.context_menu(|ui| {
-        if ui.button("Copiar selección (Ctrl+C)").clicked() {
-            message = Some(tab.copy_selection(&ctx));
+        let has_sel = tab.selection().is_some();
+        if ui.button("Copiar (Ctrl+C)").clicked() {
+            message = Some(tab.copy(&ctx));
+            ui.close();
+        }
+        if ui.add_enabled(tab.editable, Button::new("Cortar (Ctrl+X)")).clicked() {
+            message = Some(tab.cut(&ctx).unwrap_or_else(|e| e));
+            ui.close();
+        }
+        if ui.add_enabled(tab.editable, Button::new("Pegar (Ctrl+V)")).clicked() {
+            resp.request_focus();
+            ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+            ui.close();
+        }
+        if ui.add_enabled(tab.editable && has_sel, Button::new("Borrar selección")).clicked() {
+            if let Err(e) = tab.delete(false, false) {
+                message = Some(e);
+            }
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Seleccionar todo (Ctrl+A)").clicked() {
+            tab.select(Pos::default(), tab.end_pos());
             ui.close();
         }
         if ui.button("Ver línea completa").clicked() {
@@ -731,15 +1556,38 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool) -
         }
     });
 
-    tab.top = tab.top.min(max_top(total));
+    tab.top = tab.top.min(max_top);
+
+    // Maquetar las líneas visibles.
+    let visuals = ui.visuals().clone();
+    let highlight = tab.search.as_ref().map(|s| &s.highlight);
+    let rows: Vec<(u64, String, Arc<Galley>)> = tab
+        .rows(tab.top, visible as usize + 1, MAX_DISPLAY_BYTES)
+        .into_iter()
+        .map(|(n, t, tr)| {
+            let g = ui.painter().layout_job(line_job(&t, tr, font, visuals.text_color(), highlight));
+            (n, t, g)
+        })
+        .collect();
+    let x_of = |t: &str, g: &Galley, col: usize| g.pos_from_cursor(CCursor::new(disp_col(t, col))).min.x;
+
+    // Desplazamiento horizontal para que se vea el cursor.
+    if std::mem::take(&mut tab.reveal) {
+        if let Some(c) = tab.cursor {
+            if let Some((_, t, g)) = rows.iter().find(|r| r.0 == c.line) {
+                let x = x_of(t, g, c.col);
+                if x < tab.hscroll {
+                    tab.hscroll = (x - char_w * 8.0).max(0.0);
+                } else if x > tab.hscroll + view_w - char_w * 2.0 {
+                    tab.hscroll = x - view_w + char_w * 8.0;
+                }
+            }
+        }
+    }
 
     // Pintado.
-    let visuals = ui.visuals().clone();
     let painter = ui.painter_at(text_area);
     painter.rect_filled(text_area, 0.0, visuals.extreme_bg_color);
-    let digits = fmt_num(total.max(1)).chars().count().max(4);
-    let gutter_w = char_w * digits as f32 + 14.0;
-    let text_x = text_area.left() + gutter_w + 6.0;
     painter.rect_filled(
         Rect::from_min_max(text_area.min, pos2(text_area.left() + gutter_w, text_area.bottom())),
         0.0,
@@ -747,22 +1595,38 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool) -
     );
     let text_painter = painter.with_clip_rect(Rect::from_min_max(pos2(text_x - 2.0, text_area.top()), text_area.max));
     let sel = tab.selection();
-    let sel_color = visuals.selection.bg_fill.gamma_multiply(0.45);
-    let cur_color = Color32::from_rgba_unmultiplied(255, 180, 0, 50);
+    let sel_color = visuals.selection.bg_fill.gamma_multiply(0.6);
+    let cur_line_color = visuals.faint_bg_color.gamma_multiply(1.5);
+    let match_line_color = Color32::from_rgba_unmultiplied(255, 180, 0, 40);
     let mark_color = Color32::from_rgb(230, 160, 0);
-    let highlight = tab.search.as_ref().map(|s| &s.highlight);
+    let ox = text_x - tab.hscroll;
     let mut max_w: f32 = 0.0;
+    let mut caret_rect = None;
 
-    for (n, s, e) in tab.doc.lines(tab.top, visible as usize + 1) {
+    for (n, t, galley) in &rows {
+        let n = *n;
         let y = text_area.top() + (n - tab.top) as f32 * row_h;
         let row = Rect::from_min_size(pos2(text_area.left(), y), vec2(text_area.width(), row_h));
-        if sel.is_some_and(|(lo, hi)| n >= lo && n <= hi) {
-            painter.rect_filled(row, 0.0, sel_color);
-        } else if tab.current == Some(n) {
-            painter.rect_filled(row, 0.0, cur_color);
+        if tab.current == Some(n) {
+            painter.rect_filled(row, 0.0, match_line_color);
+        } else if tab.cursor.is_some_and(|c| c.line == n) && sel.is_none() {
+            painter.rect_filled(row, 0.0, cur_line_color);
         }
         if tab.search.as_ref().is_some_and(|s| s.index_of(n).is_some()) {
             painter.rect_filled(Rect::from_min_size(row.min, vec2(3.0, row_h)), 0.0, mark_color);
+        }
+        // Selección.
+        if let Some((a, b)) = sel.filter(|(a, b)| a.line <= n && n <= b.line) {
+            let x0 = if n == a.line { x_of(t, galley, a.col) } else { 0.0 };
+            let mut x1 = if n == b.line { x_of(t, galley, b.col) } else { galley.size().x };
+            if n < b.line {
+                x1 += char_w * 0.6; // el salto de línea también está seleccionado
+            }
+            text_painter.rect_filled(
+                Rect::from_min_max(pos2(ox + x0, y), pos2(ox + x1.max(x0 + 1.0), y + row_h)),
+                0.0,
+                sel_color,
+            );
         }
         painter.text(
             pos2(text_area.left() + gutter_w - 6.0, y),
@@ -771,29 +1635,85 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool) -
             font.clone(),
             visuals.weak_text_color(),
         );
-        let (txt, truncated) = tab.doc.src.decode_capped(s, e, MAX_DISPLAY_BYTES);
-        let job = line_job(&txt, truncated, font, visuals.text_color(), highlight);
-        let galley = painter.layout_job(job);
         max_w = max_w.max(galley.size().x);
-        text_painter.galley(pos2(text_x - tab.hscroll, y), galley, visuals.text_color());
+        text_painter.galley(pos2(ox, y), galley.clone(), visuals.text_color());
+
+        // Cursor (y texto en composición del IME).
+        if let Some(c) = tab.cursor.filter(|c| c.line == n) {
+            let x = ox + x_of(t, galley, c.col);
+            let mut caret_x = x;
+            if !tab.preedit.is_empty() {
+                let g = ui.painter().layout_job(plain_job(&tab.preedit, font));
+                let r = Rect::from_min_size(pos2(x, y), vec2(g.size().x, row_h));
+                text_painter.rect_filled(r, 0.0, visuals.extreme_bg_color);
+                text_painter.galley(pos2(x, y), g, visuals.strong_text_color());
+                text_painter.hline(r.x_range(), y + row_h - 1.0, Stroke::new(1.0, visuals.strong_text_color()));
+                caret_x = r.right();
+            }
+            let focused = resp.has_focus();
+            let color = if tab.editable { visuals.strong_text_color() } else { visuals.weak_text_color() };
+            if focused || !tab.editable {
+                let w = if tab.editable && focused { 2.0 } else { 1.0 };
+                text_painter.rect_filled(Rect::from_min_size(pos2(caret_x - w / 2.0, y), vec2(w, row_h)), 0.0, color);
+            }
+            caret_rect = Some(Rect::from_min_size(pos2(caret_x, y), vec2(1.0, row_h)));
+        }
     }
     tab.content_width = tab.content_width.max(max_w);
+
+    // Permitir el IME (acentos, CJK…) cuando se puede escribir.
+    if resp.has_focus() && tab.editable {
+        if let Some(cr) = caret_rect {
+            let to_global = ctx.layer_transform_to_global(ui.layer_id()).unwrap_or_default();
+            ctx.output_mut(|o| {
+                o.ime = Some(output::IMEOutput {
+                    purpose: IMEPurpose::Normal,
+                    rect: to_global * text_area,
+                    cursor_rect: to_global * cr,
+                    should_interrupt_composition: false,
+                })
+            });
+        }
+    }
 
     // Barras de desplazamiento.
     let mut top = tab.top;
     vscrollbar(ui, vsb, id.with("vsb"), &mut top, total, visible);
     tab.top = top;
-    hscrollbar(ui, hsb, id.with("hsb"), &mut tab.hscroll, tab.content_width + 40.0, text_area.width() - gutter_w);
-    if !tab.doc.indexing_done() {
+    hscrollbar(ui, hsb, id.with("hsb"), &mut tab.hscroll, tab.content_width + 40.0, view_w);
+    let note = if !tab.doc.indexing_done() {
+        Some("indexando…")
+    } else if !tab.editable {
+        Some("solo lectura · Ctrl+E para editar")
+    } else {
+        None
+    };
+    if let Some(note) = note {
         painter.text(
             text_area.right_bottom() - vec2(6.0, 4.0),
             Align2::RIGHT_BOTTOM,
-            "indexando…",
+            note,
             FontId::proportional(11.0),
             visuals.weak_text_color(),
         );
     }
     message
+}
+
+/// Recorta una línea muy larga para maquetarla (igual que al pintarla).
+fn cap_line(t: String) -> (String, bool) {
+    if t.len() <= MAX_DISPLAY_BYTES {
+        return (t, false);
+    }
+    let cut = buffer::floor_char(&t, MAX_DISPLAY_BYTES);
+    (t[..cut].to_string(), true)
+}
+
+fn plain_job(txt: &str, font: &FontId) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = f32::INFINITY;
+    job.append(&sanitize(txt), 0.0, TextFormat { font_id: font.clone(), ..Default::default() });
+    job
 }
 
 /// Construye el texto de una línea con las coincidencias resaltadas.
@@ -825,16 +1745,124 @@ fn line_job(txt: &str, truncated: bool, font: &FontId, color: Color32, hl: Optio
 }
 
 /// Tabs a espacios y caracteres de control visibles (una sola fila por línea).
+/// Cada carácter produce exactamente uno, salvo el tab (`TAB_WIDTH`): ver `disp_col`.
 fn sanitize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
-            '\t' => out.push_str("    "),
+            '\t' => out.push_str(&" ".repeat(TAB_WIDTH)),
             c if c.is_control() => out.push('·'),
             c => out.push(c),
         }
     }
     out
+}
+
+fn char_disp_width(c: char) -> usize {
+    if c == '\t' { TAB_WIDTH } else { 1 }
+}
+
+/// Índice de carácter mostrado correspondiente al byte `col` de `s`.
+fn disp_col(s: &str, col: usize) -> usize {
+    s[..buffer::floor_char(s, col)].chars().map(char_disp_width).sum()
+}
+
+/// Byte de `s` correspondiente al carácter mostrado `d` (redondeando dentro de un tab).
+fn col_from_disp(s: &str, d: usize) -> usize {
+    let mut acc = 0;
+    for (i, c) in s.char_indices() {
+        if acc >= d {
+            return i;
+        }
+        let w = char_disp_width(c);
+        if acc + w > d {
+            return if d - acc <= w / 2 { i } else { i + c.len_utf8() };
+        }
+        acc += w;
+    }
+    s.len()
+}
+
+fn prev_boundary(s: &str, i: usize) -> usize {
+    s[..buffer::floor_char(s, i)].char_indices().next_back().map_or(0, |(j, _)| j)
+}
+
+fn next_boundary(s: &str, i: usize) -> usize {
+    let i = buffer::floor_char(s, i);
+    s[i..].chars().next().map_or(i, |c| i + c.len_utf8())
+}
+
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn word_left_in(s: &str, i: usize) -> usize {
+    let mut it = s[..buffer::floor_char(s, i)].char_indices().rev().peekable();
+    let mut j = i;
+    while let Some(&(k, c)) = it.peek() {
+        if !c.is_whitespace() {
+            break;
+        }
+        j = k;
+        it.next();
+    }
+    if let Some(&(_, c0)) = it.peek() {
+        let w = is_word(c0);
+        while let Some(&(k, c)) = it.peek() {
+            if c.is_whitespace() || is_word(c) != w {
+                break;
+            }
+            j = k;
+            it.next();
+        }
+    }
+    j
+}
+
+fn word_right_in(s: &str, i: usize) -> usize {
+    let i = buffer::floor_char(s, i);
+    let mut it = s[i..].char_indices().peekable();
+    let mut j = s.len();
+    if let Some(&(_, c0)) = it.peek() {
+        if !c0.is_whitespace() {
+            let w = is_word(c0);
+            while let Some(&(_, c)) = it.peek() {
+                if c.is_whitespace() || is_word(c) != w {
+                    break;
+                }
+                it.next();
+            }
+        }
+    }
+    while let Some(&(_, c)) = it.peek() {
+        if !c.is_whitespace() {
+            break;
+        }
+        it.next();
+    }
+    if let Some(&(k, _)) = it.peek() {
+        j = i + k;
+    }
+    j
+}
+
+/// Palabra (o bloque de espacios/símbolos) bajo `col`.
+fn word_at(s: &str, col: usize) -> (usize, usize) {
+    let col = buffer::floor_char(s, col);
+    let Some(c) = s[col..].chars().next().or_else(|| s[..col].chars().next_back()) else { return (col, col) };
+    let class = |x: char| if is_word(x) { 0 } else if x.is_whitespace() { 1 } else { 2 };
+    let k = class(c);
+    let a = s[..col].char_indices().rev().take_while(|&(_, x)| class(x) == k).last().map_or(col, |(i, _)| i);
+    let b = s[col..].char_indices().find(|&(_, x)| class(x) != k).map_or(s.len(), |(i, _)| col + i);
+    (a, b)
+}
+
+fn describe_span(a: Pos, b: Pos, bytes: usize) -> String {
+    if a.line == b.line {
+        format!("{}", human_size(bytes as u64))
+    } else {
+        format!("{} líneas ({})", fmt_num(b.line - a.line + 1), human_size(bytes as u64))
+    }
 }
 
 /// Lista virtual de líneas con coincidencias.
@@ -893,8 +1921,7 @@ fn results_view(ui: &mut Ui, tab: &mut Tab, font: &FontId) {
             clicked = Some(line);
         }
         painter.text(pos2(list.left() + num_w, y), Align2::RIGHT_TOP, fmt_num(line + 1), font.clone(), visuals.weak_text_color());
-        if let Some(&(_, s, e)) = tab.doc.lines(line, 1).first() {
-            let (txt, tr) = tab.doc.src.decode_capped(s, e, 2048);
+        if let Some((_, txt, tr)) = tab.rows(line, 1, 2048).into_iter().next() {
             let job = line_job(&txt, tr, font, visuals.text_color(), Some(&search.highlight));
             painter.galley(pos2(list.left() + num_w + 12.0, y), painter.layout_job(job), visuals.text_color());
         }
@@ -909,24 +1936,24 @@ fn results_view(ui: &mut Ui, tab: &mut Tab, font: &FontId) {
 
 /// Línea actual completa en un cuadro de texto seleccionable (copia parcial).
 fn detail_view(ui: &mut Ui, tab: &mut Tab, font: &FontId) {
-    let Some(line) = tab.cursor else {
+    let Some(line) = tab.cursor.map(|c| c.line) else {
         ui.weak("Selecciona una línea para verla completa aquí.");
         return;
     };
-    if tab.detail_cache.as_ref().map(|c| c.0) != Some(line) {
-        let text = match tab.doc.lines(line, 1).first() {
-            Some(&(_, s, e)) => {
-                let (mut t, tr) = tab.doc.src.decode_capped(s, e, MAX_DETAIL_BYTES);
+    let version = tab.version();
+    if tab.detail_cache.as_ref().map(|c| (c.0, c.1)) != Some((line, version)) {
+        let text = match tab.rows(line, 1, MAX_DETAIL_BYTES).into_iter().next() {
+            Some((_, mut t, tr)) => {
                 if tr {
-                    t += &format!("\n…[truncado: la línea mide {}]", human_size((e - s) as u64));
+                    t += "\n…[truncado: la línea mide más de 1 MB]";
                 }
                 t
             }
             None => String::new(),
         };
-        tab.detail_cache = Some((line, text));
+        tab.detail_cache = Some((line, version, text));
     }
-    let text = &tab.detail_cache.as_ref().unwrap().1;
+    let text = &tab.detail_cache.as_ref().unwrap().2;
     ui.label(RichText::new(format!("Línea {}", fmt_num(line + 1))).small().weak());
     ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
         ui.add(TextEdit::multiline(&mut text.as_str()).font(font.clone()).desired_width(f32::INFINITY));
@@ -1034,4 +2061,85 @@ fn human_size(b: u64) -> String {
         i += 1;
     }
     if i == 0 { format!("{b} B") } else { format!("{v:.1} {}", U[i]) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab_with(name: &str, text: &str) -> (Tab, PathBuf) {
+        let dir = std::env::temp_dir().join("buscador-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, text).unwrap();
+        let doc = Document::open(&p).unwrap();
+        while !doc.indexing_done() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        (Tab::new(doc), p)
+    }
+
+    fn key(t: &mut Tab, k: Key, m: Modifiers) {
+        t.handle_key(k, m, 10).unwrap();
+    }
+
+    #[test]
+    fn keyboard_editing_and_save() {
+        let (mut t, p) = tab_with("ui.txt", "hola mundo\r\n\tsegunda\r\n");
+        let word = if MAC { Modifiers::ALT } else { Modifiers::CTRL };
+        t.select(Pos::new(0, 0), Pos::new(0, 0));
+        key(&mut t, Key::End, Modifiers::NONE);
+        assert_eq!(t.cursor, Some(Pos::new(0, 10)));
+        key(&mut t, Key::ArrowLeft, word);
+        assert_eq!(t.cursor, Some(Pos::new(0, 5)));
+        key(&mut t, Key::ArrowLeft, word | Modifiers::SHIFT);
+        assert_eq!(t.selection(), Some((Pos::new(0, 0), Pos::new(0, 5))));
+        t.insert("¡Adiós ", EditKind::Typing).unwrap();
+        assert_eq!(t.line(0), "¡Adiós mundo");
+        key(&mut t, Key::Backspace, Modifiers::NONE);
+        assert_eq!(t.line(0), "¡Adiósmundo");
+        key(&mut t, Key::ArrowDown, Modifiers::NONE);
+        key(&mut t, Key::Home, Modifiers::NONE); // tras la sangría
+        assert_eq!(t.cursor, Some(Pos::new(1, 1)));
+        key(&mut t, Key::Enter, Modifiers::NONE);
+        assert_eq!((t.line(1).as_str(), t.line(2).as_str()), ("\t", "segunda"));
+        key(&mut t, Key::Z, Modifiers::COMMAND);
+        assert_eq!(t.line(1), "\tsegunda");
+        assert_eq!(t.cursor, Some(Pos::new(1, 1)), "deshacer restaura el cursor");
+        key(&mut t, Key::Home, Modifiers::NONE); // ya en la sangría: a la columna 0
+        key(&mut t, Key::Delete, word);
+        assert_eq!(t.line(1), "segunda");
+        assert!(t.dirty());
+
+        t.start_save(p.clone()).unwrap();
+        let msg = loop {
+            if let Some(m) = t.poll_save() {
+                break m;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(msg.starts_with("Guardado"), "{msg}");
+        assert!(t.buf.is_none() && !t.dirty());
+        assert_eq!(std::fs::read(&p).unwrap(), "¡Adiósmundo\r\nsegunda\r\n".as_bytes());
+        assert!(t.start_save(p).is_err(), "sin cambios no se guarda");
+    }
+
+    #[test]
+    fn read_only_blocks_edits() {
+        let (mut t, _) = tab_with("ro.txt", "abc");
+        t.editable = false;
+        assert!(t.insert("x", EditKind::Typing).is_err());
+        assert_eq!(t.line(0), "abc");
+    }
+
+    #[test]
+    fn display_columns() {
+        assert_eq!(disp_col("\tab", 1), 4);
+        assert_eq!(col_from_disp("\tab", 4), 1);
+        assert_eq!(col_from_disp("\tab", 1), 0);
+        assert_eq!(col_from_disp("ñx", 1), 2);
+        assert_eq!(word_at("foo.bar baz", 5), (4, 7));
+        assert_eq!(word_right_in("foo  bar", 0), 5);
+        assert_eq!(word_left_in("foo  bar", 5), 0);
+    }
 }

@@ -137,3 +137,74 @@ fn utf8_stats(mut s: &[u8]) -> (usize, usize) {
         }
     }
 }
+
+/// Codifica `s` en `enc` y lo añade a `out`. Si algún carácter no se puede
+/// representar devuelve `Err(c)` (sin usar el reemplazo `&#…;` de encoding_rs)
+/// y `out` queda sin cambios.
+pub fn encode_into(enc: &'static Encoding, s: &str, out: &mut Vec<u8>) -> Result<(), char> {
+    if enc == UTF_8 {
+        out.extend_from_slice(s.as_bytes());
+        return Ok(());
+    }
+    if enc == UTF_16LE || enc == UTF_16BE {
+        for u in s.encode_utf16() {
+            out.extend_from_slice(&if enc == UTF_16LE { u.to_le_bytes() } else { u.to_be_bytes() });
+        }
+        return Ok(());
+    }
+    let start = out.len();
+    let mut encoder = enc.new_encoder();
+    let mut src = s;
+    loop {
+        let need = encoder.max_buffer_length_from_utf8_without_replacement(src.len()).unwrap_or(src.len() * 4 + 16);
+        let at = out.len();
+        out.resize(at + need, 0);
+        let (res, read, written) = encoder.encode_from_utf8_without_replacement(src, &mut out[at..], true);
+        out.truncate(at + written);
+        match res {
+            EncoderResult::InputEmpty => return Ok(()),
+            EncoderResult::OutputFull => src = &src[read..],
+            EncoderResult::Unmappable(c) => {
+                out.truncate(start);
+                return Err(c);
+            }
+        }
+    }
+}
+
+/// Como [`encode_into`], pero sustituye lo no representable por `?`.
+/// Devuelve cuántos caracteres se sustituyeron.
+pub fn encode_lossy_into(enc: &'static Encoding, s: &str, out: &mut Vec<u8>) -> usize {
+    if encode_into(enc, s, out).is_ok() {
+        return 0;
+    }
+    let mut bad = 0;
+    let mut buf = [0u8; 4];
+    for c in s.chars() {
+        if encode_into(enc, c.encode_utf8(&mut buf), out).is_err() {
+            bad += 1;
+            let _ = encode_into(enc, "?", out);
+        }
+    }
+    bad
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_strict_and_lossy() {
+        let mut v = Vec::new();
+        encode_into(WINDOWS_1252, "año", &mut v).unwrap();
+        assert_eq!(v, b"a\xF1o");
+        assert_eq!(encode_into(WINDOWS_1252, "日本", &mut v), Err('日'));
+        assert_eq!(v, b"a\xF1o");
+        v.clear();
+        encode_into(UTF_16BE, "ñ\n", &mut v).unwrap();
+        assert_eq!(v, [0x00, 0xF1, 0x00, 0x0A]);
+        v.clear();
+        assert_eq!(encode_lossy_into(SHIFT_JIS, "a€b", &mut v), 1);
+        assert_eq!(v, b"a?b");
+    }
+}

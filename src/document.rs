@@ -121,6 +121,39 @@ pub fn next_line_start(data: &[u8], from: usize, nl: Newline, base: usize) -> Op
     None
 }
 
+/// Líneas `[first, first+count)` usando el índice: (nº línea, inicio, fin de contenido).
+pub fn line_spans(src: &Source, idx: &Index, first: u64, count: usize) -> Vec<(u64, usize, usize)> {
+    if first >= idx.lines {
+        return Vec::new();
+    }
+    let total = idx.lines;
+    let len = src.data.len();
+    let mut s = idx.checkpoints[(first / STRIDE) as usize] as usize;
+    let mut n = first / STRIDE * STRIDE;
+    while n < first {
+        s = src.next_line_start(s).unwrap_or(len);
+        n += 1;
+    }
+    let mut out = Vec::with_capacity(count.min(4096));
+    while out.len() < count && n < total {
+        let next = src.next_line_start(s);
+        out.push((n, s, src.content_end(s, next)));
+        match next {
+            Some(x) if x < len => {
+                s = x;
+                n += 1;
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Offset de inicio de la línea `line` (o el final del archivo si no existe).
+pub fn line_start(src: &Source, idx: &Index, line: u64) -> usize {
+    line_spans(src, idx, line, 1).first().map(|l| l.1).unwrap_or(src.data.len())
+}
+
 pub struct Document {
     pub path: PathBuf,
     pub name: String,
@@ -201,37 +234,41 @@ impl Document {
 
     /// Devuelve hasta `count` líneas a partir de `first`: (nº línea, inicio, fin de contenido).
     pub fn lines(&self, first: u64, count: usize) -> Vec<(u64, usize, usize)> {
-        let (cp, total) = {
-            let idx = self.index.read().unwrap();
-            if first >= idx.lines {
-                return Vec::new();
-            }
-            (idx.checkpoints[(first / STRIDE) as usize] as usize, idx.lines)
-        };
-        let len = self.len();
-        let mut s = cp;
-        let mut n = first / STRIDE * STRIDE;
-        while n < first {
-            s = self.src.next_line_start(s).unwrap_or(len);
-            n += 1;
+        line_spans(&self.src, &self.index.read().unwrap(), first, count)
+    }
+
+    /// Texto decodificado de una línea completa del archivo original.
+    pub fn line_text(&self, n: u64) -> String {
+        self.lines(n, 1).first().map(|&(_, s, e)| self.src.decode(s, e)).unwrap_or_default()
+    }
+
+    /// ¿El archivo termina en salto de línea (o está vacío)? En ese caso, al
+    /// editar, existe una última línea vacía después del último salto.
+    pub fn ends_with_newline(&self) -> bool {
+        let n = self.line_count();
+        if n == 0 {
+            return true;
         }
-        let mut out = Vec::with_capacity(count.min(4096));
-        while out.len() < count && n < total {
-            let next = self.src.next_line_start(s);
-            out.push((n, s, self.src.content_end(s, next)));
-            match next {
-                Some(x) if x < len => {
-                    s = x;
-                    n += 1;
-                }
-                _ => break,
-            }
+        match self.lines(n - 1, 1).first() {
+            Some(&(_, s, _)) => self.src.next_line_start(s).is_some(),
+            None => true,
         }
-        out
+    }
+
+    /// Salto de línea que se usará en las líneas nuevas: el de la primera línea
+    /// del archivo (CRLF o LF), ya codificado.
+    pub fn newline_bytes(&self) -> Vec<u8> {
+        let crlf = self.lines(0, 1).first().is_some_and(|&(_, s, e)| {
+            self.src.next_line_start(s).is_some_and(|nx| nx - e > self.src.newline.unit())
+        });
+        let mut v = Vec::new();
+        let _ = crate::encoding::encode_into(self.src.encoding, if crlf { "\r\n" } else { "\n" }, &mut v);
+        v
     }
 
     /// Texto completo de un rango de líneas, limitado a `max_bytes` de origen.
     /// Devuelve `None` si el rango supera el límite.
+    #[cfg(test)]
     pub fn text_of_lines(&self, lo: u64, hi: u64, max_bytes: usize) -> Option<String> {
         let first = self.lines(lo, 1);
         let last = self.lines(hi, 1);

@@ -1,4 +1,5 @@
 mod app;
+mod buffer;
 mod document;
 mod encoding;
 mod search;

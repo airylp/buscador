@@ -1,10 +1,11 @@
 //! Búsqueda en segundo plano sobre el archivo mapeado.
 
-use crate::document::Source;
+use crate::buffer::Piece;
+use crate::document::{self, Index, Source};
 use regex::bytes::RegexBuilder;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -48,7 +49,9 @@ pub struct Search {
 }
 
 impl Search {
-    pub fn start(src: Source, params: Params) -> Result<Self, String> {
+    /// Busca en el archivo original o, si hay `edits` (piezas + índice del
+    /// original), en el texto editado.
+    pub fn start(src: Source, edits: Option<(Arc<Vec<Piece>>, Arc<RwLock<Index>>)>, params: Params) -> Result<Self, String> {
         let re = RegexBuilder::new(&params.pattern())
             .case_insensitive(!params.case_sensitive)
             .multi_line(true)
@@ -79,7 +82,38 @@ impl Search {
             .name("search".into())
             .spawn(move || {
                 let t0 = Instant::now();
-                run(&src, &re, &results, &progress, &truncated, &cancel);
+                let mut sc = Scan { src: &src, re: &re, results: &results, progress: &progress, truncated: &truncated, cancel: &cancel, found: Vec::new(), done_bytes: 0 };
+                match edits {
+                    None => {
+                        sc.range(src.start, src.data.len(), 0, u64::MAX);
+                    }
+                    Some((pieces, index)) => {
+                        let mut base = 0u64;
+                        for p in pieces.iter() {
+                            let ok = match p {
+                                Piece::New(t) => {
+                                    if re.is_match(t.as_bytes()) {
+                                        sc.found.push(base);
+                                    }
+                                    true
+                                }
+                                Piece::Orig { line, count } => {
+                                    let (a, b) = {
+                                        let idx = index.read().unwrap();
+                                        (document::line_start(&src, &idx, *line), document::line_start(&src, &idx, line + count))
+                                    };
+                                    sc.range(a, b, base, base + count)
+                                }
+                            };
+                            if !ok || !sc.flush() {
+                                break;
+                            }
+                            base += p.lines();
+                        }
+                    }
+                }
+                sc.flush();
+                progress.store(src.data.len() as u64, Ordering::Relaxed);
                 *elapsed.lock().unwrap() = t0.elapsed();
                 done.store(true, Ordering::Release);
             })
@@ -112,6 +146,23 @@ impl Search {
         if i == 0 { None } else { Some((i - 1, r[i - 1])) }
     }
 
+    /// Actualiza los resultados tras una edición que sustituyó `removed`
+    /// líneas en `at` por `inserted`; `matches(n)` dice si la línea nueva `n`
+    /// coincide.
+    pub fn adjust(&self, at: u64, removed: u64, inserted: u64, matches: impl Fn(u64) -> bool) {
+        let mut r = self.results.lock().unwrap();
+        let i = r.partition_point(|&l| l < at);
+        let j = r.partition_point(|&l| l < at + removed);
+        let new: Vec<u64> = (at..at + inserted).filter(|&n| matches(n)).collect();
+        let k = i + new.len();
+        r.splice(i..j, new);
+        if inserted != removed {
+            for l in &mut r[k..] {
+                *l = *l + inserted - removed;
+            }
+        }
+    }
+
     pub fn index_of(&self, line: u64) -> Option<usize> {
         self.results.lock().unwrap().binary_search(&line).ok()
     }
@@ -123,76 +174,89 @@ impl Drop for Search {
     }
 }
 
-fn run(
-    src: &Source,
-    re: &regex::bytes::Regex,
-    results: &Mutex<Vec<u64>>,
-    progress: &AtomicU64,
-    truncated: &AtomicBool,
-    cancel: &AtomicBool,
-) {
-    let data = &src.data[..];
-    let len = data.len();
-    let is_utf8 = src.encoding == encoding_rs::UTF_8;
-    let mut pos = src.start;
-    let mut line: u64 = 0;
-    let mut found: Vec<u64> = Vec::new();
+struct Scan<'a> {
+    src: &'a Source,
+    re: &'a regex::bytes::Regex,
+    results: &'a Mutex<Vec<u64>>,
+    progress: &'a AtomicU64,
+    truncated: &'a AtomicBool,
+    cancel: &'a AtomicBool,
+    found: Vec<u64>,
+    done_bytes: u64,
+}
 
-    while pos < len {
-        if cancel.load(Ordering::Relaxed) {
-            return;
+impl Scan<'_> {
+    /// Publica lo encontrado; `false` si hay que parar.
+    fn flush(&mut self) -> bool {
+        let mut r = self.results.lock().unwrap();
+        r.append(&mut self.found);
+        if r.len() >= MAX_RESULTS {
+            r.truncate(MAX_RESULTS);
+            self.truncated.store(true, Ordering::Relaxed);
+            return false;
         }
-        // Bloque alineado a fin de línea.
-        let mut end = (pos + CHUNK).min(len);
-        if end < len {
-            end = src.next_line_start(end).unwrap_or(len);
-        }
-        let chunk = &data[pos..end];
-        // UTF-8 se busca directamente sobre el mmap; el resto se decodifica
-        // sólo el bloque actual (la RAM usada queda acotada por CHUNK).
-        let hay: Cow<[u8]> = if is_utf8 {
-            Cow::Borrowed(chunk)
-        } else {
-            let (s, _) = src.encoding.decode_without_bom_handling(chunk);
-            Cow::Owned(s.into_owned().into_bytes())
-        };
-        let hay = &hay[..];
+        !self.cancel.load(Ordering::Relaxed)
+    }
 
-        let mut p = 0;
-        let mut counted = 0;
-        while p <= hay.len() {
-            let Some(m) = re.find_at(hay, p) else { break };
-            line += memchr::memchr_iter(b'\n', &hay[counted..m.start()]).count() as u64;
-            found.push(line);
-            // Una coincidencia por línea: saltar al inicio de la siguiente.
-            match memchr::memchr(b'\n', &hay[m.start()..]) {
-                Some(i) => {
-                    p = m.start() + i + 1;
-                    line += 1;
-                    counted = p;
+    /// Busca en `data[from..to]` (alineado a inicio de línea); la primera
+    /// línea es la `line` del documento y no se aceptan líneas >= `limit`.
+    fn range(&mut self, from: usize, to: usize, mut line: u64, limit: u64) -> bool {
+        let src = self.src;
+        let data = &src.data[..];
+        let is_utf8 = src.encoding == encoding_rs::UTF_8;
+        let mut pos = from;
+        while pos < to {
+            if self.cancel.load(Ordering::Relaxed) {
+                return false;
+            }
+            // Bloque alineado a fin de línea.
+            let mut end = (pos + CHUNK).min(to);
+            if end < to {
+                end = src.next_line_start(end).unwrap_or(to).min(to);
+            }
+            let chunk = &data[pos..end];
+            // UTF-8 se busca directamente sobre el mmap; el resto se decodifica
+            // sólo el bloque actual (la RAM usada queda acotada por CHUNK).
+            let hay: Cow<[u8]> = if is_utf8 {
+                Cow::Borrowed(chunk)
+            } else {
+                let (s, _) = src.encoding.decode_without_bom_handling(chunk);
+                Cow::Owned(s.into_owned().into_bytes())
+            };
+            let hay = &hay[..];
+
+            let mut p = 0;
+            let mut counted = 0;
+            while p <= hay.len() {
+                let Some(m) = self.re.find_at(hay, p) else { break };
+                line += memchr::memchr_iter(b'\n', &hay[counted..m.start()]).count() as u64;
+                if line < limit {
+                    self.found.push(line);
                 }
-                None => {
-                    counted = m.start();
-                    p = hay.len() + 1;
+                // Una coincidencia por línea: saltar al inicio de la siguiente.
+                match memchr::memchr(b'\n', &hay[m.start()..]) {
+                    Some(i) => {
+                        p = m.start() + i + 1;
+                        line += 1;
+                        counted = p;
+                    }
+                    None => {
+                        counted = m.start();
+                        p = hay.len() + 1;
+                    }
                 }
             }
-        }
-        if counted < hay.len() {
-            line += memchr::memchr_iter(b'\n', &hay[counted..]).count() as u64;
-        }
-
-        {
-            let mut r = results.lock().unwrap();
-            r.append(&mut found);
-            if r.len() >= MAX_RESULTS {
-                r.truncate(MAX_RESULTS);
-                truncated.store(true, Ordering::Relaxed);
-                progress.store(len as u64, Ordering::Relaxed);
-                return;
+            if counted < hay.len() {
+                line += memchr::memchr_iter(b'\n', &hay[counted..]).count() as u64;
             }
+            self.done_bytes += (end - pos) as u64;
+            self.progress.store(self.done_bytes.min(src.data.len() as u64), Ordering::Relaxed);
+            if !self.flush() {
+                return false;
+            }
+            pos = end;
         }
-        pos = end;
-        progress.store(pos as u64, Ordering::Relaxed);
+        true
     }
 }
 
@@ -215,11 +279,43 @@ mod tests {
         let f = std::fs::File::open(&p).unwrap();
         let m = unsafe { memmap2::Mmap::map(&f).unwrap() };
         let src = Source { data: Arc::new(Bytes::Map(m)), encoding: enc, newline: Newline::for_encoding(enc), start: 0 };
-        let s = Search::start(src, Params { query: q.into(), regex: re, case_sensitive: cs }).unwrap();
+        let s = Search::start(src, None, Params { query: q.into(), regex: re, case_sensitive: cs }).unwrap();
         while !s.is_done() {
             std::thread::sleep(Duration::from_millis(2));
         }
         s.results.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn search_over_edits() {
+        use crate::buffer::{Buffer, EditKind, Pos};
+        use crate::document::Document;
+        let dir = std::env::temp_dir().join("buscador-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("s-edits.log");
+        let mut t = String::new();
+        for i in 0..5000 {
+            t.push_str(if i % 1000 == 7 { "ERROR x\n" } else { "ok\n" });
+        }
+        std::fs::write(&p, &t).unwrap();
+        let doc = Document::open(&p).unwrap();
+        while !doc.indexing_done() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut b = Buffer::new(&doc);
+        let c = (Pos::default(), Pos::default());
+        // Inserta 2 líneas al principio (una con ERROR) y borra la línea 1007.
+        b.replace(&doc, Pos::new(0, 0), Pos::new(0, 0), "ERROR nuevo\nok\n", EditKind::Other, c).unwrap();
+        b.replace(&doc, Pos::new(1008, 0), Pos::new(1010, 0), "", EditKind::Other, c).unwrap();
+        let params = Params { query: "error".into(), regex: false, case_sensitive: false };
+        let s = Search::start(doc.src.clone(), Some((b.snapshot(), doc.index.clone())), params).unwrap();
+        while !s.is_done() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(*s.results.lock().unwrap(), vec![0, 9, 2007, 3007, 4007]);
+        // Ajuste incremental tras otra edición: equivale a buscar de nuevo.
+        s.adjust(5, 0, 1, |_| true);
+        assert_eq!(*s.results.lock().unwrap(), vec![0, 5, 10, 2008, 3008, 4008]);
     }
 
     const T: &str = "INFO a\nERROR b error\nwarn c\nerror d\n\nfin ERROR";
@@ -265,7 +361,7 @@ mod bench {
         let v = doc.lines(doc.line_count() - 3, 3);
         println!("últimas líneas en {:.2?}: {:?}", t.elapsed(), doc.src.decode(v[2].1, v[2].2));
         for (q, re, cs) in [("aguja_unica", false, true), ("FATAL|took 99[0-9]ms", true, false), ("ÑANDÚ", false, false)] {
-            let s = Search::start(doc.src.clone(), Params { query: q.into(), regex: re, case_sensitive: cs }).unwrap();
+            let s = Search::start(doc.src.clone(), None, Params { query: q.into(), regex: re, case_sensitive: cs }).unwrap();
             while !s.is_done() {
                 std::thread::sleep(Duration::from_millis(10));
             }
