@@ -59,20 +59,26 @@ instalada() {
 
 cerrar_si_abierta() {
     [ "$NO_CERRAR" = 1 ] && return 0
-    if pgrep -f "$APP_NAME/Contents/MacOS/buscador" >/dev/null 2>&1; then
-        if pregunta "buscador está abierto. ¿Cerrarlo para continuar? (guarda antes tus cambios)"; then
-            pkill -f "$APP_NAME/Contents/MacOS/buscador" || true
-            sleep 1
-        else
-            echo "Cancelado."; exit 1
-        fi
+    pgrep -f "$APP_NAME/Contents/MacOS/buscador" >/dev/null 2>&1 || return 0
+    # Nunca se cierra sin preguntar (podría haber cambios sin guardar): sin
+    # terminal interactiva, o con --si, se reemplaza igual y se avisa.
+    if [ "$SI" = 1 ] || [ ! -t 0 ]; then
+        echo "Aviso: buscador está abierto; reinícialo para usar la versión nueva."
+        return 0
     fi
+    printf "buscador está abierto. ¿Cerrarlo para continuar? (guarda antes tus cambios) [s/N] "
+    read -r r || r=""
+    case "$r" in
+        s|S|si|sí|y|Y) pkill -f "$APP_NAME/Contents/MacOS/buscador" || true; sleep 1 ;;
+        *) echo "Se reemplaza igual; reinicia buscador para usar la versión nueva." ;;
+    esac
 }
 
 crear() {
     echo "==> Compilando…"
     # La versión (commit) queda grabada en el programa: la usa «Actualizar» de la interfaz.
-    BUSCADOR_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+    # (Si ya viene dada —install.sh desde un .tar.gz sin git— se respeta.)
+    BUSCADOR_COMMIT="${BUSCADOR_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "")}"
     export BUSCADOR_COMMIT
     if ! cargo build --release; then
         echo "La compilación falló: no se crea ni se instala nada." >&2

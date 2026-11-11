@@ -3228,14 +3228,14 @@ impl App {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label(format!("Versión {}", crate::update::version_label()));
-                if MAC {
+                if crate::update::SUPPORTED {
                     if ui.button("⟳ Buscar actualizaciones…").on_hover_text("Descarga la última versión de GitHub, la compila y la instala").clicked() {
                         open_update = true;
                     }
                 }
             });
-            if !MAC {
-                ui.weak("Para actualizar en Linux/Windows vuelve a ejecutar install.sh.");
+            if !crate::update::SUPPORTED {
+                ui.weak("En Windows, actualiza volviendo a ejecutar el instalador.");
             }
             ui.separator();
             if ui.button("↺ Restablecer ajustes predeterminados").on_hover_text("Tema del sistema, Hack 13, sin colores propios").clicked() {
@@ -3395,7 +3395,7 @@ impl App {
         }
         if restart {
             if let Stage::Done(p) = &stage {
-                match std::process::Command::new("open").arg("-n").arg(p).spawn() {
+                match crate::update::relaunch(p) {
                     Ok(_) => {
                         self.allow_quit = true;
                         ctx.send_viewport_cmd(ViewportCommand::Close);

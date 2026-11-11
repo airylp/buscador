@@ -43,30 +43,26 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 - Panel «Detalle» para ver y copiar parte de una línea larga
 - Ir a línea (Ctrl+G), tamaño de letra (Ctrl+ / Ctrl−), arrastrar y soltar archivos
 
-## Instalar
+## Instalar, actualizar y desinstalar
 
-Descarga, compila y deja `./buscador` en la carpeta actual (instala Rust con rustup si hace falta):
+Todo con un solo comando (macOS; instala Rust con rustup si hace falta):
 
 ```sh
+# Instalar o actualizar: compila y deja buscador.app en /Applications
 curl -fsSL https://raw.githubusercontent.com/airylp/buscador/main/install.sh | sh
+
+# Desinstalar (pregunta si borrar también la configuración)
+curl -fsSL https://raw.githubusercontent.com/airylp/buscador/main/install.sh | sh -s -- desinstalar
 ```
 
-Requisitos: `curl`, `tar` y un compilador C (`build-essential` en Debian/Ubuntu).
+Una vez instalada, se actualiza desde la propia app: ⚙ Ajustes → «Buscar actualizaciones…»
+(o el menú buscador). Descarga la última versión, la compila y reemplaza la app; luego ofrece
+reiniciar.
 
-En macOS, para tener `buscador.app` (con ícono en el Dock, Launchpad y Cmd+Tab):
+Requisitos: `curl` y las herramientas de línea de comandos de Xcode (`xcode-select --install`).
 
-```sh
-./empaquetar-mac.sh              # menú: crear, instalar, actualizar, desinstalar
-./empaquetar-mac.sh instalar     # compila y, si sale bien, la copia a /Applications
-./empaquetar-mac.sh actualizar   # git pull + recompilar + reemplazar la instalada
-./empaquetar-mac.sh desinstalar  # quita la app y pregunta si borrar la configuración
-```
-
-También se actualiza desde la propia app: ⚙ Ajustes → «Buscar actualizaciones…» (o el menú
-buscador): descarga la última versión de GitHub, la compila y reemplaza la app; luego ofrece
-reiniciar. Necesita Rust (`cargo`) instalado.
-
-O manualmente:
+Desde una copia del repositorio también se puede usar `./empaquetar-mac.sh` (menú: crear,
+instalar, actualizar, desinstalar) o compilar a mano:
 
 ```sh
 git clone https://github.com/airylp/buscador && cd buscador

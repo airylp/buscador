@@ -1,22 +1,25 @@
-//! Actualizar buscador desde la propia interfaz (macOS): comprueba si hay
-//! una versión nueva en GitHub, descarga el código a una carpeta temporal, lo
-//! compila (con caché, para que la siguiente vez tarde menos) y reemplaza la
-//! app instalada usando `empaquetar-mac.sh`. La app abierta sigue funcionando
-//! hasta que se reinicia.
+//! Actualizar buscador desde la propia interfaz (macOS y Linux).
+//!
+//! Comprueba en GitHub si hay una versión nueva y, si se pide, ejecuta el
+//! mismo `install.sh` que se usa para instalar: descarga el código a una
+//! carpeta temporal, lo compila (con caché, para que la siguiente vez tarde
+//! menos) y reemplaza la app instalada. La app abierta sigue funcionando hasta
+//! que se reinicia.
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-pub const REPO: &str = "https://github.com/airylp/buscador";
-
-/// Repositorio de donde actualizar (`BUSCADOR_REPO` lo cambia, para pruebas).
+/// Repositorio en GitHub (usuario/repo). `BUSCADOR_REPO` lo cambia.
 fn repo() -> String {
-    std::env::var("BUSCADOR_REPO").unwrap_or_else(|_| REPO.to_string())
+    std::env::var("BUSCADOR_REPO").unwrap_or_else(|_| "airylp/buscador".to_string())
 }
 
-/// Commit con el que se compiló (lo graba `empaquetar-mac.sh`).
+/// ¿Se puede actualizar desde la app en esta plataforma?
+pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+
+/// Commit con el que se compiló (lo graban `install.sh` / `empaquetar-mac.sh`).
 pub fn current_commit() -> Option<&'static str> {
     option_env!("BUSCADOR_COMMIT").filter(|s| !s.is_empty())
 }
@@ -28,13 +31,191 @@ pub fn version_label() -> String {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum Stage {
+    Checking,
+    /// Hay una versión más nueva (commit remoto).
+    Available(String),
+    UpToDate(String),
+    Running,
+    /// Instalada: ruta de la app (macOS) o del ejecutable (Linux).
+    Done(PathBuf),
+    Failed(String),
+}
+
+pub struct Updater {
+    pub stage: Arc<Mutex<Stage>>,
+    pub log: Arc<Mutex<Vec<String>>>,
+}
+
+/// PATH con cargo y Homebrew: al abrir la app desde el escritorio el PATH es mínimo.
+fn path_env() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    format!("{home}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:{}", std::env::var("PATH").unwrap_or_default())
+}
+
+/// Dónde instalar: la carpeta de la .app que corre (macOS) o del ejecutable
+/// (Linux, si no está dentro de un `target/` de compilación).
+fn install_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    if cfg!(target_os = "macos") {
+        let bundle = exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))?;
+        return bundle.parent().map(PathBuf::from);
+    }
+    let dir = exe.parent()?;
+    if dir.components().any(|c| c.as_os_str() == "target") {
+        return None;
+    }
+    Some(dir.to_path_buf())
+}
+
+/// Quita los códigos de color ANSI de una línea.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\u{1b}' && it.peek() == Some(&'[') {
+            for d in it.by_ref() {
+                if d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+impl Updater {
+    /// Empieza comprobando la versión publicada.
+    pub fn check(ctx: eframe::egui::Context) -> Self {
+        let u = Updater { stage: Arc::new(Mutex::new(Stage::Checking)), log: Default::default() };
+        let stage = u.stage.clone();
+        std::thread::spawn(move || {
+            let url = format!("https://api.github.com/repos/{}/commits/main", repo());
+            let out = Command::new("curl")
+                .args(["-fsSL", "-H", "Accept: application/vnd.github.sha", &url])
+                .env("PATH", path_env())
+                .output();
+            let new = match out {
+                Ok(o) if o.status.success() => {
+                    let h = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if h.len() >= 7 && h.chars().all(|c| c.is_ascii_hexdigit()) {
+                        let short = h[..7].to_string();
+                        if current_commit().is_some_and(|c| short.starts_with(c) || c.starts_with(&short)) {
+                            Stage::UpToDate(short)
+                        } else {
+                            Stage::Available(short)
+                        }
+                    } else {
+                        Stage::Failed("respuesta inesperada de GitHub".into())
+                    }
+                }
+                Ok(o) => Stage::Failed(format!("no se pudo consultar GitHub: {}", String::from_utf8_lossy(&o.stderr).trim())),
+                Err(e) => Stage::Failed(format!("no se pudo ejecutar curl: {e}")),
+            };
+            *stage.lock().unwrap() = new;
+            ctx.request_repaint();
+        });
+        u
+    }
+
+    /// Descarga, compila e instala con `install.sh` (en segundo plano, con registro).
+    pub fn run(&self, ctx: eframe::egui::Context) {
+        *self.stage.lock().unwrap() = Stage::Running;
+        self.log.lock().unwrap().clear();
+        let (stage, log) = (self.stage.clone(), self.log.clone());
+        // `BUSCADOR_DESTINO` (pruebas) o donde está instalada la que corre.
+        let dest = std::env::var_os("BUSCADOR_DESTINO").map(PathBuf::from).or_else(install_dir);
+        std::thread::spawn(move || {
+            // `BUSCADOR_INSTALL_SH` (pruebas) usa un install.sh local en vez del de GitHub.
+            let script = match std::env::var("BUSCADOR_INSTALL_SH") {
+                Ok(p) => format!("exec 2>&1\nsh '{p}' instalar"),
+                Err(_) => format!(
+                    "exec 2>&1\nset -e\nF=\"${{TMPDIR:-/tmp}}/buscador-install.sh\"\ncurl -fsSL https://raw.githubusercontent.com/{}/main/install.sh -o \"$F\"\nsh \"$F\" instalar\nrm -f \"$F\"",
+                    repo()
+                ),
+            };
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", &script]).env("PATH", path_env()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+            if let Some(d) = &dest {
+                cmd.env("BUSCADOR_DESTINO", d);
+            }
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    *stage.lock().unwrap() = Stage::Failed(format!("no se pudo iniciar: {e}"));
+                    ctx.request_repaint();
+                    return;
+                }
+            };
+            let mut installed = None;
+            if let Some(out) = child.stdout.take() {
+                // Lectura tolerante: bytes no UTF-8 no cortan el registro (si se dejara
+                // de leer, el proceso moriría por SIGPIPE). El progreso usa \r.
+                let mut r = BufReader::new(out);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match r.read_until(b'\n', &mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let text = strip_ansi(&String::from_utf8_lossy(&buf));
+                    let line = text.trim_end_matches(['\n', '\r']).rsplit('\r').next().unwrap_or("").to_string();
+                    // macOS (empaquetar-mac.sh) y Linux (install.sh) anuncian dónde quedó.
+                    if let Some(p) = line.strip_prefix("==> Instalada en ") {
+                        installed = Some(PathBuf::from(p.trim()));
+                    } else if let Some(p) = line.strip_prefix("==> Instalado: ") {
+                        installed = Some(PathBuf::from(p.split(" (").next().unwrap_or(p).trim()));
+                    }
+                    let mut l = log.lock().unwrap();
+                    l.push(line);
+                    if l.len() > 5000 {
+                        l.drain(..1000);
+                    }
+                    drop(l);
+                    ctx.request_repaint();
+                }
+            }
+            let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+            *stage.lock().unwrap() = match (ok, installed) {
+                (true, Some(p)) => Stage::Done(p),
+                (true, None) => Stage::Failed("terminó sin instalar la app".into()),
+                (false, _) => Stage::Failed("falló (mira el registro)".into()),
+            };
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn stage(&self) -> Stage {
+        self.stage.lock().unwrap().clone()
+    }
+}
+
+/// Abre la versión recién instalada (después hay que cerrar la actual).
+pub fn relaunch(installed: &std::path::Path) -> std::io::Result<()> {
+    if cfg!(target_os = "macos") {
+        Command::new("open").arg("-n").arg(installed).spawn().map(|_| ())
+    } else {
+        Command::new(installed).spawn().map(|_| ())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Prueba completa (tarda: compila todo). Clona este repositorio local e
-    /// instala en una carpeta temporal:
-    /// BUSCADOR_REPO=$PWD BUSCADOR_DESTINO=/tmp/x cargo test --release actualizar -- --ignored --nocapture
+    #[test]
+    fn ansi_codes_removed() {
+        assert_eq!(strip_ansi("\u{1b}[1;34m==>\u{1b}[0m Instalado: /x/buscador"), "==> Instalado: /x/buscador");
+    }
+
+    /// Prueba completa (tarda: compila todo) con un install.sh local, instalando
+    /// en una carpeta temporal:
+    /// BUSCADOR_INSTALL_SH=$PWD/install.sh BUSCADOR_DESTINO=/tmp/x \
+    ///   cargo test --release actualizar -- --ignored --nocapture
     #[test]
     #[ignore]
     fn actualizar_de_punta_a_punta() {
@@ -63,157 +244,5 @@ mod tests {
                 }
             }
         }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Stage {
-    Checking,
-    /// Hay una versión más nueva (commit remoto).
-    Available(String),
-    UpToDate(String),
-    Running,
-    /// Instalada: ruta de la app nueva.
-    Done(PathBuf),
-    Failed(String),
-}
-
-pub struct Updater {
-    pub stage: Arc<Mutex<Stage>>,
-    pub log: Arc<Mutex<Vec<String>>>,
-}
-
-/// PATH con cargo y Homebrew: al abrir la app desde Finder el PATH es mínimo.
-fn path_env() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    format!("{home}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:{}", std::env::var("PATH").unwrap_or_default())
-}
-
-/// Carpeta donde instalar: la de la app que está corriendo, si es una .app.
-fn install_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let bundle = exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))?;
-    bundle.parent().map(PathBuf::from)
-}
-
-impl Updater {
-    /// Empieza comprobando la versión publicada.
-    pub fn check(ctx: eframe::egui::Context) -> Self {
-        let u = Updater { stage: Arc::new(Mutex::new(Stage::Checking)), log: Default::default() };
-        let stage = u.stage.clone();
-        std::thread::spawn(move || {
-            let out = Command::new("git").args(["ls-remote", &repo(), "HEAD"]).env("PATH", path_env()).output();
-            let new = match out {
-                Ok(o) if o.status.success() => {
-                    let s = String::from_utf8_lossy(&o.stdout);
-                    match s.split_whitespace().next().filter(|h| h.len() >= 7) {
-                        Some(h) => {
-                            let short = &h[..7];
-                            if current_commit().is_some_and(|c| short.starts_with(c) || c.starts_with(short)) {
-                                Stage::UpToDate(short.to_string())
-                            } else {
-                                Stage::Available(short.to_string())
-                            }
-                        }
-                        None => Stage::Failed("respuesta inesperada de GitHub".into()),
-                    }
-                }
-                Ok(o) => Stage::Failed(format!("no se pudo consultar GitHub: {}", String::from_utf8_lossy(&o.stderr).trim())),
-                Err(e) => Stage::Failed(format!("no se pudo ejecutar git: {e}")),
-            };
-            *stage.lock().unwrap() = new;
-            ctx.request_repaint();
-        });
-        u
-    }
-
-    /// Descarga, compila e instala (en segundo plano, con registro).
-    pub fn run(&self, ctx: eframe::egui::Context) {
-        *self.stage.lock().unwrap() = Stage::Running;
-        self.log.lock().unwrap().clear();
-        let (stage, log) = (self.stage.clone(), self.log.clone());
-        // `BUSCADOR_DESTINO` (pruebas) o la carpeta de la app que está corriendo.
-        let dest = std::env::var_os("BUSCADOR_DESTINO").map(PathBuf::from).or_else(install_dir);
-        std::thread::spawn(move || {
-            let home = std::env::var("HOME").unwrap_or_default();
-            let repo = repo();
-            let dest_arg = dest.as_ref().map(|d| format!(" --destino '{}'", d.display())).unwrap_or_default();
-            let script = format!(
-                r#"exec 2>&1
-set -e
-command -v cargo >/dev/null 2>&1 || {{ echo "Falta Rust (cargo). Instálalo con: curl https://sh.rustup.rs -sSf | sh"; exit 1; }}
-T="${{TMPDIR:-/tmp}}/buscador-actualizar"
-rm -rf "$T"; mkdir -p "$T"
-echo "==> Descargando el código en ${{T}}…"
-if command -v git >/dev/null 2>&1; then
-    git clone --depth 1 --progress "{repo}" "$T/src" 2>&1
-else
-    curl -fsSL "{repo}/archive/refs/heads/main.tar.gz" | tar xz -C "$T"
-    mv "$T"/buscador-main "$T/src"
-fi
-cd "$T/src"
-export CARGO_TARGET_DIR="{home}/Library/Caches/buscador-compilacion"
-sh ./empaquetar-mac.sh instalar --si --no-cerrar{dest_arg}
-cd /
-rm -rf "$T"
-echo "==> Temporales borrados"
-"#
-            );
-            let child = Command::new("sh")
-                .args(["-c", &script])
-                .env("PATH", path_env())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn();
-            let mut child = match child {
-                Ok(c) => c,
-                Err(e) => {
-                    *stage.lock().unwrap() = Stage::Failed(format!("no se pudo iniciar: {e}"));
-                    ctx.request_repaint();
-                    return;
-                }
-            };
-            let mut installed = None;
-            if let Some(out) = child.stdout.take() {
-                // Lectura tolerante: bytes no UTF-8 no cortan el registro (si se dejara
-                // de leer, el proceso moriría por SIGPIPE). git separa su progreso con \r.
-                let mut r = BufReader::new(out);
-                let mut buf = Vec::new();
-                loop {
-                    buf.clear();
-                    match r.read_until(b'\n', &mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
-                    }
-                    let text = String::from_utf8_lossy(&buf);
-                    let line = text.trim_end_matches(['\n', '\r']).rsplit('\r').next().unwrap_or("").to_string();
-                    if let Some(p) = line.strip_prefix("==> Instalada en ") {
-                        installed = Some(PathBuf::from(p.trim()));
-                    }
-                    let mut l = log.lock().unwrap();
-                    l.push(line);
-                    if l.len() > 5000 {
-                        l.drain(..1000);
-                    }
-                    drop(l);
-                    ctx.request_repaint();
-                }
-            }
-            let status = child.wait();
-            if std::env::var_os("BUSCADOR_DEBUG_UPDATE").is_some() {
-                eprintln!("--- script ---\n{script}\n--- estado: {status:?}");
-            }
-            let ok = status.map(|s| s.success()).unwrap_or(false);
-            *stage.lock().unwrap() = match (ok, installed) {
-                (true, Some(p)) => Stage::Done(p),
-                (true, None) => Stage::Failed("terminó sin instalar la app".into()),
-                (false, _) => Stage::Failed("falló (mira el registro)".into()),
-            };
-            ctx.request_repaint();
-        });
-    }
-
-    pub fn stage(&self) -> Stage {
-        self.stage.lock().unwrap().clone()
     }
 }
