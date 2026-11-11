@@ -3,6 +3,7 @@ mod blocks;
 mod buffer;
 mod document;
 mod encoding;
+mod fonts;
 mod icon;
 #[cfg(target_os = "macos")]
 mod macmenu;
@@ -26,6 +27,7 @@ fn main() -> eframe::Result {
             .with_title("Buscador de logs")
             .with_app_id("buscador")
             .with_inner_size([1280.0, 800.0])
+            .with_min_inner_size([960.0, 480.0])
             .with_drag_and_drop(true)
             .with_icon(std::sync::Arc::new(icon::app_icon())),
         ..Default::default()

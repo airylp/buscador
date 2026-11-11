@@ -884,6 +884,9 @@ pub struct App {
     goto: String,
     font_size: f32,
     theme: ThemePreference,
+    /// Tipo de letra del texto y fuentes de respaldo ya leídas.
+    text_font: String,
+    fallback_fonts: Vec<(String, Arc<FontData>)>,
     show_settings: bool,
     show_keys: bool,
     /// El editor tenía el foco en el último fotograma.
@@ -894,6 +897,8 @@ pub struct App {
     message: Option<(String, Instant)>,
     focus_search: bool,
     focus_goto: bool,
+    /// El campo «Ir a línea» de la barra de estado está abierto.
+    goto_open: bool,
     focus_view: bool,
     confirm: Option<Confirm>,
     /// Duplicados en curso: (destino, resultado).
@@ -907,8 +912,9 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
-        install_fallback_fonts(&cc.egui_ctx);
         let settings = Settings::load();
+        let fallbacks = crate::fonts::load_fallbacks();
+        cc.egui_ctx.set_fonts(crate::fonts::build(&settings.font, &fallbacks).0);
         cc.egui_ctx.set_theme(settings.theme);
         let mut app = App {
             tabs: Vec::new(),
@@ -924,6 +930,8 @@ impl App {
             goto: String::new(),
             font_size: settings.font_size,
             theme: settings.theme,
+            text_font: settings.font.clone(),
+            fallback_fonts: fallbacks,
             show_settings: false,
             show_keys: false,
             view_focused: false,
@@ -932,6 +940,7 @@ impl App {
             message: None,
             focus_search: false,
             focus_goto: false,
+            goto_open: false,
             focus_view: false,
             confirm: None,
             duplicating: Vec::new(),
@@ -976,7 +985,7 @@ impl App {
     }
 
     fn persist(&mut self) {
-        if let Err(e) = (Settings { theme: self.theme, font_size: self.font_size }).save() {
+        if let Err(e) = (Settings { theme: self.theme, font_size: self.font_size, font: self.text_font.clone() }).save() {
             self.msg(format!("No se pudieron guardar los ajustes: {e}"));
         }
     }
@@ -1110,6 +1119,7 @@ impl App {
         }
         if pressed(sc(Modifiers::COMMAND, Key::G)) {
             self.focus_goto = true;
+            self.goto_open = true;
         }
         if pressed(sc(Modifiers::COMMAND, Key::B)) {
             self.show_sidebar = !self.show_sidebar;
@@ -1140,142 +1150,32 @@ impl App {
         }
     }
 
+    /// Barra superior en una sola fila: archivo y edición | búsqueda |
+    /// reemplazar y avanzada | (a la derecha) encoding y ajustes.
     fn toolbar(&mut self, ui: &mut Ui) {
-        ui.horizontal_wrapped(|ui| {
+        let h = ui.spacing().interact_size.y + 2.0;
+        let full = ui.available_rect_before_wrap();
+        let full = Rect::from_min_size(full.min, vec2(full.width(), h));
+        ui.allocate_rect(full, Sense::hover());
+        let right_w = if full.width() < 1150.0 { 140.0 } else { 200.0 };
+        let right = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
+        let left = Rect::from_min_max(full.min, pos2(right.left() - 8.0, full.bottom()));
+        // --- A la derecha (se reserva primero): encoding y ajustes ---
+        ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)), |ui| {
             if ui
-                .selectable_label(self.show_sidebar, "☰ Archivos")
-                .on_hover_text("Mostrar/ocultar panel (Ctrl+B)")
+                .selectable_label(self.show_settings, "⚙")
+                .on_hover_text(if MAC { "Ajustes: tema y tamaño de letra (Cmd+,)" } else { "Ajustes: tema y tamaño de letra" })
                 .clicked()
             {
-                self.show_sidebar = !self.show_sidebar;
+                self.show_settings = !self.show_settings;
             }
-            if ui.button("Abrir…").on_hover_text("Ctrl+O · también puedes arrastrar archivos").clicked() {
-                self.open_dialog();
-            }
-            let has_tab = !self.tabs.is_empty();
-            let (editable, dirty, can_undo, can_redo) = self.tabs.get(self.active).map_or((false, false, false, false), |t| {
-                (
-                    t.editable,
-                    t.dirty(),
-                    t.buf.as_ref().is_some_and(|b| b.can_undo()),
-                    t.buf.as_ref().is_some_and(|b| b.can_redo()),
-                )
-            });
-            if ui
-                .add_enabled(has_tab, Button::selectable(editable, "Editar"))
-                .on_hover_text("Activar/desactivar edición (Ctrl+E)")
-                .clicked()
-            {
-                self.toggle_edit();
-            }
-            if ui.add_enabled(dirty, Button::new("Guardar")).on_hover_text("Ctrl+S · Guardar como: Ctrl+Shift+S").clicked() {
-                self.save(false);
-            }
-            if ui.add_enabled(can_undo && editable, Button::new("↶")).on_hover_text("Deshacer (Ctrl+Z)").clicked() {
-                if let Some(Err(e)) = self.tab().map(|t| t.undo_redo(false)) {
-                    self.msg(e);
-                }
-            }
-            if ui.add_enabled(can_redo && editable, Button::new("↷")).on_hover_text("Rehacer (Ctrl+Shift+Z)").clicked() {
-                if let Some(Err(e)) = self.tab().map(|t| t.undo_redo(true)) {
-                    self.msg(e);
-                }
-            }
-            ui.separator();
-
-            ui.label("Buscar:");
-            let r = ui.add(
-                TextEdit::singleline(&mut self.query)
-                    .desired_width(260.0)
-                    .hint_text("texto o regex  (Ctrl+F, Enter, F3)")
-                    .font(TextStyle::Monospace),
-            );
-            if self.focus_search {
-                r.request_focus();
-                self.focus_search = false;
-            }
-            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                if ui.input(|i| i.modifiers.shift) {
-                    if let Some(t) = self.tab() {
-                        t.prev_match();
-                    }
-                } else {
-                    self.search_or_next();
-                }
-                r.request_focus();
-            }
-            ui.toggle_value(&mut self.case_sensitive, "Aa").on_hover_text("Distinguir mayúsculas");
-            ui.toggle_value(&mut self.use_regex, ".*").on_hover_text("Expresión regular");
-            if ui.button("Buscar").clicked() {
-                self.search_or_next();
-            }
-            if ui.add_enabled(has_tab, Button::new("◀")).on_hover_text("Anterior (Shift+F3)").clicked() {
-                if let Some(t) = self.tab() {
-                    t.prev_match();
-                }
-            }
-            if ui.add_enabled(has_tab, Button::new("▶")).on_hover_text("Siguiente (F3)").clicked() {
-                if let Some(t) = self.tab() {
-                    t.next_match();
-                }
-            }
-            let rk = if MAC { "Cmd+Alt+F" } else { "Ctrl+H" };
-            ui.toggle_value(&mut self.show_replace, "Reemplazar…").on_hover_text(rk);
-            let n_adv = self.advs.len();
-            let adv_label = if n_adv > 0 { format!("Avanzada… ({n_adv})") } else { "Avanzada…".to_string() };
-            if ui
-                .selectable_label(n_adv > 0, adv_label)
-                .on_hover_text("Nueva ventana de búsqueda por bloques (desde… hasta…, multilínea), con minimapa y copia en varias líneas (Ctrl+Shift+F). Puedes abrir varias.")
-                .clicked()
-            {
-                self.new_adv_window();
-            }
-            if let Some(t) = self.tabs.get(self.active) {
-                if let Some(e) = &t.search_error {
-                    ui.colored_label(ui.visuals().error_fg_color, format!("Regex inválida: {e}"));
-                } else if let Some(s) = &t.search {
-                    let n = s.count();
-                    let pos = t.current.and_then(|l| s.index_of(l)).map(|i| format!("{}/", i + 1)).unwrap_or_default();
-                    let mut txt = format!("{pos}{} líneas", fmt_num(n as u64));
-                    if s.truncated.load(Ordering::Relaxed) {
-                        txt += &format!(" (límite {})", fmt_num(MAX_RESULTS as u64));
-                    }
-                    if !s.is_done() {
-                        let p = s.progress.load(Ordering::Relaxed) as f64 / s.total.max(1) as f64;
-                        txt += &format!(" · buscando {:.0}%", p * 100.0);
-                    } else {
-                        txt += &format!(" · {:.2}s", s.elapsed.lock().unwrap().as_secs_f32());
-                    }
-                    ui.label(txt);
-                    if t.search_stale {
-                        ui.colored_label(ui.visuals().warn_fg_color, "desactualizada (Enter para repetir)");
-                    }
-                }
-            }
-            ui.separator();
-
-            ui.label("Ir a línea:");
-            let r = ui.add(TextEdit::singleline(&mut self.goto).desired_width(90.0).hint_text("Ctrl+G"));
-            if self.focus_goto {
-                r.request_focus();
-                self.focus_goto = false;
-            }
-            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                let n: Option<u64> = self.goto.trim().replace(['.', ',', '_'], "").parse().ok();
-                if let (Some(n), Some(t)) = (n, self.tabs.get_mut(self.active)) {
-                    let last = t.total().saturating_sub(1);
-                    t.goto_line(n.saturating_sub(1).min(last));
-                    self.focus_view = true;
-                }
-            }
-            ui.separator();
-
             let mut msg = None;
             if let Some(t) = self.tabs.get_mut(self.active) {
                 let mut enc = t.doc.src.encoding;
                 ComboBox::from_id_salt("encoding")
                     .selected_text(encoding::label(enc))
-                    .width(170.0)
+                    .width(right_w - 50.0)
+                    .truncate()
                     .show_ui(ui, |ui| {
                         for e in encoding::available() {
                             ui.selectable_value(&mut enc, e, encoding::label(e));
@@ -1299,18 +1199,127 @@ impl App {
             if let Some(m) = msg {
                 self.msg(m);
             }
+        });
+        ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
+            ui.set_clip_rect(left.intersect(ui.clip_rect()));
+            // --- Archivo y edición ---
+            if ui.selectable_label(self.show_sidebar, "☰").on_hover_text("Panel de archivos (Ctrl+B)").clicked() {
+                self.show_sidebar = !self.show_sidebar;
+            }
+            if ui.button("Abrir").on_hover_text("Abrir archivos (Ctrl+O) · también puedes arrastrarlos").clicked() {
+                self.open_dialog();
+            }
+            let has_tab = !self.tabs.is_empty();
+            let (editable, dirty, can_undo, can_redo) = self.tabs.get(self.active).map_or((false, false, false, false), |t| {
+                (
+                    t.editable,
+                    t.dirty(),
+                    t.buf.as_ref().is_some_and(|b| b.can_undo()),
+                    t.buf.as_ref().is_some_and(|b| b.can_redo()),
+                )
+            });
+            if ui.add_enabled(dirty, Button::new("Guardar")).on_hover_text("Ctrl+S · Guardar como: Ctrl+Shift+S").clicked() {
+                self.save(false);
+            }
+            if ui.add_enabled(can_undo && editable, Button::new("↶")).on_hover_text("Deshacer (Ctrl+Z)").clicked() {
+                if let Some(Err(e)) = self.tab().map(|t| t.undo_redo(false)) {
+                    self.msg(e);
+                }
+            }
+            if ui.add_enabled(can_redo && editable, Button::new("↷")).on_hover_text("Rehacer (Ctrl+Shift+Z)").clicked() {
+                if let Some(Err(e)) = self.tab().map(|t| t.undo_redo(true)) {
+                    self.msg(e);
+                }
+            }
+            if ui
+                .add_enabled(has_tab, Button::selectable(editable, "Editar"))
+                .on_hover_text("Activar/desactivar edición (Ctrl+E)")
+                .clicked()
+            {
+                self.toggle_edit();
+            }
             ui.separator();
-            ui.toggle_value(&mut self.show_results, "Resultados");
-            ui.toggle_value(&mut self.show_detail, "Detalle").on_hover_text("Línea completa, seleccionable");
-            if ui.selectable_label(self.show_settings, "Ajustes").on_hover_text("Tema y tamaño de letra").clicked() {
-                self.show_settings = !self.show_settings;
+
+            // --- Búsqueda ---
+            // Lo que va detrás del buscador ocupa ~400 px; el buscador se adapta.
+            let search_w = (ui.available_width() - 400.0).clamp(100.0, 320.0);
+            let r = ui.add(
+                TextEdit::singleline(&mut self.query)
+                    .desired_width(search_w)
+                    .hint_text("Buscar…  (Ctrl+F, Enter)")
+                    .font(TextStyle::Monospace),
+            );
+            if self.focus_search {
+                r.request_focus();
+                self.focus_search = false;
             }
-            if ui.small_button("A-").clicked() {
-                self.set_font(self.font_size - 1.0);
+            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                if ui.input(|i| i.modifiers.shift) {
+                    if let Some(t) = self.tab() {
+                        t.prev_match();
+                    }
+                } else {
+                    self.search_or_next();
+                }
+                r.request_focus();
             }
-            if ui.small_button("A+").clicked() {
-                self.set_font(self.font_size + 1.0);
+            ui.toggle_value(&mut self.case_sensitive, "Aa").on_hover_text("Distinguir mayúsculas");
+            ui.toggle_value(&mut self.use_regex, ".*").on_hover_text("Expresión regular");
+            if ui.add_enabled(has_tab, Button::new("◀")).on_hover_text("Anterior (Shift+Enter, Shift+F3)").clicked() {
+                if let Some(t) = self.tab() {
+                    t.prev_match();
+                }
             }
+            if ui.add_enabled(has_tab, Button::new("▶")).on_hover_text("Siguiente (Enter, F3)").clicked() {
+                if self.tabs.get(self.active).is_some_and(|t| t.search.is_some()) {
+                    if let Some(t) = self.tab() {
+                        t.next_match();
+                    }
+                } else {
+                    self.search_or_next();
+                }
+            }
+            if let Some(t) = self.tabs.get(self.active) {
+                if let Some(e) = &t.search_error {
+                    ui.colored_label(ui.visuals().error_fg_color, "regex inválida").on_hover_text(e);
+                } else if let Some(s) = &t.search {
+                    // Compacto en la barra; el detalle, al pasar el ratón.
+                    let n = s.count();
+                    let pos = t.current.and_then(|l| s.index_of(l)).map(|i| format!("{}/", fmt_num(i as u64 + 1))).unwrap_or_default();
+                    let mut txt = format!("{pos}{}", fmt_num(n as u64));
+                    let mut hint = format!("{} líneas con coincidencias", fmt_num(n as u64));
+                    if s.truncated.load(Ordering::Relaxed) {
+                        txt += "+";
+                        hint += &format!(" (límite {})", fmt_num(MAX_RESULTS as u64));
+                    }
+                    if !s.is_done() {
+                        let p = s.progress.load(Ordering::Relaxed) as f64 / s.total.max(1) as f64;
+                        txt += &format!(" · {:.0}%", p * 100.0);
+                    } else {
+                        hint += &format!(" · {:.2}s", s.elapsed.lock().unwrap().as_secs_f32());
+                    }
+                    let color = if t.search_stale { ui.visuals().warn_fg_color } else { ui.visuals().text_color() };
+                    if t.search_stale {
+                        hint += "\nDesactualizada por las ediciones: Enter para repetir";
+                    }
+                    ui.label(RichText::new(txt).color(color)).on_hover_text(hint);
+                }
+            }
+            ui.separator();
+
+            // --- Reemplazar y avanzada ---
+            let rk = if MAC { "Cmd+Opción+F" } else { "Ctrl+H" };
+            ui.toggle_value(&mut self.show_replace, "Reemplazar").on_hover_text(format!("Reemplazar ({rk})"));
+            let n_adv = self.advs.len();
+            let adv_label = if n_adv > 0 { format!("Avanzada ({n_adv})") } else { "Avanzada".to_string() };
+            if ui
+                .selectable_label(n_adv > 0, adv_label)
+                .on_hover_text("Nueva ventana de búsqueda por bloques (desde… hasta…, multilínea), con minimapa y copia en varias líneas (Ctrl+Shift+F). Puedes abrir varias.")
+                .clicked()
+            {
+                self.new_adv_window();
+            }
+
         });
         if self.show_replace {
             ui.horizontal(|ui| {
@@ -1536,18 +1545,73 @@ impl App {
         }
     }
 
+    /// Barra de estado: información del archivo y del cursor a la izquierda
+    /// («Lín X» sirve para ir a una línea); Resultados, Detalle y «?» a la derecha.
     fn status_bar(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            let full = ui.max_rect();
+        let h = ui.spacing().interact_size.y;
+        let full = ui.available_rect_before_wrap();
+        let full = Rect::from_min_size(full.min, vec2(full.width(), h));
+        ui.allocate_rect(full, Sense::hover());
+        let right_w = 230.0_f32.min(full.width() / 2.0);
+        let right = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
+        let left = Rect::from_min_max(full.min, pos2(right.left() - 6.0, full.bottom()));
+
+        ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)), |ui| {
+            if ui
+                .add(Button::new(RichText::new("?").small().strong()).small().selected(self.show_keys))
+                .on_hover_text("Atajos de teclado (F1)")
+                .clicked()
+            {
+                self.show_keys = !self.show_keys;
+            }
+            ui.separator();
+            ui.toggle_value(&mut self.show_detail, RichText::new("Detalle").small())
+                .on_hover_text("Panel con la línea actual completa, seleccionable");
+            ui.toggle_value(&mut self.show_results, RichText::new("Resultados").small())
+                .on_hover_text("Panel con la lista de líneas encontradas");
+        });
+
+        ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
+            ui.set_clip_rect(left.intersect(ui.clip_rect()));
+            let mut goto_line = None;
             if let Some(t) = self.tabs.get(self.active) {
                 let d = &t.doc;
                 ui.label(RichText::new(if t.editable { "EDICIÓN" } else { "SOLO LECTURA" }).small().strong());
                 ui.separator();
-                ui.label(RichText::new(d.path.display().to_string()).small());
-                ui.separator();
-                ui.label(RichText::new(human_size(d.len() as u64)).small());
-                ui.separator();
-                ui.label(RichText::new(format!("{} ({})", encoding::label(d.src.encoding), d.detect_reason)).small());
+                // Cursor / ir a línea.
+                if self.goto_open {
+                    ui.label(RichText::new("Ir a línea:").small());
+                    let r = ui.add(TextEdit::singleline(&mut self.goto).desired_width(90.0).hint_text("nº de línea"));
+                    if std::mem::take(&mut self.focus_goto) {
+                        r.request_focus();
+                    }
+                    if r.lost_focus() {
+                        if ui.input(|i| i.key_pressed(Key::Enter)) {
+                            goto_line = self.goto.trim().replace(['.', ',', '_'], "").parse::<u64>().ok();
+                        }
+                        self.goto_open = false;
+                    }
+                } else {
+                    let mut s = match t.cursor {
+                        Some(c) => {
+                            let line = t.rows(c.line, 1, c.col.max(1)).into_iter().next().map(|r| r.1).unwrap_or_default();
+                            let col = line[..buffer::floor_char(&line, c.col)].chars().count() + 1;
+                            format!("Lín {}, Col {}", fmt_num(c.line + 1), fmt_num(col as u64))
+                        }
+                        None => "Ir a línea…".to_string(),
+                    };
+                    if let Some((a, b)) = t.selection() {
+                        s += &if a.line == b.line {
+                            format!(" · {} seleccionados", fmt_num((b.col - a.col) as u64))
+                        } else {
+                            format!(" · {} líneas seleccionadas", fmt_num(b.line - a.line + 1))
+                        };
+                    }
+                    if ui.add(Button::new(RichText::new(s).small()).frame(false)).on_hover_text("Ir a línea (Ctrl+G)").clicked() {
+                        self.goto_open = true;
+                        self.focus_goto = true;
+                    }
+                }
                 ui.separator();
                 let lines = fmt_num(t.total());
                 if d.indexing_done() {
@@ -1556,20 +1620,10 @@ impl App {
                     let p = d.progress.load(Ordering::Relaxed) as f32 / d.len().max(1) as f32;
                     ui.add(ProgressBar::new(p).desired_width(120.0).text(format!("indexando… {lines} líneas")));
                 }
-                if let Some(c) = t.cursor {
-                    ui.separator();
-                    let line = t.rows(c.line, 1, c.col.max(1)).into_iter().next().map(|r| r.1).unwrap_or_default();
-                    let col = line[..buffer::floor_char(&line, c.col)].chars().count() + 1;
-                    let mut s = format!("Lín {}, Col {}", fmt_num(c.line + 1), fmt_num(col as u64));
-                    if let Some((a, b)) = t.selection() {
-                        s += &if a.line == b.line {
-                            format!(" · {} seleccionados", fmt_num((b.col - a.col) as u64))
-                        } else {
-                            format!(" · {} líneas seleccionadas", fmt_num(b.line - a.line + 1))
-                        };
-                    }
-                    ui.label(RichText::new(s).small());
-                }
+                ui.separator();
+                ui.label(RichText::new(human_size(d.len() as u64)).small());
+                ui.separator();
+                ui.label(RichText::new(encoding::label(d.src.encoding)).small()).on_hover_text(format!("Detectado por: {}", d.detect_reason));
                 if let Some(b) = &t.buf {
                     if b.is_dirty() {
                         ui.separator();
@@ -1586,6 +1640,8 @@ impl App {
                     let p = job.progress.load(Ordering::Relaxed) as f32 / job.total.max(1) as f32;
                     ui.add(ProgressBar::new(p.min(1.0)).desired_width(140.0).text("guardando…"));
                 }
+                ui.separator();
+                ui.label(RichText::new(d.path.display().to_string()).small().weak()).on_hover_text("Ruta del archivo");
             }
             if let Some((m, t)) = &self.message {
                 if t.elapsed() < Duration::from_secs(6) {
@@ -1593,15 +1649,10 @@ impl App {
                     ui.label(RichText::new(m).small().color(ui.visuals().warn_fg_color));
                 }
             }
-            // Botón de atajos, pegado a la esquina inferior derecha (al final,
-            // para no desplazar lo demás).
-            let r = Rect::from_min_size(pos2(full.right() - 22.0, full.center().y - 9.0), vec2(20.0, 18.0));
-            if ui
-                .put(r, Button::new(RichText::new("?").small().strong()).small().selected(self.show_keys))
-                .on_hover_text("Atajos de teclado (F1)")
-                .clicked()
-            {
-                self.show_keys = !self.show_keys;
+            if let (Some(n), Some(t)) = (goto_line, self.tabs.get_mut(self.active)) {
+                let last = t.total().saturating_sub(1);
+                t.goto_line(n.saturating_sub(1).min(last));
+                self.focus_view = true;
             }
         });
     }
@@ -1659,6 +1710,14 @@ impl App {
             }
             self.show_settings = std::env::var("BUSCADOR_SETTINGS").is_ok();
             self.show_keys = std::env::var("BUSCADOR_KEYS").is_ok();
+            self.show_replace = std::env::var("BUSCADOR_REPLACE").is_ok();
+            if let Ok(f) = std::env::var("BUSCADOR_FUENTE") {
+                ctx.set_fonts(crate::fonts::build(&f, &self.fallback_fonts).0);
+                self.text_font = f;
+            }
+            if let Ok(w) = std::env::var("BUSCADOR_ANCHO").map(|w| w.parse::<f32>().unwrap_or(900.0)) {
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(vec2(w, 700.0)));
+            }
             if let Ok(a) = std::env::var("BUSCADOR_ADV") {
                 // «desde|hasta»; «\n» en el texto = salto de línea (activa multilínea).
                 let a = a.replace("\\n", "\n");
@@ -1787,7 +1846,7 @@ impl eframe::App for App {
         }
         Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
 
-        let font = FontId::monospace(self.font_size);
+        let font = crate::fonts::text_font(self.font_size);
         let has_search = self.tabs.get(self.active).is_some_and(|t| t.search.is_some());
         if self.show_results && has_search {
             Panel::bottom("results").resizable(true).default_size(180.0).min_size(60.0).show(ui, |ui| {
@@ -2488,6 +2547,7 @@ impl App {
         }
         let mut open = true;
         let (mut theme, mut font) = (self.theme, self.font_size);
+        let mut family = self.text_font.clone();
         Window::new("Ajustes").id(settings_window_id()).open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
             ui.strong("Tema");
             ui.horizontal(|ui| {
@@ -2496,8 +2556,30 @@ impl App {
                 ui.radio_value(&mut theme, ThemePreference::Dark, "Oscuro");
             });
             ui.add_space(8.0);
+            ui.strong("Tipo de letra del texto");
+            ComboBox::from_id_salt("tipo_letra").selected_text(&family).width(220.0).show_ui(ui, |ui| {
+                let av = crate::fonts::available();
+                ui.weak("Monoespaciadas (alinean columnas)");
+                for o in av.iter().filter(|o| o.mono) {
+                    ui.selectable_value(&mut family, o.name.to_string(), o.name);
+                }
+                ui.separator();
+                ui.weak("Proporcionales");
+                for o in av.iter().filter(|o| !o.mono) {
+                    ui.selectable_value(&mut family, o.name.to_string(), o.name);
+                }
+            });
+            if crate::fonts::find(&family).is_some_and(|o| !o.mono) {
+                ui.weak("Con letra proporcional las columnas de los logs no quedan alineadas.");
+            }
+            ui.add_space(8.0);
             ui.strong("Tamaño de letra del texto");
             ui.add(Slider::new(&mut font, 7.0..=40.0).step_by(1.0));
+            ui.add_space(6.0);
+            ui.weak("Vista previa:");
+            Frame::NONE.fill(ui.visuals().extreme_bg_color).inner_margin(6.0).corner_radius(4.0).show(ui, |ui| {
+                ui.label(RichText::new("2026-11-10 12:00:01 [INFO] año, acción\n0O 1lI {}[]() -> => != 日本").font(crate::fonts::text_font(font)));
+            });
             ui.add_space(8.0);
             ui.weak("Los ajustes se guardan automáticamente.");
         });
@@ -2509,6 +2591,18 @@ impl App {
         }
         if font != self.font_size {
             self.set_font(font);
+        }
+        if family != self.text_font {
+            let (defs, ok) = crate::fonts::build(&family, &self.fallback_fonts);
+            ctx.set_fonts(defs);
+            if !ok {
+                self.msg(format!("No se pudo cargar «{family}»; se usa {}", crate::fonts::DEFAULT));
+            }
+            self.text_font = family;
+            for t in &mut self.tabs {
+                t.content_width = 0.0;
+            }
+            self.persist();
         }
     }
 
@@ -3079,32 +3173,6 @@ fn hscrollbar(ui: &mut Ui, rect: Rect, id: Id, offset: &mut f32, content: f32, v
     let thumb = Rect::from_min_size(pos2(x, track.top()), vec2(thumb_w, track.height()));
     let c = if resp.hovered() || resp.dragged() { vis.widgets.active.bg_fill } else { vis.widgets.inactive.bg_fill };
     painter.rect_filled(thumb, 3.0, c);
-}
-
-/// Añade fuentes del sistema como respaldo para CJK, cirílico, etc.
-fn install_fallback_fonts(ctx: &Context) {
-    const CANDIDATES: &[&str] = &[
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        "C:\\Windows\\Fonts\\msgothic.ttc",
-        "C:\\Windows\\Fonts\\msyh.ttc",
-        "/System/Library/Fonts/PingFang.ttc",
-    ];
-    for (i, path) in CANDIDATES.iter().enumerate() {
-        if let Ok(bytes) = std::fs::read(path) {
-            ctx.add_font(epaint::text::FontInsert::new(
-                &format!("fallback-{i}"),
-                FontData::from_owned(bytes),
-                vec![
-                    epaint::text::InsertFontFamily { family: FontFamily::Monospace, priority: epaint::text::FontPriority::Lowest },
-                    epaint::text::InsertFontFamily { family: FontFamily::Proportional, priority: epaint::text::FontPriority::Lowest },
-                ],
-            ));
-        }
-    }
 }
 
 fn add_signed(v: u64, d: i64) -> u64 {

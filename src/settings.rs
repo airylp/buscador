@@ -8,11 +8,13 @@ use std::path::PathBuf;
 pub struct Settings {
     pub theme: ThemePreference,
     pub font_size: f32,
+    /// Tipo de letra del texto (nombre de `fonts::OPTIONS`).
+    pub font: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemePreference::System, font_size: 13.0 }
+        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into() }
     }
 }
 
@@ -40,6 +42,7 @@ impl Settings {
                 ("tema", "claro") => s.theme = ThemePreference::Light,
                 ("tema", "oscuro") => s.theme = ThemePreference::Dark,
                 ("tema", _) => s.theme = ThemePreference::System,
+                ("fuente", v) if !v.is_empty() => s.font = v.to_string(),
                 ("letra", v) => {
                     if let Ok(f) = v.parse::<f32>() {
                         s.font_size = f.clamp(7.0, 40.0);
@@ -61,6 +64,6 @@ impl Settings {
             ThemePreference::Dark => "oscuro",
             ThemePreference::System => "sistema",
         };
-        std::fs::write(&p, format!("tema={theme}\nletra={}\n", self.font_size)).map_err(|e| e.to_string())
+        std::fs::write(&p, format!("tema={theme}\nletra={}\nfuente={}\n", self.font_size, self.font)).map_err(|e| e.to_string())
     }
 }
