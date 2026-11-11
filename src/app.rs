@@ -2136,6 +2136,9 @@ impl App {
             }
             self.show_settings = std::env::var("BUSCADOR_SETTINGS").is_ok();
             self.show_keys = std::env::var("BUSCADOR_KEYS").is_ok();
+            if std::env::var("BUSCADOR_ACTUALIZAR").is_ok() {
+                self.open_updater(ctx);
+            }
             self.show_replace = std::env::var("BUSCADOR_REPLACE").is_ok();
             if let Ok(c) = std::env::var("BUSCADOR_COLORES") {
                 // «#fondo,#letra»
@@ -2217,7 +2220,7 @@ impl App {
                 }
             }
         }
-        if self.debug_frames < 70 || busy || (std::env::var("BUSCADOR_TYPE").is_ok() && !self.debug_typed) {
+        if self.debug_frames < 90 || busy || (std::env::var("BUSCADOR_TYPE").is_ok() && !self.debug_typed) {
             ctx.request_repaint();
             return;
         }

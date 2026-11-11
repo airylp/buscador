@@ -30,6 +30,8 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 - Resaltado de sintaxis según la extensión (Java, Kotlin, JS/TS, Rust, Go, C/C++, C#, Swift, Python,
   shell, SQL, JSON, XML/HTML, YAML, TOML/INI, CSS) y en los logs: niveles (ERROR, WARN, INFO, DEBUG),
   fechas, excepciones y trazas. Solo se colorea lo visible; el lenguaje se cambia en la barra de estado
+- Embellecer (✨, Ctrl+Shift+B) JSON y XML/HTML: valida que estén bien formados (si no, indica
+  línea y columna) y los ordena con sangría; a la selección o a todo el archivo; Ctrl+Z lo deshace
 - Archivo nuevo (📝, Ctrl+N) para pegar y guardar lo copiado; también «Nuevo archivo con la selección»
   (clic derecho) y «A archivo nuevo» en la búsqueda avanzada. Guardar pide dónde
 - Selección en bloque (botón ▦ Bloque, o Opción/Alt+arrastrar), con letra monoespaciada: marca un
@@ -54,9 +56,15 @@ Requisitos: `curl`, `tar` y un compilador C (`build-essential` en Debian/Ubuntu)
 En macOS, para tener `buscador.app` (con ícono en el Dock, Launchpad y Cmd+Tab):
 
 ```sh
-./empaquetar-mac.sh             # crea target/release/buscador.app
-./empaquetar-mac.sh --instalar  # además la copia a ~/Applications
+./empaquetar-mac.sh              # menú: crear, instalar, actualizar, desinstalar
+./empaquetar-mac.sh instalar     # compila y, si sale bien, la copia a /Applications
+./empaquetar-mac.sh actualizar   # git pull + recompilar + reemplazar la instalada
+./empaquetar-mac.sh desinstalar  # quita la app y pregunta si borrar la configuración
 ```
+
+También se actualiza desde la propia app: ⚙ Ajustes → «Buscar actualizaciones…» (o el menú
+buscador): descarga la última versión de GitHub, la compila y reemplaza la app; luego ofrece
+reiniciar. Necesita Rust (`cargo`) instalado.
 
 O manualmente:
 

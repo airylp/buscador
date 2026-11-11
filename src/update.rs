@@ -139,11 +139,12 @@ impl Updater {
             let repo = repo();
             let dest_arg = dest.as_ref().map(|d| format!(" --destino '{}'", d.display())).unwrap_or_default();
             let script = format!(
-                r#"set -e
+                r#"exec 2>&1
+set -e
 command -v cargo >/dev/null 2>&1 || {{ echo "Falta Rust (cargo). Instálalo con: curl https://sh.rustup.rs -sSf | sh"; exit 1; }}
 T="${{TMPDIR:-/tmp}}/buscador-actualizar"
 rm -rf "$T"; mkdir -p "$T"
-echo "==> Descargando el código en $T…"
+echo "==> Descargando el código en ${{T}}…"
 if command -v git >/dev/null 2>&1; then
     git clone --depth 1 --progress "{repo}" "$T/src" 2>&1
 else
@@ -159,7 +160,7 @@ echo "==> Temporales borrados"
 "#
             );
             let child = Command::new("sh")
-                .args(["-c", &format!("( {script} ) 2>&1")])
+                .args(["-c", &script])
                 .env("PATH", path_env())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -174,9 +175,18 @@ echo "==> Temporales borrados"
             };
             let mut installed = None;
             if let Some(out) = child.stdout.take() {
-                for line in BufReader::new(out).lines().map_while(Result::ok) {
-                    // git escribe el progreso con \r: quedarse con lo último.
-                    let line = line.rsplit('\r').next().unwrap_or("").to_string();
+                // Lectura tolerante: bytes no UTF-8 no cortan el registro (si se dejara
+                // de leer, el proceso moriría por SIGPIPE). git separa su progreso con \r.
+                let mut r = BufReader::new(out);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match r.read_until(b'\n', &mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let text = String::from_utf8_lossy(&buf);
+                    let line = text.trim_end_matches(['\n', '\r']).rsplit('\r').next().unwrap_or("").to_string();
                     if let Some(p) = line.strip_prefix("==> Instalada en ") {
                         installed = Some(PathBuf::from(p.trim()));
                     }
@@ -189,7 +199,11 @@ echo "==> Temporales borrados"
                     ctx.request_repaint();
                 }
             }
-            let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+            let status = child.wait();
+            if std::env::var_os("BUSCADOR_DEBUG_UPDATE").is_some() {
+                eprintln!("--- script ---\n{script}\n--- estado: {status:?}");
+            }
+            let ok = status.map(|s| s.success()).unwrap_or(false);
             *stage.lock().unwrap() = match (ok, installed) {
                 (true, Some(p)) => Stage::Done(p),
                 (true, None) => Stage::Failed("terminó sin instalar la app".into()),
