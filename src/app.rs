@@ -69,6 +69,13 @@ pub struct Tab {
     visible_rows: u64,
     detail_cache: Option<(u64, u64, String)>,
     save: Option<SaveJob>,
+    /// Selección en bloque (columnas), en columnas visuales: puede pasar del
+    /// final de las líneas.
+    colsel: Option<ColSel>,
+    /// Modo bloque activo (botón «Bloque» con letra monoespaciada).
+    col_mode: bool,
+    /// El arrastre en curso selecciona un bloque.
+    col_dragging: bool,
     /// Cuenta todas las modificaciones (no se reinicia al guardar).
     edit_gen: u64,
 }
@@ -98,6 +105,9 @@ impl Tab {
             visible_rows: 1,
             detail_cache: None,
             save: None,
+            colsel: None,
+            col_mode: false,
+            col_dragging: false,
             edit_gen: 0,
         }
     }
@@ -571,6 +581,84 @@ impl Tab {
         })
     }
 
+    // ---- Selección en bloque (columnas) ----
+
+    /// Bloque seleccionado, si no está vacío.
+    fn block(&self) -> Option<ColSel> {
+        self.colsel.filter(|c| !c.is_empty())
+    }
+
+    /// Texto real dentro del bloque: por cada línea, los caracteres cuyas
+    /// columnas caen dentro; los huecos más allá del final de una línea no se
+    /// copian. Las filas se separan con saltos de línea.
+    fn column_text(&self, cs: ColSel, max: usize) -> Option<String> {
+        let (l0, l1) = cs.lines();
+        let (c0, c1) = cs.cols();
+        let mut out = String::new();
+        let mut n = l0;
+        while n <= l1 {
+            let chunk = self.rows(n, ((l1 - n + 1) as usize).min(4096), usize::MAX);
+            if chunk.is_empty() {
+                break;
+            }
+            for (ln, t, _) in chunk {
+                if ln > l0 {
+                    out.push('\n');
+                }
+                let mut d = 0;
+                for ch in t.chars() {
+                    if d >= c1 {
+                        break;
+                    }
+                    if d >= c0 {
+                        out.push(ch);
+                    }
+                    d += char_disp_width(ch);
+                }
+                if out.len() > max {
+                    return None;
+                }
+                n = ln + 1;
+            }
+        }
+        Some(out)
+    }
+
+    fn copy_block(&self, ctx: &Context, cs: ColSel) -> String {
+        let (l0, l1) = cs.lines();
+        match self.column_text(cs, MAX_COPY_BYTES) {
+            Some(t) => {
+                let m = format!("Copiado bloque de {} líneas ({})", fmt_num(l1 - l0 + 1), human_size(t.len() as u64));
+                ctx.copy_text(t);
+                m
+            }
+            None => format!("Bloque demasiado grande para copiar (> {})", human_size(MAX_COPY_BYTES as u64)),
+        }
+    }
+
+    /// Mayús+flechas en modo bloque: amplía el bloque desde el cursor.
+    fn extend_block(&mut self, key: Key) -> bool {
+        let (dl, dc): (i64, i64) = match key {
+            Key::ArrowUp => (-1, 0),
+            Key::ArrowDown => (1, 0),
+            Key::ArrowLeft => (0, -1),
+            Key::ArrowRight => (0, 1),
+            _ => return false,
+        };
+        let cs = self.colsel.unwrap_or_else(|| {
+            let c = self.cursor_or_top();
+            let v = (c.line, disp_col(&self.line(c.line), c.col));
+            ColSel { a: v, b: v }
+        });
+        let last = self.total().saturating_sub(1);
+        let b = (add_signed(cs.b.0, dl).min(last), add_signed(cs.b.1 as u64, dc) as usize);
+        self.colsel = Some(ColSel { a: cs.a, b });
+        let t = self.line(b.0);
+        let p = Pos::new(b.0, col_from_disp(&t, b.1));
+        self.select(p, p);
+        true
+    }
+
     // ---- Búsqueda avanzada (bloques) ----
 
     fn goto_block(&mut self, b: Block) {
@@ -700,6 +788,7 @@ impl Tab {
             let r: Result<(), String> = match ev {
                 Event::Text(t) => {
                     self.preedit.clear();
+                    self.colsel = None;
                     self.insert(&t, EditKind::Typing)
                 }
                 Event::Ime(ImeEvent::Preedit { text, .. }) => {
@@ -712,11 +801,31 @@ impl Tab {
                 }
                 Event::Paste(t) => self.insert(&t, EditKind::Other),
                 Event::Copy => {
-                    msg = Some(self.copy(ctx));
+                    msg = Some(match self.block() {
+                        Some(cs) => self.copy_block(ctx, cs),
+                        None => self.copy(ctx),
+                    });
                     Ok(())
                 }
-                Event::Cut => self.cut(ctx).map(|m| msg = Some(m)),
-                Event::Key { key, pressed: true, modifiers, .. } => self.handle_key(key, modifiers, page),
+                Event::Cut => match self.block() {
+                    Some(cs) => {
+                        msg = Some(format!("{} (en un bloque, Cortar solo copia)", self.copy_block(ctx, cs)));
+                        Ok(())
+                    }
+                    None => self.cut(ctx).map(|m| msg = Some(m)),
+                },
+                Event::Key { key, pressed: true, modifiers, .. }
+                    if self.col_mode && modifiers.shift && !modifiers.command && self.extend_block(key) =>
+                {
+                    Ok(())
+                }
+                Event::Key { key, pressed: true, modifiers, .. } => {
+                    // Cualquier otra tecla (salvo atajos) deja la selección en bloque.
+                    if !modifiers.command && !modifiers.ctrl {
+                        self.colsel = None;
+                    }
+                    self.handle_key(key, modifiers, page)
+                }
                 _ => Ok(()),
             };
             if let Err(e) = r {
@@ -800,6 +909,8 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
                 ("Clic / arrastrar".into(), "Colocar el cursor / seleccionar"),
                 ("Shift+clic".into(), "Extender la selección"),
                 ("Doble clic".into(), "Seleccionar palabra"),
+                (k("A+arrastrar"), "Seleccionar un bloque (rectángulo); siempre con el botón ▦ Bloque"),
+                ("Mayús+flechas (▦ Bloque)".into(), "Ampliar el bloque"),
                 ("Clic en nº de línea".into(), "Seleccionar la línea entera"),
                 ("Clic derecho".into(), "Copiar, cortar, pegar, ver línea completa…"),
                 ("Clic en el minimapa".into(), "Ir al bloque más cercano (búsqueda avanzada)"),
@@ -813,6 +924,26 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
             ],
         ),
     ]
+}
+
+/// Selección rectangular: (línea, columna visual) de la esquina donde empezó
+/// y de la esquina actual.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct ColSel {
+    a: (u64, usize),
+    b: (u64, usize),
+}
+
+impl ColSel {
+    fn lines(&self) -> (u64, u64) {
+        (self.a.0.min(self.b.0), self.a.0.max(self.b.0))
+    }
+    fn cols(&self) -> (usize, usize) {
+        (self.a.1.min(self.b.1), self.a.1.max(self.b.1))
+    }
+    fn is_empty(&self) -> bool {
+        self.a.1 == self.b.1
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -886,6 +1017,12 @@ pub struct App {
     theme: ThemePreference,
     /// Tipo de letra del texto y fuentes de respaldo ya leídas.
     text_font: String,
+    /// Colores propios del texto (tienen prioridad sobre el tema).
+    custom_colors: bool,
+    text_bg: Color32,
+    text_fg: Color32,
+    /// Botón «Bloque»: seleccionar rectángulos (solo con letra monoespaciada).
+    column_mode: bool,
     fallback_fonts: Vec<(String, Arc<FontData>)>,
     show_settings: bool,
     show_keys: bool,
@@ -931,6 +1068,10 @@ impl App {
             font_size: settings.font_size,
             theme: settings.theme,
             text_font: settings.font.clone(),
+            custom_colors: settings.colors.is_some(),
+            text_bg: settings.colors.map_or(DEFAULT_BG, |c| Color32::from_rgb(c.0[0], c.0[1], c.0[2])),
+            text_fg: settings.colors.map_or(DEFAULT_FG, |c| Color32::from_rgb(c.1[0], c.1[1], c.1[2])),
+            column_mode: false,
             fallback_fonts: fallbacks,
             show_settings: false,
             show_keys: false,
@@ -985,9 +1126,25 @@ impl App {
     }
 
     fn persist(&mut self) {
-        if let Err(e) = (Settings { theme: self.theme, font_size: self.font_size, font: self.text_font.clone() }).save() {
+        let rgb = |c: Color32| [c.r(), c.g(), c.b()];
+        let st = Settings {
+            theme: self.theme,
+            font_size: self.font_size,
+            font: self.text_font.clone(),
+            colors: self.custom_colors.then(|| (rgb(self.text_bg), rgb(self.text_fg))),
+        };
+        if let Err(e) = st.save() {
             self.msg(format!("No se pudieron guardar los ajustes: {e}"));
         }
+    }
+
+    fn text_colors(&self) -> Option<(Color32, Color32)> {
+        self.custom_colors.then_some((self.text_bg, self.text_fg))
+    }
+
+    /// ¿La letra del texto es monoespaciada? (el modo bloque la necesita)
+    fn mono_font(&self) -> bool {
+        crate::fonts::find(&self.text_font).is_none_or(|o| o.mono)
     }
 
     fn msg(&mut self, m: impl Into<String>) {
@@ -1200,13 +1357,16 @@ impl App {
                 self.msg(m);
             }
         });
+        // Con poco espacio, los botones muestran solo el ícono (el texto queda en el tooltip).
+        let compact = full.width() < 1180.0;
+        let lb = |icon: &str, text: &str| if compact { icon.to_string() } else { format!("{icon} {text}") };
         ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.set_clip_rect(left.intersect(ui.clip_rect()));
             // --- Archivo y edición ---
             if ui.selectable_label(self.show_sidebar, "☰").on_hover_text("Panel de archivos (Ctrl+B)").clicked() {
                 self.show_sidebar = !self.show_sidebar;
             }
-            if ui.button("Abrir").on_hover_text("Abrir archivos (Ctrl+O) · también puedes arrastrarlos").clicked() {
+            if ui.button(lb("📂", "Abrir")).on_hover_text("Abrir archivos (Ctrl+O) · también puedes arrastrarlos").clicked() {
                 self.open_dialog();
             }
             let has_tab = !self.tabs.is_empty();
@@ -1218,7 +1378,7 @@ impl App {
                     t.buf.as_ref().is_some_and(|b| b.can_redo()),
                 )
             });
-            if ui.add_enabled(dirty, Button::new("Guardar")).on_hover_text("Ctrl+S · Guardar como: Ctrl+Shift+S").clicked() {
+            if ui.add_enabled(dirty, Button::new(lb("💾", "Guardar"))).on_hover_text("Guardar (Ctrl+S) · Guardar como: Ctrl+Shift+S").clicked() {
                 self.save(false);
             }
             if ui.add_enabled(can_undo && editable, Button::new("↶")).on_hover_text("Deshacer (Ctrl+Z)").clicked() {
@@ -1232,21 +1392,41 @@ impl App {
                 }
             }
             if ui
-                .add_enabled(has_tab, Button::selectable(editable, "Editar"))
+                .add_enabled(has_tab, Button::selectable(editable, lb("✏", "Editar")))
                 .on_hover_text("Activar/desactivar edición (Ctrl+E)")
                 .clicked()
             {
                 self.toggle_edit();
             }
+            let mono = self.mono_font();
+            let block_hint = if mono {
+                "Selección en bloque: arrastra para marcar un rectángulo de texto (como una matriz). Al copiar se copia solo el texto real, línea por línea. También: Opción/Alt+arrastrar."
+            } else {
+                "La selección en bloque necesita una letra monoespaciada (⚙ Ajustes)"
+            };
+            if ui
+                .add_enabled(mono && has_tab, Button::selectable(self.column_mode && mono, lb("▦", "Bloque")))
+                .on_hover_text(block_hint)
+                .on_disabled_hover_text(block_hint)
+                .clicked()
+            {
+                self.column_mode = !self.column_mode;
+                if !self.column_mode {
+                    for t in &mut self.tabs {
+                        t.colsel = None;
+                    }
+                }
+                self.focus_view = true;
+            }
             ui.separator();
 
             // --- Búsqueda ---
             // Lo que va detrás del buscador ocupa ~400 px; el buscador se adapta.
-            let search_w = (ui.available_width() - 400.0).clamp(100.0, 320.0);
+            let search_w = (ui.available_width() - if compact { 330.0 } else { 440.0 }).clamp(100.0, 320.0);
             let r = ui.add(
                 TextEdit::singleline(&mut self.query)
                     .desired_width(search_w)
-                    .hint_text("Buscar…  (Ctrl+F, Enter)")
+                    .hint_text("🔍 Buscar…  (Ctrl+F, Enter)")
                     .font(TextStyle::Monospace),
             );
             if self.focus_search {
@@ -1309,9 +1489,9 @@ impl App {
 
             // --- Reemplazar y avanzada ---
             let rk = if MAC { "Cmd+Opción+F" } else { "Ctrl+H" };
-            ui.toggle_value(&mut self.show_replace, "Reemplazar").on_hover_text(format!("Reemplazar ({rk})"));
+            ui.toggle_value(&mut self.show_replace, lb("🔁", "Reemplazar")).on_hover_text(format!("Reemplazar ({rk})"));
             let n_adv = self.advs.len();
-            let adv_label = if n_adv > 0 { format!("Avanzada ({n_adv})") } else { "Avanzada".to_string() };
+            let adv_label = if n_adv > 0 { format!("{} ({n_adv})", lb("🔎", "Avanzada")) } else { lb("🔎", "Avanzada") };
             if ui
                 .selectable_label(n_adv > 0, adv_label)
                 .on_hover_text("Nueva ventana de búsqueda por bloques (desde… hasta…, multilínea), con minimapa y copia en varias líneas (Ctrl+Shift+F). Puedes abrir varias.")
@@ -1565,9 +1745,9 @@ impl App {
                 self.show_keys = !self.show_keys;
             }
             ui.separator();
-            ui.toggle_value(&mut self.show_detail, RichText::new("Detalle").small())
+            ui.toggle_value(&mut self.show_detail, RichText::new("📄 Detalle").small())
                 .on_hover_text("Panel con la línea actual completa, seleccionable");
-            ui.toggle_value(&mut self.show_results, RichText::new("Resultados").small())
+            ui.toggle_value(&mut self.show_results, RichText::new("📋 Resultados").small())
                 .on_hover_text("Panel con la lista de líneas encontradas");
         });
 
@@ -1600,7 +1780,10 @@ impl App {
                         }
                         None => "Ir a línea…".to_string(),
                     };
-                    if let Some((a, b)) = t.selection() {
+                    if let Some(cs) = t.block() {
+                        let ((l0, l1), (c0, c1)) = (cs.lines(), cs.cols());
+                        s += &format!(" · bloque {} × {}", fmt_num(l1 - l0 + 1), fmt_num((c1 - c0) as u64));
+                    } else if let Some((a, b)) = t.selection() {
                         s += &if a.line == b.line {
                             format!(" · {} seleccionados", fmt_num((b.col - a.col) as u64))
                         } else {
@@ -1711,6 +1894,23 @@ impl App {
             self.show_settings = std::env::var("BUSCADOR_SETTINGS").is_ok();
             self.show_keys = std::env::var("BUSCADOR_KEYS").is_ok();
             self.show_replace = std::env::var("BUSCADOR_REPLACE").is_ok();
+            if let Ok(c) = std::env::var("BUSCADOR_COLORES") {
+                // «#fondo,#letra»
+                let hexc = |h: &str| u32::from_str_radix(h.trim().trim_start_matches('#'), 16).ok().map(|n| Color32::from_rgb((n >> 16) as u8, (n >> 8) as u8, n as u8));
+                if let Some((b, f)) = c.split_once(',').and_then(|(b, f)| Some((hexc(b)?, hexc(f)?))) {
+                    self.custom_colors = true;
+                    self.text_bg = b;
+                    self.text_fg = f;
+                }
+            }
+            if let Ok(b) = std::env::var("BUSCADOR_BLOQUE") {
+                // «l0,c0,l1,c1»
+                let v: Vec<usize> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if let (4, Some(t)) = (v.len(), self.tabs.get_mut(self.active)) {
+                    self.column_mode = true;
+                    t.colsel = Some(ColSel { a: (v[0] as u64, v[1]), b: (v[2] as u64, v[3]) });
+                }
+            }
             if let Ok(f) = std::env::var("BUSCADOR_FUENTE") {
                 ctx.set_fonts(crate::fonts::build(&f, &self.fallback_fonts).0);
                 self.text_font = f;
@@ -1847,29 +2047,35 @@ impl eframe::App for App {
         Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
 
         let font = crate::fonts::text_font(self.font_size);
+        let colors = self.text_colors();
         let has_search = self.tabs.get(self.active).is_some_and(|t| t.search.is_some());
         if self.show_results && has_search {
             Panel::bottom("results").resizable(true).default_size(180.0).min_size(60.0).show(ui, |ui| {
                 if let Some(t) = self.tabs.get_mut(self.active) {
-                    results_view(ui, t, &font);
+                    results_view(ui, t, &font, colors);
                 }
             });
         }
         if self.show_detail && !self.tabs.is_empty() {
             Panel::bottom("detail").resizable(true).default_size(90.0).min_size(40.0).show(ui, |ui| {
                 if let Some(t) = self.tabs.get_mut(self.active) {
-                    detail_view(ui, t, &font);
+                    detail_view(ui, t, &font, colors);
                 }
             });
         }
 
         let mut message = None;
         let mut view_focused = false;
+        let colors = self.text_colors();
+        let col_mode = self.column_mode && self.mono_font();
+        for t in &mut self.tabs {
+            t.col_mode = col_mode;
+        }
         let show_detail = &mut self.show_detail;
         let focus_view = std::mem::take(&mut self.focus_view);
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
-                (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view);
+                (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors);
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.heading("Arrastra archivos aquí, o pulsa Ctrl+O");
@@ -1921,7 +2127,15 @@ impl eframe::App for App {
 
 /// Vista virtual del texto: sólo se leen y pintan las líneas visibles.
 /// Devuelve un mensaje para la barra de estado y si el editor tiene el foco.
-fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool, focus: bool) -> (Option<String>, bool) {
+fn log_view(
+    ui: &mut Ui,
+    tab: &mut Tab,
+    font: &FontId,
+    show_detail: &mut bool,
+    focus: bool,
+    colors: Option<(Color32, Color32)>,
+) -> (Option<String>, bool) {
+    apply_text_colors(ui, colors);
     let mut message = None;
     let ctx = ui.ctx().clone();
     let (row_h, char_w) = ctx.fonts_mut(|f| (f.row_height(font).ceil(), f.glyph_width(font, '0')));
@@ -1991,8 +2205,12 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool, f
         let idx = g.cursor_from_pos(vec2(p.x - text_x + tab.hscroll, row_h / 2.0)).index.0;
         Pos::new(line, col_from_disp(&t, idx))
     };
+    // Columna visual bajo el puntero (puede pasar del final de la línea).
+    let vcol_at = |tab: &Tab, x: f32| -> usize { ((x - text_x + tab.hscroll) / char_w).round().max(0.0) as usize };
     if total > 0 {
         let shift = ui.input(|i| i.modifiers.shift);
+        // Modo bloque, o Opción/Alt+arrastrar para un bloque puntual.
+        let block_drag = tab.col_mode || ui.input(|i| i.modifiers.alt);
         let press = if resp.drag_started() { ui.input(|i| i.pointer.press_origin()) } else { None };
         if let Some(p) = press.or_else(|| (resp.clicked() || resp.secondary_clicked()).then(|| resp.interact_pointer_pos()).flatten())
         {
@@ -2009,7 +2227,20 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool, f
                 } else {
                     tab.select(Pos::new(l, 0), end);
                 }
+            } else if block_drag && !resp.secondary_clicked() {
+                let pos = pos_at(tab, tab.top, p);
+                let v = (pos.line, vcol_at(tab, p.x));
+                tab.colsel = Some(match tab.colsel {
+                    Some(cs) if shift => ColSel { a: cs.a, b: v },
+                    _ => ColSel { a: v, b: v },
+                });
+                tab.col_dragging = true;
+                tab.select(pos, pos);
             } else {
+                tab.col_dragging = false;
+                if !resp.secondary_clicked() {
+                    tab.colsel = None;
+                }
                 let pos = pos_at(tab, tab.top, p);
                 let in_sel = tab.selection().is_some_and(|(a, b)| a <= pos && pos <= b);
                 if shift && tab.anchor.is_some() {
@@ -2043,7 +2274,16 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool, f
                 tab.top = tab.top.min(max_top);
                 let clamped = pos2(p.x.max(text_x), p.y.clamp(text_area.top(), text_area.bottom() - 1.0));
                 if press.is_none() {
-                    tab.cursor = Some(pos_at(tab, tab.top, clamped));
+                    let pos = pos_at(tab, tab.top, clamped);
+                    if tab.col_dragging {
+                        let v = vcol_at(tab, clamped.x);
+                        if let Some(cs) = &mut tab.colsel {
+                            cs.b = (pos.line, v);
+                        }
+                        tab.select(pos, pos);
+                    } else {
+                        tab.cursor = Some(pos);
+                    }
                 }
                 ctx.request_repaint();
             }
@@ -2052,7 +2292,10 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool, f
     resp.context_menu(|ui| {
         let has_sel = tab.selection().is_some();
         if ui.button("Copiar (Ctrl+C)").clicked() {
-            message = Some(tab.copy(&ctx));
+            message = Some(match tab.block() {
+                Some(cs) => tab.copy_block(&ctx, cs),
+                None => tab.copy(&ctx),
+            });
             ui.close();
         }
         if ui.add_enabled(tab.editable, Button::new("Cortar (Ctrl+X)")).clicked() {
@@ -2153,6 +2396,12 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool, f
                 sel_color,
             );
         }
+        // Selección en bloque: el rectángulo entero, aunque pase del final de la línea.
+        if let Some(cs) = tab.colsel.filter(|c| (c.lines().0..=c.lines().1).contains(&n)) {
+            let (c0, c1) = cs.cols();
+            let (x0, x1) = (c0 as f32 * char_w, (c1 as f32 * char_w).max(c0 as f32 * char_w + 1.5));
+            text_painter.rect_filled(Rect::from_min_max(pos2(ox + x0, y), pos2(ox + x1, y + row_h)), 0.0, sel_color);
+        }
         painter.text(
             pos2(text_area.left() + gutter_w - 6.0, y),
             Align2::RIGHT_TOP,
@@ -2223,6 +2472,19 @@ fn log_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, show_detail: &mut bool, f
         );
     }
     (message, resp.has_focus())
+}
+
+const DEFAULT_BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x1e);
+const DEFAULT_FG: Color32 = Color32::from_rgb(0xd4, 0xd4, 0xd4);
+
+/// Colores propios del texto: sustituyen a los del tema en esta zona.
+fn apply_text_colors(ui: &mut Ui, colors: Option<(Color32, Color32)>) {
+    let Some((bg, fg)) = colors else { return };
+    let v = ui.visuals_mut();
+    v.extreme_bg_color = bg;
+    v.override_text_color = Some(fg);
+    v.weak_text_color = Some(bg.lerp_to_gamma(fg, 0.45));
+    v.faint_bg_color = bg.lerp_to_gamma(fg, 0.07);
 }
 
 /// Recorta una línea muy larga para maquetarla (igual que al pintarla).
@@ -2548,6 +2810,8 @@ impl App {
         let mut open = true;
         let (mut theme, mut font) = (self.theme, self.font_size);
         let mut family = self.text_font.clone();
+        let (mut custom, mut bg, mut fg) = (self.custom_colors, self.text_bg, self.text_fg);
+        let mut reset = false;
         Window::new("Ajustes").id(settings_window_id()).open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
             ui.strong("Tema");
             ui.horizontal(|ui| {
@@ -2575,15 +2839,57 @@ impl App {
             ui.add_space(8.0);
             ui.strong("Tamaño de letra del texto");
             ui.add(Slider::new(&mut font, 7.0..=40.0).step_by(1.0));
+            ui.add_space(8.0);
+            ui.strong("Colores del texto");
+            ui.checkbox(&mut custom, "Usar colores propios (tienen prioridad sobre el tema)");
+            ui.add_enabled_ui(custom, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Fondo");
+                    ui.color_edit_button_srgba(&mut bg);
+                    ui.add_space(12.0);
+                    ui.label("Letra");
+                    ui.color_edit_button_srgba(&mut fg);
+                });
+            });
             ui.add_space(6.0);
             ui.weak("Vista previa:");
-            Frame::NONE.fill(ui.visuals().extreme_bg_color).inner_margin(6.0).corner_radius(4.0).show(ui, |ui| {
-                ui.label(RichText::new("2026-11-10 12:00:01 [INFO] año, acción\n0O 1lI {}[]() -> => != 日本").font(crate::fonts::text_font(font)));
+            let (pbg, pfg) = if custom { (bg, fg) } else { (ui.visuals().extreme_bg_color, ui.visuals().text_color()) };
+            Frame::NONE.fill(pbg).inner_margin(6.0).corner_radius(4.0).show(ui, |ui| {
+                ui.label(
+                    RichText::new("2026-11-10 12:00:01 [INFO] año, acción\n0O 1lI {}[]() -> => != 日本")
+                        .font(crate::fonts::text_font(font))
+                        .color(pfg),
+                );
             });
+            ui.add_space(8.0);
+            ui.separator();
+            if ui.button("↺ Restablecer ajustes predeterminados").on_hover_text("Tema del sistema, Hack 13, sin colores propios").clicked() {
+                reset = true;
+            }
             ui.add_space(8.0);
             ui.weak("Los ajustes se guardan automáticamente.");
         });
         self.show_settings = open;
+        if reset {
+            let d = Settings::default();
+            self.theme = d.theme;
+            ctx.set_theme(d.theme);
+            self.font_size = d.font_size;
+            self.text_font = d.font;
+            ctx.set_fonts(crate::fonts::build(&self.text_font, &self.fallback_fonts).0);
+            self.custom_colors = false;
+            self.text_bg = DEFAULT_BG;
+            self.text_fg = DEFAULT_FG;
+            self.persist();
+            self.msg("Ajustes restablecidos");
+            return;
+        }
+        if (custom, bg, fg) != (self.custom_colors, self.text_bg, self.text_fg) {
+            self.custom_colors = custom;
+            self.text_bg = bg;
+            self.text_fg = fg;
+            self.persist();
+        }
         if theme != self.theme {
             self.theme = theme;
             ctx.set_theme(theme);
@@ -3031,8 +3337,9 @@ fn minimap(ui: &mut Ui, rect: Rect, resp: &Response, tab: &Tab, w: &mut AdvWin) 
 }
 
 /// Lista virtual de líneas con coincidencias.
-fn results_view(ui: &mut Ui, tab: &mut Tab, font: &FontId) {
+fn results_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color32, Color32)>) {
     let Some(search) = &tab.search else { return };
+    apply_text_colors(ui, colors);
     let ctx = ui.ctx().clone();
     let row_h = ctx.fonts_mut(|f| f.row_height(font)).ceil();
     let full = ui.available_rect_before_wrap();
@@ -3100,7 +3407,8 @@ fn results_view(ui: &mut Ui, tab: &mut Tab, font: &FontId) {
 }
 
 /// Línea actual completa en un cuadro de texto seleccionable (copia parcial).
-fn detail_view(ui: &mut Ui, tab: &mut Tab, font: &FontId) {
+fn detail_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color32, Color32)>) {
+    apply_text_colors(ui, colors);
     let Some(line) = tab.cursor.map(|c| c.line) else {
         ui.weak("Selecciona una línea para verla completa aquí.");
         return;
@@ -3301,6 +3609,26 @@ mod tests {
         std::fs::write(dir.join("informe copia.log"), "x").unwrap();
         assert_eq!(copy_name(&p), dir.join("informe copia 2.log"));
         assert_eq!(copy_name(&dir.join("LEEME")), dir.join("LEEME copia"));
+    }
+
+    #[test]
+    fn column_block_copies_only_real_text() {
+        let (mut t, _) = tab_with("col.txt", "abc def\nx\n\tuno dos\n  hola mundo\n");
+        // Columnas 2..6 de las líneas 0..3. El tab ocupa las columnas 0..4: empieza fuera del
+        // bloque, así que no se copia.
+        let cs = ColSel { a: (0, 2), b: (3, 6) };
+        assert_eq!(t.column_text(cs, usize::MAX).unwrap(), "c de\n\nun\nhola");
+        // El orden de las esquinas da igual.
+        let cs2 = ColSel { a: (3, 6), b: (0, 2) };
+        assert_eq!(t.column_text(cs2, usize::MAX), t.column_text(cs, usize::MAX));
+        // Bloque totalmente fuera del texto: líneas vacías, sin espacios inventados.
+        assert_eq!(t.column_text(ColSel { a: (0, 40), b: (1, 50) }, usize::MAX).unwrap(), "\n");
+        // Mayús+flechas en modo bloque amplían desde el cursor.
+        t.col_mode = true;
+        t.select(Pos::new(0, 1), Pos::new(0, 1));
+        t.extend_block(Key::ArrowDown);
+        t.extend_block(Key::ArrowRight);
+        assert_eq!(t.colsel, Some(ColSel { a: (0, 1), b: (1, 2) }));
     }
 
     #[test]

@@ -27,6 +27,10 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 - Botón «?» (o F1) con todos los atajos de teclado
 - Ajustes (⚙): tema Sistema / Claro / Oscuro, tipo de letra del texto (monoespaciadas como Hack, Menlo,
   SF Mono, Monaco, Consolas… o proporcionales) y tamaño; se recuerdan
+- Selección en bloque (botón ▦ Bloque, o Opción/Alt+arrastrar), con letra monoespaciada: marca un
+  rectángulo como una matriz, incluidos los huecos tras el final de las líneas; al copiar solo va el
+  texto real de cada fila, separado por saltos de línea
+- Colores propios de fondo y letra para el texto (prioridad sobre el tema) y «Restablecer ajustes»
 - Barra de estado: clic en «Lín X, Col Y» (o Ctrl+G) para ir a una línea; botones Resultados y Detalle
 - Panel «Detalle» para ver y copiar parte de una línea larga
 - Ir a línea (Ctrl+G), tamaño de letra (Ctrl+ / Ctrl−), arrastrar y soltar archivos
