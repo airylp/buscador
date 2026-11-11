@@ -80,3 +80,7 @@ cargo build --release
 - «Reemplazar todo» admite hasta 2 M de líneas modificadas de una vez (quedan en RAM hasta guardar).
 - No sigue el archivo en vivo (`tail -f`).
 - Cada línea se pinta hasta 16 KB; el panel Detalle muestra hasta 1 MB.
+
+## Licencia
+
+MIT. Ver [LICENSE](LICENSE).
