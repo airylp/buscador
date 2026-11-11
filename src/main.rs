@@ -2,6 +2,7 @@ mod app;
 mod beautify;
 mod blocks;
 mod buffer;
+mod diskmap;
 mod document;
 mod encoding;
 mod fonts;

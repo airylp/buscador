@@ -1077,6 +1077,8 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
 
 enum DialogKind {
     Open,
+    /// Carpeta para el mapa de disco.
+    Folder,
     /// Guardar como: ruta actual de la pestaña (la identifica aunque cambie de sitio).
     SaveAs(PathBuf),
 }
@@ -1178,7 +1180,7 @@ enum FileAction {
     CloseOthers(usize),
 }
 
-const REVEAL_LABEL: &str = if MAC {
+pub(crate) const REVEAL_LABEL: &str = if MAC {
     "Mostrar en Finder"
 } else if cfg!(windows) {
     "Mostrar en el Explorador"
@@ -1254,6 +1256,8 @@ pub struct App {
     ctx: Context,
     /// Diálogo de abrir/guardar en curso (solo uno a la vez).
     dialog: Option<PendingDialog>,
+    /// Ventana «Mapa de disco».
+    map: crate::diskmap::DiskMap,
     tabs: Vec<Tab>,
     active: usize,
     show_sidebar: bool,
@@ -1358,6 +1362,7 @@ impl App {
             updater: None,
             ctx: cc.egui_ctx.clone(),
             dialog: None,
+            map: Default::default(),
             view_focused: false,
             advs: Vec::new(),
             next_adv: 1,
@@ -1516,6 +1521,12 @@ impl App {
             DialogKind::Open => {
                 for f in paths {
                     self.open(f);
+                }
+            }
+            DialogKind::Folder => {
+                if let Some(dir) = paths.into_iter().next() {
+                    let ctx = self.ctx.clone();
+                    self.map.start_scan(dir, &ctx);
                 }
             }
             DialogKind::SaveAs(src) => {
@@ -1891,7 +1902,7 @@ impl App {
 
             // --- Búsqueda ---
             // Lo que va detrás del buscador ocupa ~400 px; el buscador se adapta.
-            let search_w = (ui.available_width() - if compact { 330.0 } else { 440.0 }).clamp(100.0, 320.0);
+            let search_w = (ui.available_width() - if compact { 370.0 } else { 520.0 }).clamp(100.0, 320.0);
             let r = ui.add(
                 TextEdit::singleline(&mut self.query)
                     .desired_width(search_w)
@@ -1968,6 +1979,9 @@ impl App {
             {
                 self.new_adv_window();
             }
+            ui.toggle_value(&mut self.map.open, lb("🗺", "Mapa")).on_hover_text(
+                "Mapa de disco: qué ocupa cada carpeta y archivo de una carpeta, y búsqueda de texto en sus archivos (se resaltan en verde)",
+            );
 
         });
         if self.show_replace {
@@ -2470,6 +2484,14 @@ impl App {
                     w.start(t);
                 }
             }
+            if let Ok(m) = std::env::var("BUSCADOR_MAPA") {
+                // «carpeta|texto»: abre el mapa, lee la carpeta y busca el texto.
+                let (dir, q) = m.split_once('|').unwrap_or((&m, ""));
+                self.map.open = true;
+                self.map.needle = q.into();
+                self.map.search_when_ready = !q.is_empty();
+                self.map.start_scan(dir.into(), ctx);
+            }
             if let Ok(q) = std::env::var("BUSCADOR_QUERY") {
                 self.query = q;
                 self.show_detail = true;
@@ -2669,6 +2691,7 @@ impl eframe::App for App {
         self.update_window(&ctx);
         self.keys_window(&ctx);
         self.adv_windows(&ctx);
+        self.map_window(&ctx);
         self.confirm_dialog(&ctx);
 
         // Saltar a la primera coincidencia en cuanto aparezca.
@@ -2697,7 +2720,8 @@ impl eframe::App for App {
                     || t.save.is_some()
                     || t.search.as_ref().is_some_and(|s| !s.is_done())
             })
-            || self.advs.iter().any(|w| w.is_busy());
+            || self.advs.iter().any(|w| w.is_busy())
+            || self.map.is_busy();
         if busy {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
@@ -3727,7 +3751,11 @@ impl App {
             return;
         }
         let inline: Vec<Id> = self.advs.iter().filter(|w| !w.detached).map(|w| adv_window_id(w.id)).collect();
-        let open: Vec<Id> = [self.show_keys.then(keys_window_id), self.show_settings.then(settings_window_id)]
+        let open: Vec<Id> = [
+            self.show_keys.then(keys_window_id),
+            self.show_settings.then(settings_window_id),
+            self.map.open.then(crate::diskmap::window_id),
+        ]
             .into_iter()
             .flatten()
             .chain(inline)
@@ -3742,6 +3770,8 @@ impl App {
             self.show_keys = false;
         } else if target == settings_window_id() {
             self.show_settings = false;
+        } else if target == crate::diskmap::window_id() {
+            self.map.open = false;
 
         } else if let Some(w) = self.advs.iter_mut().find(|w| adv_window_id(w.id) == target) {
             w.open = false;
@@ -3869,6 +3899,69 @@ impl App {
                 });
             });
         self.show_keys = open;
+    }
+
+    /// Ventana «Mapa de disco» (ver `diskmap`).
+    fn map_window(&mut self, ctx: &Context) {
+        if !self.map.open {
+            if self.map.is_busy() {
+                self.map.stop(); // al cerrarla se cancela lo que esté en marcha
+            }
+            return;
+        }
+        let mut open = true;
+        let mut out = crate::diskmap::Out::default();
+        Window::new("Mapa de disco")
+            .id(crate::diskmap::window_id())
+            .open(&mut open)
+            .default_size([1000.0, 680.0])
+            .min_size([640.0, 420.0])
+            .max_width(ctx.content_rect().width() * 0.95)
+            .resizable(true)
+            .collapsible(false)
+            .show(ctx, |ui| out = self.map.ui(ui));
+        self.map.open &= open;
+        if out.pick_folder && self.dialog.is_none() {
+            let fut = rfd::AsyncFileDialog::new().set_title("Carpeta para el mapa de disco").pick_folder();
+            self.dialog = Some(PendingDialog::spawn(&self.ctx, DialogKind::Folder, async move { fut.await.map(|h| vec![h.path().to_path_buf()]) }));
+        }
+        if let Some(m) = out.msg {
+            self.msg(m);
+        }
+        if let Some(p) = out.reveal {
+            if let Err(e) = reveal_in_file_manager(&p) {
+                self.msg(format!("No se pudo abrir la carpeta: {e}"));
+            }
+        }
+        if let Some(t) = out.copy {
+            ctx.copy_text(t);
+        }
+        if !out.open.is_empty() {
+            let n = out.open.len();
+            if let Some((q, case)) = &out.needle {
+                self.query = q.clone();
+                self.use_regex = false;
+                self.case_sensitive = *case;
+            }
+            // Se abren todos y se busca el texto en cada uno; queda activo el primero.
+            let mut first = None;
+            for p in out.open {
+                self.open(p.clone());
+                if let Some(i) = self.tabs.iter().position(|t| t.doc.path == p) {
+                    first.get_or_insert(i);
+                    if out.needle.is_some() {
+                        self.active = i;
+                        self.search_or_next();
+                    }
+                }
+            }
+            if let Some(i) = first {
+                self.active = i;
+            }
+            self.map.open = false;
+            self.focus_view = true;
+            self.msg(if n == 1 { "Archivo abierto desde el mapa".to_string() } else { format!("{n} archivos abiertos desde el mapa") });
+        }
     }
 
     fn new_adv_window(&mut self) {
@@ -4414,7 +4507,7 @@ fn add_signed(v: u64, d: i64) -> u64 {
     if d < 0 { v.saturating_sub(d.unsigned_abs()) } else { v.saturating_add(d as u64) }
 }
 
-fn fmt_num(n: u64) -> String {
+pub(crate) fn fmt_num(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
@@ -4426,7 +4519,7 @@ fn fmt_num(n: u64) -> String {
     out
 }
 
-fn human_size(b: u64) -> String {
+pub(crate) fn human_size(b: u64) -> String {
     const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = b as f64;
     let mut i = 0;
