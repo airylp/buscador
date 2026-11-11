@@ -27,6 +27,8 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 - Botón «?» (o F1) con todos los atajos de teclado
 - Ajustes (⚙): tema Sistema / Claro / Oscuro, tipo de letra del texto (monoespaciadas como Hack, Menlo,
   SF Mono, Monaco, Consolas… o proporcionales) y tamaño; se recuerdan
+- Archivo nuevo (📝, Ctrl+N) para pegar y guardar lo copiado; también «Nuevo archivo con la selección»
+  (clic derecho) y «A archivo nuevo» en la búsqueda avanzada. Guardar pide dónde
 - Selección en bloque (botón ▦ Bloque, o Opción/Alt+arrastrar), con letra monoespaciada: marca un
   rectángulo como una matriz, incluidos los huecos tras el final de las líneas; al copiar solo va el
   texto real de cada fila, separado por saltos de línea

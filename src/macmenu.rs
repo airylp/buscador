@@ -85,12 +85,13 @@ impl MacMenu {
         )
         .unwrap();
 
+        let new = item("Nuevo", "Cmd+N", cmd(Key::N));
         let open = item("Abrir…", "Cmd+O", cmd(Key::O));
         let save = item("Guardar", "Cmd+S", cmd(Key::S));
         let save_as = item("Guardar como…", "Cmd+Shift+S", cmd_shift(Key::S));
         let close = item("Cerrar archivo", "Cmd+W", cmd(Key::W));
         let next = item("Siguiente archivo", "Ctrl+Tab", Cmd::Key(Modifiers::CTRL, Key::Tab));
-        let file = Submenu::with_items("Archivo", true, &[&open, &sep(), &save, &save_as, &sep(), &next, &close]).unwrap();
+        let file = Submenu::with_items("Archivo", true, &[&new, &open, &sep(), &save, &save_as, &sep(), &next, &close]).unwrap();
 
         let undo = item("Deshacer", "Cmd+Z", cmd(Key::Z));
         let redo = item("Rehacer", "Cmd+Shift+Z", cmd_shift(Key::Z));

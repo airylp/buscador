@@ -69,6 +69,13 @@ pub struct Tab {
     visible_rows: u64,
     detail_cache: Option<(u64, u64, String)>,
     save: Option<SaveJob>,
+    /// Archivo nuevo sin guardar: su `doc` es un archivo vacío temporal que se
+    /// borra al guardar o al cerrar; Guardar pide dónde.
+    untitled: bool,
+    /// Texto a meter en cuanto el documento esté listo (archivo nuevo con lo copiado).
+    pending_text: Option<String>,
+    /// Petición del menú contextual: crear un archivo nuevo con este texto.
+    export_request: Option<String>,
     /// Selección en bloque (columnas), en columnas visuales: puede pasar del
     /// final de las líneas.
     colsel: Option<ColSel>,
@@ -105,6 +112,9 @@ impl Tab {
             visible_rows: 1,
             detail_cache: None,
             save: None,
+            untitled: false,
+            pending_text: None,
+            export_request: None,
             colsel: None,
             col_mode: false,
             col_dragging: false,
@@ -565,7 +575,10 @@ impl Tab {
                         if doc.src.encoding != enc {
                             doc.set_encoding(enc);
                         }
-                        self.doc = doc;
+                        let old = std::mem::replace(&mut self.doc, doc);
+                        if std::mem::take(&mut self.untitled) {
+                            let _ = std::fs::remove_file(&old.path);
+                        }
                         self.buf = None;
                         self.detail_cache = None;
                         let mut m = format!("Guardado {} ({})", self.doc.name, human_size(self.doc.len() as u64));
@@ -866,6 +879,7 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
         (
             "Archivos",
             vec![
+                (k("C+N"), "Archivo nuevo (para pegar y guardar lo copiado)"),
                 (k("C+O"), "Abrir (también arrastrando archivos)"),
                 (k("C+S"), "Guardar"),
                 (k("C+Shift+S"), "Guardar como…"),
@@ -995,6 +1009,30 @@ fn copy_name(path: &std::path::Path) -> PathBuf {
         .unwrap()
 }
 
+impl Drop for Tab {
+    fn drop(&mut self) {
+        if self.untitled {
+            let _ = std::fs::remove_file(&self.doc.path);
+        }
+    }
+}
+
+/// Carpeta de los archivos temporales de «Nuevo».
+fn untitled_dir() -> PathBuf {
+    std::env::temp_dir().join("buscador-nuevos")
+}
+
+/// Borra temporales de «Nuevo» olvidados (de hace más de una semana).
+fn clean_old_untitled() {
+    let Ok(rd) = std::fs::read_dir(untitled_dir()) else { return };
+    for e in rd.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d > Duration::from_secs(7 * 86_400));
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Confirm {
     CloseTab(usize),
@@ -1023,9 +1061,13 @@ pub struct App {
     text_fg: Color32,
     /// Botón «Bloque»: seleccionar rectángulos (solo con letra monoespaciada).
     column_mode: bool,
+    /// Siguiente número para «Sin título N».
+    next_untitled: u32,
     fallback_fonts: Vec<(String, Arc<FontData>)>,
     show_settings: bool,
     show_keys: bool,
+    /// La ventana de ajustes estaba abierta en el fotograma anterior.
+    settings_was_open: bool,
     /// El editor tenía el foco en el último fotograma.
     view_focused: bool,
     /// Ventanas de búsqueda avanzada abiertas.
@@ -1050,6 +1092,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         let settings = Settings::load();
+        clean_old_untitled();
         let fallbacks = crate::fonts::load_fallbacks();
         cc.egui_ctx.set_fonts(crate::fonts::build(&settings.font, &fallbacks).0);
         cc.egui_ctx.set_theme(settings.theme);
@@ -1072,9 +1115,11 @@ impl App {
             text_bg: settings.colors.map_or(DEFAULT_BG, |c| Color32::from_rgb(c.0[0], c.0[1], c.0[2])),
             text_fg: settings.colors.map_or(DEFAULT_FG, |c| Color32::from_rgb(c.1[0], c.1[1], c.1[2])),
             column_mode: false,
+            next_untitled: 1,
             fallback_fonts: fallbacks,
             show_settings: false,
             show_keys: false,
+            settings_was_open: false,
             view_focused: false,
             advs: Vec::new(),
             next_adv: 1,
@@ -1109,6 +1154,28 @@ impl App {
                 self.focus_view = true;
             }
             Err(e) => self.msg(format!("No se pudo abrir {}: {e}", path.display())),
+        }
+    }
+
+    /// Archivo nuevo vacío (o con `text`), editable; Guardar pedirá dónde.
+    fn new_untitled(&mut self, text: Option<String>) {
+        let n = self.next_untitled;
+        self.next_untitled += 1;
+        let dir = untitled_dir();
+        let path = dir.join(format!("sin-titulo-{}-{n}.txt", std::process::id()));
+        let r = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, b"")).and_then(|_| Document::open(&path));
+        match r {
+            Ok(mut doc) => {
+                doc.name = format!("Sin título {n}");
+                let mut t = Tab::new(doc);
+                t.untitled = true;
+                t.editable = true;
+                t.pending_text = text.filter(|s| !s.is_empty());
+                self.tabs.push(t);
+                self.active = self.tabs.len() - 1;
+                self.focus_view = true;
+            }
+            Err(e) => self.msg(format!("No se pudo crear el archivo nuevo: {e}")),
         }
     }
 
@@ -1226,9 +1293,10 @@ impl App {
 
     fn save(&mut self, save_as: bool) {
         let Some(t) = self.tabs.get_mut(self.active) else { return };
-        let target = if save_as {
-            let mut d = rfd::FileDialog::new().set_title("Guardar como").set_file_name(&t.doc.name);
-            if let Some(dir) = t.doc.path.parent() {
+        let target = if save_as || t.untitled {
+            let name = if t.untitled { format!("{}.txt", t.doc.name) } else { t.doc.name.clone() };
+            let mut d = rfd::FileDialog::new().set_title("Guardar como").set_file_name(name);
+            if let Some(dir) = t.doc.path.parent().filter(|_| !t.untitled) {
                 d = d.set_directory(dir);
             }
             match d.save_file() {
@@ -1264,6 +1332,9 @@ impl App {
         }
         if pressed(sc(Modifiers::NONE, Key::F1)) {
             self.show_keys = !self.show_keys;
+        }
+        if pressed(sc(Modifiers::COMMAND, Key::N)) {
+            self.new_untitled(None);
         }
         if pressed(sc(Modifiers::COMMAND, Key::O)) {
             self.open_dialog();
@@ -1358,13 +1429,16 @@ impl App {
             }
         });
         // Con poco espacio, los botones muestran solo el ícono (el texto queda en el tooltip).
-        let compact = full.width() < 1180.0;
+        let compact = full.width() < 1360.0;
         let lb = |icon: &str, text: &str| if compact { icon.to_string() } else { format!("{icon} {text}") };
         ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.set_clip_rect(left.intersect(ui.clip_rect()));
             // --- Archivo y edición ---
             if ui.selectable_label(self.show_sidebar, "☰").on_hover_text("Panel de archivos (Ctrl+B)").clicked() {
                 self.show_sidebar = !self.show_sidebar;
+            }
+            if ui.button(lb("📝", "Nuevo")).on_hover_text("Archivo nuevo, por ejemplo para pegar lo copiado (Ctrl+N)").clicked() {
+                self.new_untitled(None);
             }
             if ui.button(lb("📂", "Abrir")).on_hover_text("Abrir archivos (Ctrl+O) · también puedes arrastrarlos").clicked() {
                 self.open_dialog();
@@ -1378,7 +1452,8 @@ impl App {
                     t.buf.as_ref().is_some_and(|b| b.can_redo()),
                 )
             });
-            if ui.add_enabled(dirty, Button::new(lb("💾", "Guardar"))).on_hover_text("Guardar (Ctrl+S) · Guardar como: Ctrl+Shift+S").clicked() {
+            let untitled = self.tabs.get(self.active).is_some_and(|t| t.untitled);
+            if ui.add_enabled(dirty || untitled, Button::new(lb("💾", "Guardar"))).on_hover_text("Guardar (Ctrl+S) · Guardar como: Ctrl+Shift+S").clicked() {
                 self.save(false);
             }
             if ui.add_enabled(can_undo && editable, Button::new("↶")).on_hover_text("Deshacer (Ctrl+Z)").clicked() {
@@ -1657,29 +1732,34 @@ impl App {
                             ui.selectable_label(i == self.active, RichText::new(name).strong())
                         })
                         .inner
-                        .on_hover_text(format!("{}\nClic derecho: más opciones", t.doc.path.display()));
+                        .on_hover_text(if t.untitled {
+                            "Archivo nuevo sin guardar\nClic derecho: más opciones".to_string()
+                        } else {
+                            format!("{}\nClic derecho: más opciones", t.doc.path.display())
+                        });
                     if r.clicked() {
                         self.active = i;
                     }
                     r.context_menu(|ui| {
                         let mut chosen = None;
-                        let nw = ui.button("Abrir en una ventana nueva");
+                        let on_disk = !t.untitled;
+                        let nw = ui.add_enabled(on_disk, Button::new("Abrir en una ventana nueva"));
                         let nw = if t.dirty() { nw.on_hover_text("La ventana nueva muestra la versión guardada en disco") } else { nw };
                         if nw.clicked() {
                             chosen = Some(FileAction::NewWindow(i));
                         }
                         ui.separator();
-                        if ui.button(REVEAL_LABEL).clicked() {
+                        if ui.add_enabled(on_disk, Button::new(REVEAL_LABEL)).clicked() {
                             chosen = Some(FileAction::Reveal(i));
                         }
-                        if ui.button("Copiar ruta").clicked() {
+                        if ui.add_enabled(on_disk, Button::new("Copiar ruta")).clicked() {
                             chosen = Some(FileAction::CopyPath(i));
                         }
                         if ui.button("Copiar nombre").clicked() {
                             chosen = Some(FileAction::CopyName(i));
                         }
                         ui.separator();
-                        let dup = ui.button("Duplicar");
+                        let dup = ui.add_enabled(on_disk, Button::new("Duplicar"));
                         let dup = if t.dirty() { dup.on_hover_text("La copia incluye los cambios sin guardar; el original no se modifica") } else { dup };
                         if dup.clicked() {
                             chosen = Some(FileAction::Duplicate(i));
@@ -1824,7 +1904,11 @@ impl App {
                     ui.add(ProgressBar::new(p.min(1.0)).desired_width(140.0).text("guardando…"));
                 }
                 ui.separator();
-                ui.label(RichText::new(d.path.display().to_string()).small().weak()).on_hover_text("Ruta del archivo");
+                if t.untitled {
+                    ui.label(RichText::new("sin guardar en disco · Ctrl+S para elegir dónde").small().weak());
+                } else {
+                    ui.label(RichText::new(d.path.display().to_string()).small().weak()).on_hover_text("Ruta del archivo");
+                }
             }
             if let Some((m, t)) = &self.message {
                 if t.elapsed() < Duration::from_secs(6) {
@@ -1910,6 +1994,9 @@ impl App {
                     self.column_mode = true;
                     t.colsel = Some(ColSel { a: (v[0] as u64, v[1]), b: (v[2] as u64, v[3]) });
                 }
+            }
+            if let Ok(txt) = std::env::var("BUSCADOR_NUEVO") {
+                self.new_untitled(Some(txt.replace("\\n", "\n")));
             }
             if let Ok(f) = std::env::var("BUSCADOR_FUENTE") {
                 ctx.set_fonts(crate::fonts::build(&f, &self.fallback_fonts).0);
@@ -2083,6 +2170,25 @@ impl eframe::App for App {
             }
         });
         self.view_focused = view_focused;
+        // «Nuevo archivo con la selección» y texto pendiente de archivos nuevos.
+        let exports: Vec<String> = self.tabs.iter_mut().filter_map(|t| t.export_request.take()).collect();
+        for text in exports {
+            self.new_untitled(Some(text));
+        }
+        for t in &mut self.tabs {
+            if t.pending_text.is_some() && t.doc.indexing_done() {
+                let text = t.pending_text.take().unwrap();
+                t.select(Pos::default(), Pos::default());
+                if let Err(e) = t.insert(&text, EditKind::Other) {
+                    self.message = Some((e, Instant::now()));
+                }
+                t.select(Pos::default(), Pos::default());
+                t.center_on = Some(0);
+            }
+        }
+        if self.tabs.iter().any(|t| t.pending_text.is_some()) {
+            ctx.request_repaint();
+        }
         if let Some(m) = message {
             self.msg(m);
         }
@@ -2296,6 +2402,23 @@ fn log_view(
                 Some(cs) => tab.copy_block(&ctx, cs),
                 None => tab.copy(&ctx),
             });
+            ui.close();
+        }
+        let has_any = tab.block().is_some() || tab.selection().is_some();
+        if ui
+            .add_enabled(has_any, Button::new("📝 Nuevo archivo con la selección"))
+            .on_hover_text("Abre un archivo nuevo con el texto seleccionado (o el bloque), listo para guardar")
+            .clicked()
+        {
+            let text = match (tab.block(), tab.selection()) {
+                (Some(cs), _) => tab.column_text(cs, MAX_COPY_BYTES),
+                (None, Some((a, b))) => tab.text(a, b, MAX_COPY_BYTES),
+                _ => None,
+            };
+            match text {
+                Some(t) => tab.export_request = Some(t),
+                None => message = Some(format!("Selección demasiado grande (> {})", human_size(MAX_COPY_BYTES as u64))),
+            }
             ui.close();
         }
         if ui.add_enabled(tab.editable, Button::new("Cortar (Ctrl+X)")).clicked() {
@@ -2778,6 +2901,8 @@ struct AdvOut {
     activate: Option<usize>,
     focus_view: bool,
     new_window: bool,
+    /// Texto para un archivo nuevo («A archivo nuevo»).
+    new_doc: Option<String>,
 }
 
 fn block_range(b: &Block, mode: CopyMode) -> (Pos, Pos) {
@@ -2804,6 +2929,8 @@ const MINIMAP_GREEN: Color32 = Color32::from_rgb(40, 190, 80);
 
 impl App {
     fn settings_window(&mut self, ctx: &Context) {
+        // Al abrirse, aparece centrada (luego se puede mover).
+        let just_opened = self.show_settings && !std::mem::replace(&mut self.settings_was_open, self.show_settings);
         if !self.show_settings {
             return;
         }
@@ -2812,7 +2939,11 @@ impl App {
         let mut family = self.text_font.clone();
         let (mut custom, mut bg, mut fg) = (self.custom_colors, self.text_bg, self.text_fg);
         let mut reset = false;
-        Window::new("Ajustes").id(settings_window_id()).open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+        let mut win = Window::new("Ajustes").id(settings_window_id()).pivot(Align2::CENTER_CENTER);
+        if just_opened {
+            win = win.current_pos(ctx.content_rect().center());
+        }
+        win.open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
             ui.strong("Tema");
             ui.horizontal(|ui| {
                 ui.radio_value(&mut theme, ThemePreference::System, "Sistema");
@@ -3021,6 +3152,9 @@ impl App {
             if o.new_window {
                 self.new_adv_window();
             }
+            if let Some(t) = o.new_doc {
+                self.new_untitled(Some(t));
+            }
         }
     }
 }
@@ -3205,6 +3339,23 @@ fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOu
         }
         if ui.add_enabled(count > 0, Button::new(format!("Copiar todos ({})", fmt_num(count as u64)))).clicked() {
             out.msg = Some(copy(None));
+        }
+        if ui
+            .add_enabled(count > 0, Button::new("📝 A archivo nuevo"))
+            .on_hover_text("Abre un archivo nuevo con todos los bloques (según «Copiar» y el separador), listo para guardar")
+            .clicked()
+        {
+            if let Some((s, _, _)) = &w.search {
+                if !s.is_done() {
+                    out.msg = Some("Espera a que termine la búsqueda".into());
+                } else {
+                    let all = s.blocks.lock().unwrap();
+                    match tab.blocks_text(&all, w.mode, w.sep) {
+                        Ok((t, _)) => out.new_doc = Some(t),
+                        Err(e) => out.msg = Some(e),
+                    }
+                }
+            }
         }
     });
     ui.separator();
@@ -3629,6 +3780,39 @@ mod tests {
         t.extend_block(Key::ArrowDown);
         t.extend_block(Key::ArrowRight);
         assert_eq!(t.colsel, Some(ColSel { a: (0, 1), b: (1, 2) }));
+    }
+
+    #[test]
+    fn untitled_save_becomes_real_file() {
+        let dir = untitled_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = dir.join("sin-titulo-test.txt");
+        std::fs::write(&tmp, b"").unwrap();
+        let doc = Document::open(&tmp).unwrap();
+        while !doc.indexing_done() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut t = Tab::new(doc);
+        t.untitled = true;
+        t.select(Pos::default(), Pos::default());
+        t.insert("copiado\nen bloque", EditKind::Other).unwrap();
+        let target = std::env::temp_dir().join("buscador-tests").join("guardado-nuevo.txt");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&target);
+        t.start_save(target.clone()).unwrap();
+        while t.poll_save().is_none() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "copiado\nen bloque");
+        assert!(!t.untitled && t.doc.path == std::fs::canonicalize(&target).unwrap_or(target.clone()) || t.doc.path == target);
+        assert!(!tmp.exists(), "el temporal se borra al guardar");
+        // Cerrar un «Sin título» también borra su temporal.
+        let tmp2 = dir.join("sin-titulo-test2.txt");
+        std::fs::write(&tmp2, b"").unwrap();
+        let mut t2 = Tab::new(Document::open(&tmp2).unwrap());
+        t2.untitled = true;
+        drop(t2);
+        assert!(!tmp2.exists());
     }
 
     #[test]
