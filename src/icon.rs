@@ -1,13 +1,15 @@
-//! Ícono de la aplicación: una «B» pixel-art, generada en código (sin
-//! archivos de imagen). Lo usan Cmd+Tab y el Dock en macOS, y la barra de
+//! Ícono de la aplicación: una «B» pixel-art azul sobre un cuadrado
+//! redondeado oscuro y liso (con bordes suavizados), generado en código, sin
+//! archivos de imagen. Lo usan Cmd+Tab y el Dock en macOS, y la barra de
 //! tareas en Windows/Linux.
 
 use eframe::egui::IconData;
 
-/// Cuadrícula de 16×16 «píxeles» gordos.
-const N: usize = 16;
-/// Tamaño de cada píxel gordo: 16 × 32 = 512 px (nítido en Retina).
-const CELL: usize = 32;
+/// La «B» (8×8 + sombra) se dibuja en una cuadrícula de 15×15 «píxeles»
+/// gordos sobre el cuadrado redondeado, centrada (celdas 3–11).
+const N: isize = 15;
+/// Tamaño del ícono de la ventana: 512 px (nítido en Retina).
+const SIZE: usize = 512;
 
 const B: [&str; 8] = [
     "######..", //
@@ -20,67 +22,88 @@ const B: [&str; 8] = [
     "#######.", //
 ];
 
-const BG: [u8; 3] = [0x1b, 0x24, 0x33];
-const BG_TOP: [u8; 3] = [0x26, 0x32, 0x4a];
-const BG_BOTTOM: [u8; 3] = [0x12, 0x19, 0x23];
-const GREEN: [u8; 3] = [0x3d, 0xdc, 0x6e];
-const GREEN_LIGHT: [u8; 3] = [0x8b, 0xf5, 0xa8];
-const SHADOW: [u8; 3] = [0x0e, 0x5a, 0x2a];
+/// Fondo: degradado vertical oscuro.
+const BG_TOP: [f32; 3] = [0x25 as f32, 0x2d as f32, 0x3f as f32];
+const BG_BOTTOM: [f32; 3] = [0x0b as f32, 0x0e as f32, 0x16 as f32];
+const BLUE: [u8; 3] = [0x2f, 0x8c, 0xff];
+const BLUE_LIGHT: [u8; 3] = [0x8f, 0xcf, 0xff];
+const BLUE_DARK: [u8; 3] = [0x1d, 0x5f, 0xd6];
+const SHADOW: [u8; 3] = [0x06, 0x1c, 0x45];
 
-fn grid() -> [[Option<[u8; 3]>; N]; N] {
-    let mut g = [[None; N]; N];
-    // Fondo: cuadrado de 14×14 con las esquinas recortadas (redondeo pixelado).
-    for (r, row) in g.iter_mut().enumerate().take(15).skip(1) {
-        for (c, cell) in row.iter_mut().enumerate().take(15).skip(1) {
-            let corner = (r == 1 || r == 14) && (c == 1 || c == 14);
-            if !corner {
-                *cell = Some(match r {
-                    1 => BG_TOP,
-                    14 => BG_BOTTOM,
-                    _ => BG,
-                });
-            }
-        }
+/// Color de la «B» en la celda (fila, columna) de la cuadrícula, si hay.
+fn b_cell(r: isize, c: isize) -> Option<[u8; 3]> {
+    let (r0, c0) = (3, 3);
+    let on = |r: isize, c: isize| {
+        let (dr, dc) = (r - r0 as isize, c - c0 as isize);
+        (0..8).contains(&dr) && (0..8).contains(&dc) && B[dr as usize].as_bytes()[dc as usize] == b'#'
+    };
+    if on(r, c) {
+        // Brillo arriba a la izquierda de cada trazo y algo más oscuro abajo.
+        let above = !on(r - 1, c);
+        let left = !on(r, c - 1);
+        let below = !on(r + 1, c);
+        Some(if above && left {
+            BLUE_LIGHT
+        } else if below {
+            BLUE_DARK
+        } else {
+            BLUE
+        })
+    } else if on(r - 1, c - 1) {
+        Some(SHADOW)
+    } else {
+        None
     }
-    // La «B», centrada (filas 4–11, columnas 4–11), con sombra abajo a la derecha.
-    let (r0, c0) = (4, 4);
-    for (dr, line) in B.iter().enumerate() {
-        for (dc, ch) in line.chars().enumerate() {
-            if ch == '#' {
-                g[r0 + dr + 1][c0 + dc + 1] = Some(SHADOW);
-            }
-        }
-    }
-    for (dr, line) in B.iter().enumerate() {
-        for (dc, ch) in line.chars().enumerate() {
-            if ch == '#' {
-                // Brillo en el borde superior izquierdo de cada trazo.
-                let above = dr == 0 || B[dr - 1].as_bytes()[dc] != b'#';
-                let left = dc == 0 || line.as_bytes()[dc - 1] != b'#';
-                g[r0 + dr][c0 + dc] = Some(if above && left { GREEN_LIGHT } else { GREEN });
-            }
-        }
-    }
-    g
 }
 
-/// RGBA del ícono a `size` px (múltiplo de 16 para que los píxeles sean exactos).
+/// RGBA del ícono a `size` px.
 fn render(size: usize) -> Vec<u8> {
-    let g = grid();
+    let s = size as f32;
+    // Márgenes y radio como los íconos de macOS (contenido ≈ 82 % del lienzo).
+    let m = s * 0.09;
+    let half = (s - 2.0 * m) / 2.0;
+    let radius = (s - 2.0 * m) * 0.225;
+    let center = s / 2.0;
     let mut rgba = vec![0u8; size * size * 4];
     for y in 0..size {
         for x in 0..size {
-            if let Some([r, gr, b]) = g[y * N / size][x * N / size] {
-                let i = (y * size + x) * 4;
-                rgba[i..i + 4].copy_from_slice(&[r, gr, b, 255]);
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            // Distancia con signo al cuadrado redondeado.
+            let qx = (px - center).abs() - (half - radius);
+            let qy = (py - center).abs() - (half - radius);
+            let out = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - radius;
+            let alpha = (0.5 - out).clamp(0.0, 1.0);
+            if alpha <= 0.0 {
+                continue;
             }
+            let t = ((py - m) / (s - 2.0 * m)).clamp(0.0, 1.0);
+            let mut col = [0u8; 3];
+            for k in 0..3 {
+                col[k] = (BG_TOP[k] + (BG_BOTTOM[k] - BG_TOP[k]) * t).round() as u8;
+            }
+            // Filo claro muy suave en el borde: se distingue sobre fondos oscuros.
+            let edge = (-out).clamp(0.0, s * 0.012) / (s * 0.012);
+            if edge < 1.0 {
+                for c in col.iter_mut() {
+                    *c = (*c as f32 + (1.0 - edge) * 28.0).min(255.0) as u8;
+                }
+            }
+            let cell = (s - 2.0 * m) / N as f32;
+            let (gr, gc) = (((py - m) / cell).floor() as isize, ((px - m) / cell).floor() as isize);
+            if (0..N).contains(&gr) && (0..N).contains(&gc) {
+                if let Some(b) = b_cell(gr, gc) {
+                    col = b;
+                }
+            }
+            let i = (y * size + x) * 4;
+            rgba[i..i + 4].copy_from_slice(&[col[0], col[1], col[2], (alpha * 255.0).round() as u8]);
         }
     }
     rgba
 }
 
 pub fn app_icon() -> IconData {
-    let size = N * CELL;
+    let size = SIZE;
     IconData { rgba: render(size), width: size as u32, height: size as u32 }
 }
 

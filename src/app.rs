@@ -2154,11 +2154,11 @@ impl App {
                             ui.selectable_label(i == self.active, RichText::new(name).strong())
                         })
                         .inner
-                        .on_hover_text(if t.untitled {
-                            "Archivo nuevo sin guardar\nClic derecho: más opciones".to_string()
-                        } else {
-                            format!("{}\nClic derecho: más opciones", t.doc.path.display())
-                        });
+                        .on_hover_text(format!(
+                            "{}\nClic derecho: más opciones\n{}",
+                            if t.untitled { "Archivo nuevo sin guardar".to_string() } else { t.doc.path.display().to_string() },
+                            tab_details(t)
+                        ));
                     if r.clicked() {
                         self.active = i;
                     }
@@ -2199,24 +2199,7 @@ impl App {
                         }
                     });
                 });
-                let idx = if t.doc.indexing_done() {
-                    format!("{} líneas", fmt_num(t.total()))
-                } else {
-                    let p = t.doc.progress.load(Ordering::Relaxed) as f64 / t.doc.len().max(1) as f64;
-                    format!("indexando {:.0}%", p * 100.0)
-                };
-                ui.label(
-                    RichText::new(format!(
-                        "   {} · {} · {}{}",
-                        human_size(t.doc.len() as u64),
-                        t.doc.src.encoding.name(),
-                        idx,
-                        if t.editable { "" } else { " · solo lectura" }
-                    ))
-                    .small()
-                    .weak(),
-                );
-                ui.add_space(4.0);
+                ui.add_space(2.0);
             }
             if self.tabs.is_empty() {
                 ui.weak("Sin archivos.\nUsa «Abrir…» o arrastra archivos aquí.");
@@ -4531,6 +4514,23 @@ fn hscrollbar(ui: &mut Ui, rect: Rect, id: Id, offset: &mut f32, content: f32, v
 
 fn add_signed(v: u64, d: i64) -> u64 {
     if d < 0 { v.saturating_sub(d.unsigned_abs()) } else { v.saturating_add(d as u64) }
+}
+
+/// «14.6 KB · UTF-8 · 60 líneas» (tooltip del panel de archivos).
+fn tab_details(t: &Tab) -> String {
+    let idx = if t.doc.indexing_done() {
+        format!("{} líneas", fmt_num(t.total()))
+    } else {
+        let p = t.doc.progress.load(Ordering::Relaxed) as f64 / t.doc.len().max(1) as f64;
+        format!("indexando {:.0}%", p * 100.0)
+    };
+    format!(
+        "{} · {} · {}{}",
+        human_size(t.doc.len() as u64),
+        t.doc.src.encoding.name(),
+        idx,
+        if t.editable { "" } else { " · solo lectura" }
+    )
 }
 
 pub(crate) fn fmt_num(n: u64) -> String {
