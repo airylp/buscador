@@ -78,6 +78,9 @@ pub struct Tab {
     untitled: bool,
     /// Texto a meter en cuanto el documento esté listo (archivo nuevo con lo copiado).
     pending_text: Option<String>,
+    /// Posición a recuperar de la sesión anterior: (arriba, cursor). Se aplica
+    /// cuando el índice ya llega hasta ahí.
+    restore: Option<(u64, Pos)>,
     /// Petición del menú contextual: crear un archivo nuevo con este texto.
     export_request: Option<String>,
     /// Lenguaje para el resaltado (por la extensión; se puede cambiar).
@@ -125,6 +128,7 @@ impl Tab {
             lang: syntax::detect(&doc_name),
             syntax_cache: None,
             pending_text: None,
+            restore: None,
             export_request: None,
             colsel: None,
             col_mode: false,
@@ -1163,6 +1167,11 @@ pub struct App {
     syntax_on: bool,
     /// Siguiente número para «Sin título N».
     next_untitled: u32,
+    /// Guardar/recuperar la sesión (no en ventanas nuevas ni en pruebas).
+    use_session: bool,
+    /// Última sesión guardada y cuándo se miró por última vez.
+    session_saved: crate::settings::Session,
+    session_checked: Instant,
     fallback_fonts: Vec<(String, Arc<FontData>)>,
     show_settings: bool,
     show_keys: bool,
@@ -1219,6 +1228,9 @@ impl App {
             column_mode: false,
             syntax_on: settings.syntax,
             next_untitled: 1,
+            use_session: false,
+            session_saved: Default::default(),
+            session_checked: Instant::now(),
             fallback_fonts: fallbacks,
             show_settings: false,
             show_keys: false,
@@ -1240,10 +1252,84 @@ impl App {
             #[cfg(target_os = "macos")]
             menu: crate::macmenu::MacMenu::new(&cc.egui_ctx),
         };
-        for f in files {
+        // Sesión anterior: se recupera salvo en ventanas nuevas («--sin-sesion»)
+        // o en el modo de pruebas.
+        let testing = std::env::var_os("BUSCADOR_SCREENSHOT").is_some() && std::env::var_os("BUSCADOR_SESION").is_none();
+        let no_session = files.iter().any(|f| f.as_os_str() == "--sin-sesion") || testing;
+        app.use_session = !no_session;
+        if app.use_session {
+            app.restore_session();
+        }
+        for f in files.into_iter().filter(|f| f.as_os_str() != "--sin-sesion") {
             app.open(f);
         }
         app
+    }
+
+    /// Reabre los archivos de la sesión anterior, con su posición y encoding.
+    fn restore_session(&mut self) {
+        let s = crate::settings::Session::load();
+        let mut missing = Vec::new();
+        for f in &s.files {
+            if !f.path.exists() {
+                missing.push(f.path.display().to_string());
+                continue;
+            }
+            let before = self.tabs.len();
+            self.open(f.path.clone());
+            if self.tabs.len() > before {
+                let t = self.tabs.last_mut().unwrap();
+                if let Some(enc) = encoding_rs::Encoding::for_label(f.encoding.as_bytes()) {
+                    if enc != t.doc.src.encoding {
+                        t.doc.set_encoding(enc);
+                    }
+                }
+                t.restore = Some((f.top, Pos::new(f.line, f.col)));
+            }
+        }
+        if !self.tabs.is_empty() {
+            self.active = s.active.min(self.tabs.len() - 1);
+        }
+        self.session_saved = self.current_session();
+        if !missing.is_empty() {
+            self.msg(format!("No se encontró (no se reabrió): {}", missing.join(", ")));
+        }
+    }
+
+    fn current_session(&self) -> crate::settings::Session {
+        let files: Vec<_> = self
+            .tabs
+            .iter()
+            .filter(|t| !t.untitled)
+            .map(|t| {
+                // Si aún no se aplicó la posición recuperada, se conserva.
+                let (top, c) = t.restore.unwrap_or((t.top, t.cursor.unwrap_or_default()));
+                crate::settings::SessionFile {
+                    path: t.doc.path.clone(),
+                    top,
+                    line: c.line,
+                    col: c.col,
+                    encoding: t.doc.src.encoding.name().to_string(),
+                }
+            })
+            .collect();
+        let active = self.tabs.iter().take(self.active).filter(|t| !t.untitled).count();
+        crate::settings::Session { active: active.min(files.len().saturating_sub(1)), files }
+    }
+
+    /// Guarda la sesión si cambió (como mucho cada 2 s, o ya si `now`).
+    fn save_session(&mut self, now: bool) {
+        if !self.use_session || (!now && self.session_checked.elapsed() < Duration::from_secs(2)) {
+            return;
+        }
+        self.session_checked = Instant::now();
+        let cur = self.current_session();
+        if cur != self.session_saved {
+            if let Err(e) = cur.save() {
+                self.msg(format!("No se pudo guardar la sesión: {e}"));
+            }
+            self.session_saved = cur;
+        }
     }
 
     fn open(&mut self, path: PathBuf) {
@@ -1779,7 +1865,8 @@ impl App {
             FileAction::Duplicate(i) => self.duplicate(i),
             FileAction::NewWindow(i) => {
                 let t = &self.tabs[i];
-                let r = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(&t.doc.path).spawn());
+                let r = std::env::current_exe()
+                    .and_then(|exe| std::process::Command::new(exe).arg("--sin-sesion").arg(&t.doc.path).spawn());
                 let m = match r {
                     Ok(_) if t.dirty() => format!("{} abierto en otra ventana (versión guardada en disco)", t.doc.name),
                     Ok(_) => format!("{} abierto en otra ventana", t.doc.name),
@@ -2239,6 +2326,10 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self) {
+        self.save_session(true);
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
@@ -2345,6 +2436,15 @@ impl eframe::App for App {
             self.new_untitled(Some(text));
         }
         for t in &mut self.tabs {
+            // Posición de la sesión anterior, en cuanto el índice llega hasta ella.
+            if let Some((top, c)) = t.restore {
+                if t.doc.indexing_done() || t.total() > c.line.max(top) + 200 {
+                    t.restore = None;
+                    t.select(c, c);
+                    t.top = top;
+                    t.reveal = false;
+                }
+            }
             if t.pending_text.is_some() && t.doc.indexing_done() {
                 let text = t.pending_text.take().unwrap();
                 t.select(Pos::default(), Pos::default());
@@ -2355,9 +2455,10 @@ impl eframe::App for App {
                 t.center_on = Some(0);
             }
         }
-        if self.tabs.iter().any(|t| t.pending_text.is_some()) {
-            ctx.request_repaint();
+        if self.tabs.iter().any(|t| t.pending_text.is_some() || t.restore.is_some()) {
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
+        self.save_session(ctx.input(|i| i.viewport().close_requested()));
         if let Some(m) = message {
             self.msg(m);
         }

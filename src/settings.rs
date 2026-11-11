@@ -25,6 +25,12 @@ impl Default for Settings {
 /// `~/Library/Application Support/buscador` (macOS), `%APPDATA%\buscador`
 /// (Windows) o `$XDG_CONFIG_HOME/buscador` / `~/.config/buscador`.
 fn path() -> Option<PathBuf> {
+    Some(config_dir()?.join("ajustes.txt"))
+}
+
+/// Carpeta de trabajo de la aplicación: `~/Library/Application Support/buscador`
+/// (macOS), `%APPDATA%\buscador` (Windows) o `~/.config/buscador`.
+pub fn config_dir() -> Option<PathBuf> {
     let env = |k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     let base = if cfg!(target_os = "macos") {
         env("HOME").map(|h| h.join("Library/Application Support"))
@@ -33,7 +39,77 @@ fn path() -> Option<PathBuf> {
     } else {
         env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|h| h.join(".config")))
     }?;
-    Some(base.join("buscador").join("ajustes.txt"))
+    Some(base.join("buscador"))
+}
+
+/// Un archivo de la sesión: dónde estaba la vista y el cursor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionFile {
+    pub path: PathBuf,
+    pub top: u64,
+    pub line: u64,
+    pub col: usize,
+    /// Encoding elegido (nombre de encoding_rs).
+    pub encoding: String,
+}
+
+/// Archivos abiertos al cerrar y cuál estaba activo (`sesion.txt`).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Session {
+    pub files: Vec<SessionFile>,
+    pub active: usize,
+}
+
+impl Session {
+    fn file() -> Option<PathBuf> {
+        Some(config_dir()?.join("sesion.txt"))
+    }
+
+    /// Formato: `activo=N` y una línea por archivo
+    /// `archivo=arriba|línea|columna|encoding|ruta` (la ruta va al final: puede tener «|»).
+    pub fn to_text(&self) -> String {
+        let mut t = format!("activo={}\n", self.active);
+        for f in &self.files {
+            t += &format!("archivo={}|{}|{}|{}|{}\n", f.top, f.line, f.col, f.encoding, f.path.display());
+        }
+        t
+    }
+
+    pub fn from_text(text: &str) -> Self {
+        let mut s = Session::default();
+        for line in text.lines() {
+            if let Some(v) = line.strip_prefix("activo=") {
+                s.active = v.trim().parse().unwrap_or(0);
+            } else if let Some(v) = line.strip_prefix("archivo=") {
+                let mut it = v.splitn(5, '|');
+                let (Some(top), Some(l), Some(c), Some(enc), Some(path)) = (it.next(), it.next(), it.next(), it.next(), it.next()) else {
+                    continue;
+                };
+                s.files.push(SessionFile {
+                    path: PathBuf::from(path),
+                    top: top.parse().unwrap_or(0),
+                    line: l.parse().unwrap_or(0),
+                    col: c.parse().unwrap_or(0),
+                    encoding: enc.to_string(),
+                });
+            }
+        }
+        s
+    }
+
+    pub fn load() -> Self {
+        Self::file().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| Self::from_text(&t)).unwrap_or_default()
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let p = Self::file().ok_or("no se encontró la carpeta de configuración")?;
+        if let Some(dir) = p.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        // Escribir a un temporal y renombrar: nunca queda a medias.
+        let tmp = p.with_extension("txt.tmp");
+        std::fs::write(&tmp, self.to_text()).and_then(|_| std::fs::rename(&tmp, &p)).map_err(|e| e.to_string())
+    }
 }
 
 impl Settings {
@@ -103,6 +179,19 @@ fn parse_hex(v: &str) -> Option<[u8; 3]> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_roundtrip() {
+        use super::{Session, SessionFile};
+        let s = Session {
+            active: 1,
+            files: vec![
+                SessionFile { path: "/a/b.log".into(), top: 10, line: 12, col: 3, encoding: "UTF-8".into() },
+                SessionFile { path: "/c/con|barra.txt".into(), top: 0, line: 0, col: 0, encoding: "windows-1252".into() },
+            ],
+        };
+        assert_eq!(Session::from_text(&s.to_text()), s);
+    }
+
     #[test]
     fn hex_roundtrip() {
         assert_eq!(super::parse_hex("#1e2a38"), Some([0x1e, 0x2a, 0x38]));

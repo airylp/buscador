@@ -25,6 +25,7 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 - Ícono propio (una «B» pixelada) en Cmd+Tab, el Dock y la barra de tareas
 - En macOS, menú nativo en la barra superior (Archivo, Edición, Buscar, Ver, Ventana, Ayuda)
 - Botón «?» (o F1) con todos los atajos de teclado
+- Al abrir se recuperan los archivos de la sesión anterior, cada uno en su posición
 - Ajustes (⚙): tema Sistema / Claro / Oscuro, tipo de letra del texto (monoespaciadas como Hack, Menlo,
   SF Mono, Monaco, Consolas… o proporcionales) y tamaño; se recuerdan
 - Resaltado de sintaxis según la extensión (Java, Kotlin, JS/TS, Rust, Go, C/C++, C#, Swift, Python,
