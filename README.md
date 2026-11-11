@@ -27,12 +27,16 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 - Botón «?» (o F1) con todos los atajos de teclado
 - Ajustes (⚙): tema Sistema / Claro / Oscuro, tipo de letra del texto (monoespaciadas como Hack, Menlo,
   SF Mono, Monaco, Consolas… o proporcionales) y tamaño; se recuerdan
+- Resaltado de sintaxis según la extensión (Java, Kotlin, JS/TS, Rust, Go, C/C++, C#, Swift, Python,
+  shell, SQL, JSON, XML/HTML, YAML, TOML/INI, CSS) y en los logs: niveles (ERROR, WARN, INFO, DEBUG),
+  fechas, excepciones y trazas. Solo se colorea lo visible; el lenguaje se cambia en la barra de estado
 - Archivo nuevo (📝, Ctrl+N) para pegar y guardar lo copiado; también «Nuevo archivo con la selección»
   (clic derecho) y «A archivo nuevo» en la búsqueda avanzada. Guardar pide dónde
 - Selección en bloque (botón ▦ Bloque, o Opción/Alt+arrastrar), con letra monoespaciada: marca un
   rectángulo como una matriz, incluidos los huecos tras el final de las líneas; al copiar solo va el
   texto real de cada fila, separado por saltos de línea
 - Colores propios de fondo y letra para el texto (prioridad sobre el tema) y «Restablecer ajustes»
+- En macOS también funcionan Ctrl+C / Ctrl+X / Ctrl+V además de Cmd
 - Barra de estado: clic en «Lín X, Col Y» (o Ctrl+G) para ir a una línea; botones Resultados y Detalle
 - Panel «Detalle» para ver y copiar parte de una línea larga
 - Ir a línea (Ctrl+G), tamaño de letra (Ctrl+ / Ctrl−), arrastrar y soltar archivos

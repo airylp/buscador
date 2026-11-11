@@ -9,6 +9,7 @@ mod icon;
 mod macmenu;
 mod search;
 mod settings;
+mod syntax;
 
 use std::path::PathBuf;
 

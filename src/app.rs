@@ -6,6 +6,7 @@ use crate::encoding;
 use crate::blocks::{Block, BlockParams, BlockSearch, MAX_BLOCKS};
 use crate::search::{MAX_RESULTS, Params, Search};
 use crate::settings::Settings;
+use crate::syntax;
 use eframe::egui::{
     text::{CCursor, LayoutJob},
     *,
@@ -29,6 +30,9 @@ const MAX_REPLACE_LINES: usize = 2_000_000;
 /// Tras una edición, se recomprueban como mucho estas líneas para la búsqueda.
 const MAX_RECHECK_LINES: u64 = 10_000;
 const TAB_WIDTH: usize = 4;
+/// Líneas anteriores a lo visible que se miran para saber si se está dentro
+/// de un comentario o cadena de varias líneas.
+const SYNTAX_LOOKBACK: u64 = 300;
 const SCROLLBAR: f32 = 12.0;
 const MAC: bool = cfg!(target_os = "macos");
 
@@ -76,6 +80,10 @@ pub struct Tab {
     pending_text: Option<String>,
     /// Petición del menú contextual: crear un archivo nuevo con este texto.
     export_request: Option<String>,
+    /// Lenguaje para el resaltado (por la extensión; se puede cambiar).
+    lang: syntax::Lang,
+    /// Estado del resaltado al inicio de lo visible: ((top, edit_gen, lang), estado).
+    syntax_cache: Option<((u64, u64, syntax::Lang), syntax::State)>,
     /// Selección en bloque (columnas), en columnas visuales: puede pasar del
     /// final de las líneas.
     colsel: Option<ColSel>,
@@ -89,6 +97,7 @@ pub struct Tab {
 
 impl Tab {
     fn new(doc: Document) -> Self {
+        let doc_name = doc.name.clone();
         Tab {
             editable: doc.len() <= EDIT_BY_DEFAULT_MAX,
             doc,
@@ -113,6 +122,8 @@ impl Tab {
             detail_cache: None,
             save: None,
             untitled: false,
+            lang: syntax::detect(&doc_name),
+            syntax_cache: None,
             pending_text: None,
             export_request: None,
             colsel: None,
@@ -579,6 +590,9 @@ impl Tab {
                         if std::mem::take(&mut self.untitled) {
                             let _ = std::fs::remove_file(&old.path);
                         }
+                        if old.name != self.doc.name {
+                            self.lang = syntax::detect(&self.doc.name);
+                        }
                         self.buf = None;
                         self.detail_cache = None;
                         let mut m = format!("Guardado {} ({})", self.doc.name, human_size(self.doc.len() as u64));
@@ -832,6 +846,31 @@ impl Tab {
                 {
                     Ok(())
                 }
+                // En macOS también Ctrl+C / Ctrl+X / Ctrl+V (costumbre de Windows y Linux).
+                Event::Key { key: key @ (Key::C | Key::X | Key::V), pressed: true, modifiers, .. }
+                    if MAC && modifiers.ctrl && !modifiers.command =>
+                {
+                    match key {
+                        Key::C => {
+                            msg = Some(match self.block() {
+                                Some(cs) => self.copy_block(ctx, cs),
+                                None => self.copy(ctx),
+                            });
+                            Ok(())
+                        }
+                        Key::X => match self.block() {
+                            Some(cs) => {
+                                msg = Some(format!("{} (en un bloque, Cortar solo copia)", self.copy_block(ctx, cs)));
+                                Ok(())
+                            }
+                            None => self.cut(ctx).map(|m| msg = Some(m)),
+                        },
+                        _ => {
+                            ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+                            Ok(())
+                        }
+                    }
+                }
                 Event::Key { key, pressed: true, modifiers, .. } => {
                     // Cualquier otra tecla (salvo atajos) deja la selección en bloque.
                     if !modifiers.command && !modifiers.ctrl {
@@ -1061,6 +1100,8 @@ pub struct App {
     text_fg: Color32,
     /// Botón «Bloque»: seleccionar rectángulos (solo con letra monoespaciada).
     column_mode: bool,
+    /// Colorear según el lenguaje / niveles de log.
+    syntax_on: bool,
     /// Siguiente número para «Sin título N».
     next_untitled: u32,
     fallback_fonts: Vec<(String, Arc<FontData>)>,
@@ -1115,6 +1156,7 @@ impl App {
             text_bg: settings.colors.map_or(DEFAULT_BG, |c| Color32::from_rgb(c.0[0], c.0[1], c.0[2])),
             text_fg: settings.colors.map_or(DEFAULT_FG, |c| Color32::from_rgb(c.1[0], c.1[1], c.1[2])),
             column_mode: false,
+            syntax_on: settings.syntax,
             next_untitled: 1,
             fallback_fonts: fallbacks,
             show_settings: false,
@@ -1199,6 +1241,7 @@ impl App {
             font_size: self.font_size,
             font: self.text_font.clone(),
             colors: self.custom_colors.then(|| (rgb(self.text_bg), rgb(self.text_fg))),
+            syntax: self.syntax_on,
         };
         if let Err(e) = st.save() {
             self.msg(format!("No se pudieron guardar los ajustes: {e}"));
@@ -1834,6 +1877,7 @@ impl App {
         ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.set_clip_rect(left.intersect(ui.clip_rect()));
             let mut goto_line = None;
+            let mut set_lang = None;
             if let Some(t) = self.tabs.get(self.active) {
                 let d = &t.doc;
                 ui.label(RichText::new(if t.editable { "EDICIÓN" } else { "SOLO LECTURA" }).small().strong());
@@ -1887,6 +1931,23 @@ impl App {
                 ui.label(RichText::new(human_size(d.len() as u64)).small());
                 ui.separator();
                 ui.label(RichText::new(encoding::label(d.src.encoding)).small()).on_hover_text(format!("Detectado por: {}", d.detect_reason));
+                if self.syntax_on {
+                    ui.separator();
+                    let mut lang = t.lang;
+                    ui.menu_button(RichText::new(lang.name()).small(), |ui| {
+                        for l in syntax::Lang::ALL {
+                            if ui.selectable_label(l == lang, l.name()).clicked() {
+                                lang = l;
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Lenguaje para colorear (se deduce de la extensión)");
+                    if lang != t.lang {
+                        set_lang = Some(lang);
+                    }
+                }
                 if let Some(b) = &t.buf {
                     if b.is_dirty() {
                         ui.separator();
@@ -1915,6 +1976,10 @@ impl App {
                     ui.separator();
                     ui.label(RichText::new(m).small().color(ui.visuals().warn_fg_color));
                 }
+            }
+            if let (Some(l), Some(t)) = (set_lang, self.tabs.get_mut(self.active)) {
+                t.lang = l;
+                t.syntax_cache = None;
             }
             if let (Some(n), Some(t)) = (goto_line, self.tabs.get_mut(self.active)) {
                 let last = t.total().saturating_sub(1);
@@ -2139,7 +2204,7 @@ impl eframe::App for App {
         if self.show_results && has_search {
             Panel::bottom("results").resizable(true).default_size(180.0).min_size(60.0).show(ui, |ui| {
                 if let Some(t) = self.tabs.get_mut(self.active) {
-                    results_view(ui, t, &font, colors);
+                    results_view(ui, t, &font, colors, self.syntax_on);
                 }
             });
         }
@@ -2154,6 +2219,7 @@ impl eframe::App for App {
         let mut message = None;
         let mut view_focused = false;
         let colors = self.text_colors();
+        let syntax_on = self.syntax_on;
         let col_mode = self.column_mode && self.mono_font();
         for t in &mut self.tabs {
             t.col_mode = col_mode;
@@ -2162,7 +2228,7 @@ impl eframe::App for App {
         let focus_view = std::mem::take(&mut self.focus_view);
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
-                (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors);
+                (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors, syntax_on);
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.heading("Arrastra archivos aquí, o pulsa Ctrl+O");
@@ -2240,6 +2306,7 @@ fn log_view(
     show_detail: &mut bool,
     focus: bool,
     colors: Option<(Color32, Color32)>,
+    syntax_on: bool,
 ) -> (Option<String>, bool) {
     apply_text_colors(ui, colors);
     let mut message = None;
@@ -2452,11 +2519,31 @@ fn log_view(
     // Maquetar las líneas visibles.
     let visuals = ui.visuals().clone();
     let highlight = tab.search.as_ref().map(|s| &s.highlight);
+    // Resaltado: estado arrastrado desde unas líneas antes de lo visible (cacheado).
+    let lang = if syntax_on { tab.lang } else { syntax::Lang::Plain };
+    let dark = is_dark(visuals.extreme_bg_color);
+    let mut st = syntax::State::Normal;
+    if lang.multiline() && tab.top > 0 {
+        let key = (tab.top, tab.edit_gen, lang);
+        st = match tab.syntax_cache {
+            Some((k, s)) if k == key => s,
+            _ => {
+                let from = tab.top.saturating_sub(SYNTAX_LOOKBACK);
+                let before = tab.rows(from, (tab.top - from) as usize, MAX_DISPLAY_BYTES);
+                let s = syntax::state_after(lang, before.iter().map(|r| r.1.as_str()));
+                tab.syntax_cache = Some((key, s));
+                s
+            }
+        };
+    }
+    let mut spans = Vec::new();
     let rows: Vec<(u64, String, Arc<Galley>)> = tab
         .rows(tab.top, visible as usize + 1, MAX_DISPLAY_BYTES)
         .into_iter()
         .map(|(n, t, tr)| {
-            let g = ui.painter().layout_job(line_job(&t, tr, font, visuals.text_color(), highlight));
+            spans.clear();
+            st = syntax::highlight(lang, &t, st, &mut spans);
+            let g = ui.painter().layout_job(line_job(&t, tr, font, visuals.text_color(), highlight, &spans, dark));
             (n, t, g)
         })
         .collect();
@@ -2627,31 +2714,64 @@ fn plain_job(txt: &str, font: &FontId) -> LayoutJob {
 }
 
 /// Construye el texto de una línea con las coincidencias resaltadas.
-fn line_job(txt: &str, truncated: bool, font: &FontId, color: Color32, hl: Option<&regex::Regex>) -> LayoutJob {
+/// Texto de una línea con colores de sintaxis (`spans`) y las coincidencias
+/// de búsqueda resaltadas encima.
+fn line_job(
+    txt: &str,
+    truncated: bool,
+    font: &FontId,
+    color: Color32,
+    hl: Option<&regex::Regex>,
+    spans: &[syntax::Span],
+    dark: bool,
+) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = f32::INFINITY;
     let normal = TextFormat { font_id: font.clone(), color, ..Default::default() };
-    let marked = TextFormat {
-        background: Color32::from_rgb(255, 200, 0),
-        color: Color32::BLACK,
-        ..normal.clone()
-    };
-    let mut last = 0;
-    if let Some(re) = hl {
-        for m in re.find_iter(txt).take(500) {
-            if m.start() == m.end() {
-                continue;
-            }
-            job.append(&sanitize(&txt[last..m.start()]), 0.0, normal.clone());
-            job.append(&sanitize(m.as_str()), 0.0, marked.clone());
-            last = m.end();
+    let n = txt.len();
+    // Por byte: tipo de sintaxis (0 = ninguno) y si es parte de una coincidencia.
+    let mut kind: Vec<Option<syntax::Kind>> = vec![None; n];
+    for sp in spans {
+        for k in &mut kind[sp.start.min(n)..sp.end.min(n)] {
+            *k = Some(sp.kind);
         }
     }
-    job.append(&sanitize(&txt[last..]), 0.0, normal.clone());
+    let mut mark = vec![false; n];
+    if let Some(re) = hl {
+        for m in re.find_iter(txt).take(500).filter(|m| m.end() > m.start()) {
+            mark[m.start()..m.end()].fill(true);
+        }
+    }
+    let mut i = 0;
+    while i < n {
+        let (k, m) = (kind[i], mark[i]);
+        let mut j = i + 1;
+        while j < n && (kind[j], mark[j]) == (k, m) {
+            j += 1;
+        }
+        while !txt.is_char_boundary(j) {
+            j += 1;
+        }
+        let fmt = if m {
+            TextFormat { background: Color32::from_rgb(255, 200, 0), color: Color32::BLACK, ..normal.clone() }
+        } else if let Some(k) = k {
+            TextFormat { color: syntax::color(k, dark), ..normal.clone() }
+        } else {
+            normal.clone()
+        };
+        job.append(&sanitize(&txt[i..j]), 0.0, fmt);
+        i = j;
+    }
     if truncated {
         job.append("  …[línea truncada; ver Detalle]", 0.0, TextFormat { italics: true, ..normal });
     }
     job
+}
+
+/// ¿Fondo oscuro? (para elegir los colores de sintaxis)
+fn is_dark(bg: Color32) -> bool {
+    let l = 0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
+    l < 128.0
 }
 
 /// Tabs a espacios y caracteres de control visibles (una sola fila por línea).
@@ -2938,6 +3058,7 @@ impl App {
         let (mut theme, mut font) = (self.theme, self.font_size);
         let mut family = self.text_font.clone();
         let (mut custom, mut bg, mut fg) = (self.custom_colors, self.text_bg, self.text_fg);
+        let mut syn = self.syntax_on;
         let mut reset = false;
         let mut win = Window::new("Ajustes").id(settings_window_id()).pivot(Align2::CENTER_CENTER);
         if just_opened {
@@ -2982,15 +3103,21 @@ impl App {
                     ui.color_edit_button_srgba(&mut fg);
                 });
             });
+            ui.add_space(8.0);
+            ui.strong("Resaltado");
+            ui.checkbox(&mut syn, "Colorear según el tipo de archivo (.java, .xml, .json, .py…) y los niveles de los logs");
             ui.add_space(6.0);
             ui.weak("Vista previa:");
             let (pbg, pfg) = if custom { (bg, fg) } else { (ui.visuals().extreme_bg_color, ui.visuals().text_color()) };
             Frame::NONE.fill(pbg).inner_margin(6.0).corner_radius(4.0).show(ui, |ui| {
-                ui.label(
-                    RichText::new("2026-11-10 12:00:01 [INFO] año, acción\n0O 1lI {}[]() -> => != 日本")
-                        .font(crate::fonts::text_font(font))
-                        .color(pfg),
-                );
+                let sample = ["2026-11-10 12:00:01 [ERROR] año, acción: java.io.IOException", "0O 1lI {}[]() -> => != 日本"];
+                let lang = if syn { syntax::Lang::Log } else { syntax::Lang::Plain };
+                for line in sample {
+                    let mut spans = Vec::new();
+                    syntax::highlight(lang, line, syntax::State::Normal, &mut spans);
+                    let job = line_job(line, false, &crate::fonts::text_font(font), pfg, None, &spans, is_dark(pbg));
+                    ui.label(job);
+                }
             });
             ui.add_space(8.0);
             ui.separator();
@@ -3009,13 +3136,15 @@ impl App {
             self.text_font = d.font;
             ctx.set_fonts(crate::fonts::build(&self.text_font, &self.fallback_fonts).0);
             self.custom_colors = false;
+            self.syntax_on = d.syntax;
             self.text_bg = DEFAULT_BG;
             self.text_fg = DEFAULT_FG;
             self.persist();
             self.msg("Ajustes restablecidos");
             return;
         }
-        if (custom, bg, fg) != (self.custom_colors, self.text_bg, self.text_fg) {
+        if (custom, bg, fg, syn) != (self.custom_colors, self.text_bg, self.text_fg, self.syntax_on) {
+            self.syntax_on = syn;
             self.custom_colors = custom;
             self.text_bg = bg;
             self.text_fg = fg;
@@ -3488,7 +3617,7 @@ fn minimap(ui: &mut Ui, rect: Rect, resp: &Response, tab: &Tab, w: &mut AdvWin) 
 }
 
 /// Lista virtual de líneas con coincidencias.
-fn results_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color32, Color32)>) {
+fn results_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color32, Color32)>, syntax_on: bool) {
     let Some(search) = &tab.search else { return };
     apply_text_colors(ui, colors);
     let ctx = ui.ctx().clone();
@@ -3545,7 +3674,12 @@ fn results_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color
         }
         painter.text(pos2(list.left() + num_w, y), Align2::RIGHT_TOP, fmt_num(line + 1), font.clone(), visuals.weak_text_color());
         if let Some((_, txt, tr)) = tab.rows(line, 1, 2048).into_iter().next() {
-            let job = line_job(&txt, tr, font, visuals.text_color(), Some(&search.highlight));
+            let mut spans = Vec::new();
+            if syntax_on {
+                syntax::highlight(tab.lang, &txt, syntax::State::Normal, &mut spans);
+            }
+            let dark = is_dark(visuals.extreme_bg_color);
+            let job = line_job(&txt, tr, font, visuals.text_color(), Some(&search.highlight), &spans, dark);
             painter.galley(pos2(list.left() + num_w + 12.0, y), painter.layout_job(job), visuals.text_color());
         }
     }
@@ -3832,5 +3966,102 @@ mod tests {
         assert_eq!(word_at("foo.bar baz", 5), (4, 7));
         assert_eq!(word_right_in("foo  bar", 0), 5);
         assert_eq!(word_left_in("foo  bar", 5), 0);
+    }
+}
+
+#[cfg(test)]
+mod copy_keeps_selection {
+    use super::*;
+
+    fn tab() -> Tab {
+        use std::sync::atomic::AtomicUsize;
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join("buscador-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Un archivo por llamada: los tests corren en paralelo.
+        let p = dir.join(format!("copia-sel-{}.txt", N.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&p, "hola mundo\nsegunda línea\n").unwrap();
+        let doc = Document::open(&p).unwrap();
+        while !doc.indexing_done() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        Tab::new(doc)
+    }
+
+    fn key(k: Key, m: Modifiers, pressed: bool) -> Event {
+        Event::Key { key: k, physical_key: Some(k), pressed, repeat: false, modifiers: m }
+    }
+
+    /// Devuelve el texto copiado al portapapeles, si lo hubo.
+    fn run(t: &mut Tab, events: Vec<Event>) -> Option<String> {
+        let ctx = Context::default();
+        let out = ctx.run_ui(RawInput { events, ..Default::default() }, |ui| {
+            t.handle_events(ui.ctx(), 10);
+        });
+        out.platform_output.commands.iter().find_map(|c| match c {
+            OutputCommand::CopyText(s) => Some(s.clone()),
+            _ => None,
+        })
+    }
+
+    /// Arrastra con el ratón en la vista real y luego pulsa la combinación.
+    fn drag_then(evs_after: Vec<Event>, alt: bool) -> Tab {
+        let mut t = tab();
+        t.col_mode = alt;
+        let ctx = Context::default();
+        let font = FontId::monospace(13.0);
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let mods = if alt { Modifiers::ALT } else { Modifiers::NONE };
+        let frames: Vec<Vec<Event>> = vec![
+            vec![Event::ModifiersChanged(mods), Event::PointerMoved(pos2(120.0, 8.0))],
+            vec![Event::PointerButton { pos: pos2(120.0, 8.0), button: PointerButton::Primary, pressed: true, modifiers: mods }],
+            vec![Event::PointerMoved(pos2(160.0, 9.0))],
+            vec![Event::PointerMoved(pos2(220.0, 26.0))],
+            vec![Event::PointerButton { pos: pos2(220.0, 26.0), button: PointerButton::Primary, pressed: false, modifiers: mods }],
+            vec![Event::ModifiersChanged(Modifiers::NONE)],
+            evs_after,
+            vec![],
+        ];
+        let mut show = false;
+        for (k, events) in frames.into_iter().enumerate() {
+            let input = RawInput { screen_rect: Some(screen), events, time: Some(k as f64 * 0.05), ..Default::default() };
+            let _ = ctx.run_ui(input, |ui| {
+                log_view(ui, &mut t, &font, &mut show, false, None, true);
+            });
+        }
+        t
+    }
+
+    #[test]
+    fn drag_select_then_ctrl_c() {
+        let ctrl_c = || vec![key(Key::C, Modifiers::CTRL, true), key(Key::C, Modifiers::CTRL, false)];
+        let cmd_c = || vec![key(Key::C, Modifiers::MAC_CMD | Modifiers::COMMAND, true), Event::Copy];
+        for (name, evs) in [("Ctrl+C", ctrl_c()), ("Cmd+C", cmd_c())] {
+            let t = drag_then(evs, false);
+            assert!(t.selection().is_some(), "{name}: se perdió la selección");
+            let t = drag_then(if name == "Ctrl+C" { ctrl_c() } else { cmd_c() }, true);
+            assert!(t.block().is_some(), "{name}: se perdió el bloque");
+        }
+    }
+
+    #[test]
+    fn ctrl_c_cmd_c_and_copy_event() {
+        for (name, evs) in [
+            ("Ctrl+C", vec![key(Key::C, Modifiers::CTRL, true), key(Key::C, Modifiers::CTRL, false)]),
+            ("Cmd+C", vec![key(Key::C, Modifiers::MAC_CMD | Modifiers::COMMAND, true), Event::Copy]),
+            ("Copy", vec![Event::Copy]),
+        ] {
+            let mut t = tab();
+            t.select(Pos::new(0, 0), Pos::new(0, 4));
+            let copied = run(&mut t, evs.clone());
+            if MAC || name != "Ctrl+C" {
+                assert_eq!(copied.as_deref(), Some("hola"), "{name}: copia");
+            }
+            assert_eq!(t.selection(), Some((Pos::new(0, 0), Pos::new(0, 4))), "{name}: selección");
+            t.col_mode = true;
+            t.colsel = Some(ColSel { a: (0, 0), b: (1, 4) });
+            run(&mut t, evs);
+            assert!(t.block().is_some(), "{name}: bloque");
+        }
     }
 }

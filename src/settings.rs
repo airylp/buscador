@@ -12,11 +12,13 @@ pub struct Settings {
     pub font: String,
     /// Colores propios del texto (fondo, letra); `None` = los del tema.
     pub colors: Option<([u8; 3], [u8; 3])>,
+    /// Resaltado de sintaxis y niveles de log.
+    pub syntax: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None }
+        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true }
     }
 }
 
@@ -46,6 +48,7 @@ impl Settings {
                 ("tema", "oscuro") => s.theme = ThemePreference::Dark,
                 ("tema", _) => s.theme = ThemePreference::System,
                 ("fuente", v) if !v.is_empty() => s.font = v.to_string(),
+                ("resaltar", v) => s.syntax = v != "no",
                 ("fondo", v) => bg = parse_hex(v),
                 ("color_letra", v) => fg = parse_hex(v),
                 ("letra", v) => {
@@ -72,7 +75,12 @@ impl Settings {
             ThemePreference::Dark => "oscuro",
             ThemePreference::System => "sistema",
         };
-        let mut text = format!("tema={theme}\nletra={}\nfuente={}\n", self.font_size, self.font);
+        let mut text = format!(
+            "tema={theme}\nletra={}\nfuente={}\nresaltar={}\n",
+            self.font_size,
+            self.font,
+            if self.syntax { "si" } else { "no" }
+        );
         if let Some((b, f)) = self.colors {
             text += &format!("fondo={}\ncolor_letra={}\n", hex(b), hex(f));
         }
