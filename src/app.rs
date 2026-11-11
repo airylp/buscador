@@ -1075,6 +1075,52 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
     ]
 }
 
+enum DialogKind {
+    Open,
+    /// Guardar como: ruta actual de la pestaña (la identifica aunque cambie de sitio).
+    SaveAs(PathBuf),
+}
+
+/// Diálogo de archivo asíncrono esperando en un hilo; `result` = Some(respuesta)
+/// al terminar (respuesta None si se canceló).
+struct PendingDialog {
+    kind: DialogKind,
+    result: Arc<Mutex<Option<Option<Vec<PathBuf>>>>>,
+}
+
+impl PendingDialog {
+    /// `fut` debe crearse en el hilo principal (rfd abre ahí la hoja); aquí solo
+    /// se espera su respuesta en otro hilo.
+    fn spawn(ctx: &Context, kind: DialogKind, fut: impl std::future::Future<Output = Option<Vec<PathBuf>>> + Send + 'static) -> Self {
+        let result = Arc::new(Mutex::new(None));
+        let (r, ctx) = (result.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            *r.lock().unwrap() = Some(block_on(fut));
+            ctx.request_repaint();
+        });
+        PendingDialog { kind, result }
+    }
+}
+
+/// Ejecutor mínimo: espera un futuro aparcando el hilo.
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        if let std::task::Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
+            return v;
+        }
+        std::thread::park();
+    }
+}
+
 /// Ajuste de línea (soft wrap) de la vista principal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Wrap {
@@ -1204,6 +1250,10 @@ enum Confirm {
 }
 
 pub struct App {
+    /// Para pedir repintado desde hilos (diálogos de archivo).
+    ctx: Context,
+    /// Diálogo de abrir/guardar en curso (solo uno a la vez).
+    dialog: Option<PendingDialog>,
     tabs: Vec<Tab>,
     active: usize,
     show_sidebar: bool,
@@ -1306,6 +1356,8 @@ impl App {
             show_keys: false,
             settings_was_open: false,
             updater: None,
+            ctx: cc.egui_ctx.clone(),
+            dialog: None,
             view_focused: false,
             advs: Vec::new(),
             next_adv: 1,
@@ -1442,10 +1494,37 @@ impl App {
         }
     }
 
+    /// Diálogo de abrir. Es asíncrono: en macOS el modal bloqueante de rfd
+    /// (`runModal`) dentro del fotograma hace que winit reentre al llegar
+    /// eventos (p. ej. gestos del trackpad) y la app aborta.
     fn open_dialog(&mut self) {
-        if let Some(files) = rfd::FileDialog::new().set_title("Abrir archivos").pick_files() {
-            for f in files {
-                self.open(f);
+        if self.dialog.is_some() {
+            return;
+        }
+        let fut = rfd::AsyncFileDialog::new().set_title("Abrir archivos").pick_files();
+        self.dialog = Some(PendingDialog::spawn(&self.ctx, DialogKind::Open, async move {
+            fut.await.map(|v| v.into_iter().map(|h| h.path().to_path_buf()).collect())
+        }));
+    }
+
+    /// Recoge el resultado del diálogo abierto, si ya terminó.
+    fn poll_dialog(&mut self) {
+        let Some(done) = self.dialog.as_ref().and_then(|d| d.result.lock().unwrap().take()) else { return };
+        let kind = self.dialog.take().unwrap().kind;
+        let Some(paths) = done else { return };
+        match kind {
+            DialogKind::Open => {
+                for f in paths {
+                    self.open(f);
+                }
+            }
+            DialogKind::SaveAs(src) => {
+                let (Some(target), Some(t)) = (paths.into_iter().next(), self.tabs.iter_mut().find(|t| t.doc.path == src)) else {
+                    return;
+                };
+                if let Err(e) = t.start_save(target) {
+                    self.msg(e);
+                }
             }
         }
     }
@@ -1585,19 +1664,21 @@ impl App {
 
     fn save(&mut self, save_as: bool) {
         let Some(t) = self.tabs.get_mut(self.active) else { return };
-        let target = if save_as || t.untitled {
+        if save_as || t.untitled {
+            if self.dialog.is_some() {
+                return;
+            }
             let name = if t.untitled { format!("{}.txt", t.doc.name) } else { t.doc.name.clone() };
-            let mut d = rfd::FileDialog::new().set_title("Guardar como").set_file_name(name);
+            let mut d = rfd::AsyncFileDialog::new().set_title("Guardar como").set_file_name(name);
             if let Some(dir) = t.doc.path.parent().filter(|_| !t.untitled) {
                 d = d.set_directory(dir);
             }
-            match d.save_file() {
-                Some(p) => p,
-                None => return,
-            }
-        } else {
-            t.doc.path.clone()
-        };
+            let fut = d.save_file();
+            let kind = DialogKind::SaveAs(t.doc.path.clone());
+            self.dialog = Some(PendingDialog::spawn(&self.ctx, kind, async move { fut.await.map(|h| vec![h.path().to_path_buf()]) }));
+            return;
+        }
+        let target = t.doc.path.clone();
         if let Err(e) = t.start_save(target) {
             self.msg(e);
         }
@@ -2492,6 +2573,7 @@ impl eframe::App for App {
             }
         }
 
+        self.poll_dialog();
         // Archivos arrastrados a la ventana.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         for p in dropped {
