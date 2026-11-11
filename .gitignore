@@ -1,3 +1,4 @@
 /target
 *.rgba
 CLAUDE.md
+.claude/settings.local.json
