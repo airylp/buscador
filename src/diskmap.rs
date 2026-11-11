@@ -21,7 +21,7 @@ const MAX_CELLS: usize = 150_000;
 /// Lado mínimo (px) de una celda para dibujarla.
 const MIN_SIDE: f32 = 2.0;
 /// Alto de la cabecera con el nombre de las carpetas grandes.
-const HEADER: f32 = 15.0;
+const HEADER: f32 = 13.0;
 pub const DEFAULT_EXTS: &str = ".log, .txt, .xml, .json, .csv, .md, .yaml, .yml, .ini, .conf, .html";
 
 pub struct Node {
@@ -429,6 +429,8 @@ pub struct DiskMap {
     cache: Option<(Rect, u32, Vec<Cell>)>,
     /// Resaltado desde la lista de encontrados.
     focus: Option<u32>,
+    /// Celda del último clic derecho (el menú sigue abierto aunque el ratón salga del mapa).
+    menu_node: Option<u32>,
     /// Buscar cuando termine de leer (BUSCADOR_MAPA en pruebas).
     pub search_when_ready: bool,
 }
@@ -449,6 +451,7 @@ impl Default for DiskMap {
             selected: BTreeSet::new(),
             cache: None,
             focus: None,
+            menu_node: None,
             search_when_ready: false,
         }
     }
@@ -762,42 +765,44 @@ impl DiskMap {
             let n = &tree.nodes[c.node as usize];
             let color = if n.dir {
                 if mark(c.node) != 0 {
-                    Color32::from_rgb(178, 222, 178)
+                    Color32::from_rgb(128, 196, 134)
                 } else {
-                    let g = 214u8.saturating_sub((c.depth.min(8) * 9) as u8);
+                    // Carpetas más oscuras que los archivos: los bordes se distinguen.
+                    let g = 172u8.saturating_sub((c.depth.min(7) * 9) as u8);
                     Color32::from_gray(g)
                 }
             } else if mark(c.node) == 1 {
-                Color32::from_rgb(72, 190, 92)
+                Color32::from_rgb(34, 160, 64)
             } else {
                 file_color(tree.ext(c.node).as_deref())
             };
-            // Los archivos se encogen medio píxel: queda una raya del color de la carpeta.
-            let r = if n.dir { c.rect } else { Rect::from_min_max(c.rect.min, c.rect.max - vec2(0.6, 0.6)) };
+            // Los archivos se encogen un píxel: queda una raya del color de la carpeta.
+            let r = if n.dir { c.rect } else { Rect::from_min_max(c.rect.min, c.rect.max - vec2(1.0, 1.0)) };
             mesh.add_colored_rect(r, color);
         }
         painter.add(Shape::mesh(mesh));
 
         // Nombres: cabecera de carpetas y archivos con sitio.
-        let font = FontId::proportional(11.0);
-        let ink = Color32::from_gray(25);
+        let font = FontId::proportional(9.5);
+        let ink = Color32::from_gray(15);
         for c in cells {
             let n = &tree.nodes[c.node as usize];
             let (show, pos) = if c.header {
-                (true, c.rect.min + vec2(4.0, 1.5))
-            } else if !n.dir && c.rect.width() > 60.0 && c.rect.height() > 16.0 {
+                (true, c.rect.min + vec2(4.0, 1.0))
+            } else if !n.dir && c.rect.width() > 50.0 && c.rect.height() > 14.0 {
                 (true, c.rect.min + vec2(3.0, 2.0))
             } else {
                 (false, Pos2::ZERO)
             };
             if show {
                 let clip = painter.with_clip_rect(c.rect.shrink(1.0).intersect(rect));
-                let label = if c.header || c.rect.height() < 30.0 {
+                let label = if c.header || c.rect.height() < 26.0 {
                     format!("{}  {}", n.name, crate::app::human_size(n.size))
                 } else {
                     format!("{}\n{}", n.name, crate::app::human_size(n.size))
                 };
-                clip.text(pos, Align2::LEFT_TOP, label, font.clone(), ink);
+                let color = if !n.dir && mark(c.node) == 1 { Color32::WHITE } else { ink };
+                clip.text(pos, Align2::LEFT_TOP, label, font.clone(), color);
             }
         }
 
@@ -860,7 +865,23 @@ impl DiskMap {
                 }
                 self.focus = None;
             }
-            resp.context_menu(|ui| {
+            if resp.secondary_clicked() {
+                self.menu_node = Some(h.node);
+            }
+        }
+        if let Some(m) = self.menu_node {
+            if let Some(c) = cells.iter().find(|c| c.node == m) {
+                painter.rect_stroke(c.rect, CornerRadius::ZERO, Stroke::new(1.5, Color32::BLACK), StrokeKind::Inside);
+            }
+        }
+        let menu = self.menu_node;
+        let shown = resp.context_menu(|ui| {
+            let Some(node) = menu else {
+                ui.close();
+                return;
+            };
+            {
+                let h = Cell { rect: Rect::NOTHING, node, depth: 0, header: false };
                 let n = n_of(&h);
                 if !n.dir && ui.button("Abrir en el editor").clicked() {
                     out.open = vec![tree.path(h.node)];
@@ -883,20 +904,23 @@ impl DiskMap {
                     out.copy = Some(tree.path(h.node).display().to_string());
                     ui.close();
                 }
-            });
+            }
+        });
+        if shown.is_none() {
+            self.menu_node = None;
         }
     }
 }
 
 /// Color claro por extensión (el mismo siempre para la misma).
 fn file_color(ext: Option<&str>) -> Color32 {
-    let Some(e) = ext else { return Color32::from_rgb(236, 236, 228) };
+    let Some(e) = ext else { return Color32::from_rgb(224, 224, 212) };
     let mut h: u32 = 2166136261;
     for b in e.bytes() {
         h = (h ^ b as u32).wrapping_mul(16777619);
     }
     let hue = (h % 360) as f32 / 360.0;
-    egui::ecolor::Hsva::new(hue, 0.28, 0.96, 1.0).into()
+    egui::ecolor::Hsva::new(hue, 0.42, 0.93, 1.0).into()
 }
 
 #[cfg(test)]
