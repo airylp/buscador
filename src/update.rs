@@ -133,7 +133,7 @@ impl Updater {
             let script = match std::env::var("BUSCADOR_INSTALL_SH") {
                 Ok(p) => format!("exec 2>&1\nsh '{p}' instalar"),
                 Err(_) => format!(
-                    "exec 2>&1\nset -e\nF=\"${{TMPDIR:-/tmp}}/buscador-install.sh\"\ncurl -fsSL https://raw.githubusercontent.com/{}/main/install.sh -o \"$F\"\nsh \"$F\" instalar\nrm -f \"$F\"",
+                    "exec 2>&1\nset -e\nF=\"${{TMPDIR:-/tmp}}/buscador-install.sh\"\n# Se borra siempre, también si algo falla.\ntrap 'rm -f \"$F\"' EXIT INT TERM\ncurl -fsSL https://raw.githubusercontent.com/{}/main/install.sh -o \"$F\"\nsh \"$F\" instalar",
                     repo()
                 ),
             };

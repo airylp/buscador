@@ -593,6 +593,7 @@ impl Tab {
                         let old = std::mem::replace(&mut self.doc, doc);
                         if std::mem::take(&mut self.untitled) {
                             let _ = std::fs::remove_file(&old.path);
+                            let _ = std::fs::remove_dir(untitled_dir()); // solo si quedó vacía
                         }
                         if old.name != self.doc.name {
                             self.lang = syntax::detect(&self.doc.name);
@@ -1137,6 +1138,7 @@ impl Drop for Tab {
     fn drop(&mut self) {
         if self.untitled {
             let _ = std::fs::remove_file(&self.doc.path);
+            let _ = std::fs::remove_dir(untitled_dir()); // solo si quedó vacía
         }
     }
 }
@@ -1155,6 +1157,8 @@ fn clean_old_untitled() {
             let _ = std::fs::remove_file(e.path());
         }
     }
+    // Si quedó vacía, se quita la carpeta (falla sola si aún tiene archivos).
+    let _ = std::fs::remove_dir(untitled_dir());
 }
 
 #[derive(Clone, Copy)]
@@ -4278,6 +4282,7 @@ mod tests {
         assert!(!tmp.exists(), "el temporal se borra al guardar");
         // Cerrar un «Sin título» también borra su temporal.
         let tmp2 = dir.join("sin-titulo-test2.txt");
+        std::fs::create_dir_all(&dir).unwrap(); // al guardar se quitó la carpeta vacía
         std::fs::write(&tmp2, b"").unwrap();
         let mut t2 = Tab::new(Document::open(&tmp2).unwrap());
         t2.untitled = true;

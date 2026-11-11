@@ -142,4 +142,9 @@ DESKTOP
     info "Instalado: $BIN_DIR/buscador (y en el menú de aplicaciones)"
     case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "   Nota: $BIN_DIR no está en tu PATH; añádelo para escribir «buscador» en la terminal." ;; esac
 fi
+# La caché de compilación acelera las actualizaciones, pero cargo no borra lo
+# viejo: si pasa de 1 GB se vacía (la próxima compilación empieza de cero).
+if [ -d "$CACHE" ] && [ "$(du -sk "$CACHE" | cut -f1)" -gt 1048576 ]; then
+    rm -rf "$CACHE" && info "Caché de compilación vaciada (pasaba de 1 GB)"
+fi
 echo "   Para actualizar más adelante: ⚙ Ajustes → «Buscar actualizaciones…», o vuelve a ejecutar este comando."

@@ -41,6 +41,8 @@ pub enum State {
     Triple(u8),
     /// Dentro de un comentario XML (`<!-- … -->`).
     XmlComment,
+    /// Dentro de un bloque de código de Markdown (``` … ```).
+    Fence,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,10 +66,11 @@ pub enum Lang {
     Yaml,
     Toml,
     Css,
+    Markdown,
 }
 
 impl Lang {
-    pub const ALL: [Lang; 19] = [
+    pub const ALL: [Lang; 20] = [
         Lang::Log,
         Lang::Plain,
         Lang::Java,
@@ -87,6 +90,7 @@ impl Lang {
         Lang::Yaml,
         Lang::Toml,
         Lang::Css,
+        Lang::Markdown,
     ];
 
     pub fn name(self) -> &'static str {
@@ -110,6 +114,7 @@ impl Lang {
             Lang::Yaml => "YAML",
             Lang::Toml => "TOML / INI",
             Lang::Css => "CSS",
+            Lang::Markdown => "Markdown",
         }
     }
 
@@ -143,7 +148,8 @@ pub fn detect(name: &str) -> Lang {
         "yml" | "yaml" => Lang::Yaml,
         "toml" | "ini" | "cfg" | "conf" | "properties" | "env" => Lang::Toml,
         "css" | "scss" | "less" => Lang::Css,
-        "txt" | "text" | "md" | "csv" | "tsv" => Lang::Plain,
+        "md" | "markdown" | "mdx" | "mkd" => Lang::Markdown,
+        "txt" | "text" | "csv" | "tsv" => Lang::Plain,
         _ => Lang::Log,
     }
 }
@@ -169,6 +175,7 @@ pub fn highlight(lang: Lang, s: &str, st: State, out: &mut Vec<Span>) -> State {
             State::Normal
         }
         Lang::Xml => scan_xml(s, st, out),
+        Lang::Markdown => scan_md(s, st, out),
         _ => scan_code(def(lang), s, st, out),
     }
 }
@@ -685,6 +692,104 @@ fn scan_xml(s: &str, mut st: State, out: &mut Vec<Span>) -> State {
     st
 }
 
+// ------------------------------------------------------------------ Markdown
+
+fn scan_md(s: &str, st: State, out: &mut Vec<Span>) -> State {
+    let n = s.len();
+    let ind = n - s.trim_start().len();
+    let t = &s[ind..];
+    let fence = t.starts_with("```") || t.starts_with("~~~");
+    // Bloques de código: la línea de la valla y su contenido.
+    if st == State::Fence {
+        push(out, 0, n, if fence { Kind::Keyword } else { Kind::String });
+        return if fence { State::Normal } else { State::Fence };
+    }
+    if fence {
+        push(out, 0, n, Kind::Keyword);
+        return State::Fence;
+    }
+    // Títulos, citas y separadores ocupan la línea entera.
+    let hashes = t.bytes().take_while(|&c| c == b'#').count();
+    if (1..=6).contains(&hashes) && (t.len() == hashes || t.as_bytes()[hashes] == b' ') {
+        push(out, ind, n, Kind::Tag);
+        return State::Normal;
+    }
+    if t.starts_with('>') {
+        push(out, ind, n, Kind::Comment);
+        return State::Normal;
+    }
+    let rule = t.trim_end();
+    if rule.len() >= 3 && (rule.chars().all(|c| c == '-') || rule.chars().all(|c| c == '*') || rule.chars().all(|c| c == '_')) {
+        push(out, ind, n, Kind::Keyword);
+        return State::Normal;
+    }
+    // Viñetas y listas numeradas.
+    let b = s.as_bytes();
+    let mut i = ind;
+    if matches!(t.as_bytes().first(), Some(b'-' | b'*' | b'+')) && t.as_bytes().get(1) == Some(&b' ') {
+        push(out, ind, ind + 1, Kind::Keyword);
+        i = ind + 2;
+    } else {
+        let d = t.bytes().take_while(u8::is_ascii_digit).count();
+        if d > 0 && matches!(t.as_bytes().get(d), Some(b'.' | b')')) && t.as_bytes().get(d + 1) == Some(&b' ') {
+            push(out, ind, ind + d + 1, Kind::Keyword);
+            i = ind + d + 2;
+        }
+    }
+    // En la línea: `código`, **negrita**, *cursiva*, [enlaces](url), tablas.
+    while i < n {
+        let c = b[i];
+        if c == b'`' {
+            let ticks = s[i..].bytes().take_while(|&x| x == b'`').count();
+            let close = "`".repeat(ticks);
+            match s[i + ticks..].find(&close) {
+                Some(e) => {
+                    let end = i + ticks + e + ticks;
+                    push(out, i, end, Kind::String);
+                    i = end;
+                }
+                None => i += ticks,
+            }
+            continue;
+        }
+        if (c == b'*' || c == b'_') && b.get(i + 1) == Some(&c) {
+            let close = if c == b'*' { "**" } else { "__" };
+            if let Some(e) = s[i + 2..].find(close).filter(|&e| e > 0) {
+                let end = i + 2 + e + 2;
+                push(out, i, end, Kind::Attr);
+                i = end;
+                continue;
+            }
+        }
+        if (c == b'*' || c == b'_') && b.get(i + 1).is_some_and(|x| !x.is_ascii_whitespace()) && (i == 0 || !is_ident(b[i - 1])) {
+            if let Some(e) = s[i + 1..].find(c as char).filter(|&e| e > 0) {
+                let end = i + 1 + e + 1;
+                if b[end - 2] != b' ' {
+                    push(out, i, end, Kind::Number);
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        if c == b'[' || (c == b'!' && b.get(i + 1) == Some(&b'[')) {
+            let open = if c == b'!' { i + 1 } else { i };
+            if let Some(cb) = s[open..].find("](").map(|e| open + e) {
+                if let Some(cp) = s[cb + 2..].find(')').map(|e| cb + 2 + e) {
+                    push(out, i, cb + 1, Kind::Info);
+                    push(out, cb + 1, cp + 1, Kind::Attr);
+                    i = cp + 1;
+                    continue;
+                }
+            }
+        }
+        if c == b'|' {
+            push(out, i, i + 1, Kind::Debug);
+        }
+        i = next_char(s, i);
+    }
+    State::Normal
+}
+
 // ------------------------------------------------------------------ logs
 
 fn level(w: &str) -> Option<Kind> {
@@ -824,6 +929,22 @@ mod tests {
         assert_eq!(state_after(Lang::Python, ["x = \"\"\"doc", "más"].into_iter()), State::Triple(b'"'));
         let v = spans(Lang::Python, "@app.route('/') # ruta");
         assert_eq!(v[0], ("@app.route".into(), Kind::Attr));
+    }
+
+    #[test]
+    fn markdown() {
+        let v = spans(Lang::Markdown, "## Instalar");
+        assert_eq!(v[0], ("## Instalar".into(), Kind::Tag));
+        let v = spans(Lang::Markdown, "- usa `cargo` y **ojo** con *esto*: [docs](https://x.y)");
+        assert!(v.contains(&("-".into(), Kind::Keyword)));
+        assert!(v.contains(&("`cargo`".into(), Kind::String)));
+        assert!(v.contains(&("**ojo**".into(), Kind::Attr)));
+        assert!(v.contains(&("*esto*".into(), Kind::Number)));
+        assert!(v.contains(&("[docs]".into(), Kind::Info)));
+        assert!(v.contains(&("(https://x.y)".into(), Kind::Attr)));
+        assert_eq!(state_after(Lang::Markdown, ["texto", "```sh", "ls -la"].into_iter()), State::Fence);
+        assert_eq!(state_after(Lang::Markdown, ["```", "x", "```"].into_iter()), State::Normal);
+        assert!(spans(Lang::Markdown, "2 * 3 * 4").is_empty() || !spans(Lang::Markdown, "2 * 3 * 4").iter().any(|x| x.1 == Kind::Number));
     }
 
     #[test]

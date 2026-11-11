@@ -28,7 +28,7 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 - Al abrir se recuperan los archivos de la sesión anterior, cada uno en su posición
 - Ajustes (⚙): tema Sistema / Claro / Oscuro, tipo de letra del texto (monoespaciadas como Hack, Menlo,
   SF Mono, Monaco, Consolas… o proporcionales) y tamaño; se recuerdan
-- Resaltado de sintaxis según la extensión (Java, Kotlin, JS/TS, Rust, Go, C/C++, C#, Swift, Python,
+- Resaltado de sintaxis según la extensión (Java, Kotlin, JS/TS, Rust, Go, C/C++, C#, Swift, Python, Markdown,
   shell, SQL, JSON, XML/HTML, YAML, TOML/INI, CSS) y en los logs: niveles (ERROR, WARN, INFO, DEBUG),
   fechas, excepciones y trazas. Solo se colorea lo visible; el lenguaje se cambia en la barra de estado
 - Embellecer (✨, Ctrl+Shift+B) JSON y XML/HTML: valida que estén bien formados (si no, indica
