@@ -269,7 +269,7 @@ mod tests {
     fn run_on(text: &str, enc: &'static encoding_rs::Encoding, q: &str, re: bool, cs: bool) -> Vec<u64> {
         let dir = std::env::temp_dir().join("buscador-tests");
         std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join(format!("s-{}-{q}.log", enc.name()).replace(['\\', '*', '.', '[', ']'], "_"));
+        let p = dir.join(format!("s-{}-{q}-{re}-{cs}.log", enc.name()).replace(['\\', '*', '.', '[', ']'], "_"));
         let bytes: Vec<u8> = if enc == encoding_rs::UTF_16LE {
             text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
         } else {

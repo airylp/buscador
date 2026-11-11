@@ -764,7 +764,7 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
                 ("Ctrl+Tab".into(), "Siguiente archivo"),
                 (k("C+B"), "Mostrar/ocultar panel de archivos"),
                 (k("C+E"), "Activar/desactivar edición"),
-                ("Clic derecho en un archivo".into(), "Mostrar en carpeta, copiar ruta, duplicar…"),
+                ("Clic derecho en un archivo".into(), "Abrir en ventana nueva, mostrar en carpeta, copiar ruta, duplicar…"),
             ],
         ),
         (
@@ -817,6 +817,7 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
 
 #[derive(Clone, Copy)]
 enum FileAction {
+    NewWindow(usize),
     Reveal(usize),
     CopyPath(usize),
     CopyName(usize),
@@ -1383,6 +1384,16 @@ impl App {
                 self.msg(format!("Nombre copiado: {n}"));
             }
             FileAction::Duplicate(i) => self.duplicate(i),
+            FileAction::NewWindow(i) => {
+                let t = &self.tabs[i];
+                let r = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(&t.doc.path).spawn());
+                let m = match r {
+                    Ok(_) if t.dirty() => format!("{} abierto en otra ventana (versión guardada en disco)", t.doc.name),
+                    Ok(_) => format!("{} abierto en otra ventana", t.doc.name),
+                    Err(e) => format!("No se pudo abrir otra ventana: {e}"),
+                };
+                self.msg(m);
+            }
             FileAction::Close(i) => self.close_tab(i, false),
             FileAction::CloseOthers(i) => {
                 // Del final al principio para no desplazar índices; las que
@@ -1463,6 +1474,12 @@ impl App {
                     }
                     r.context_menu(|ui| {
                         let mut chosen = None;
+                        let nw = ui.button("Abrir en una ventana nueva");
+                        let nw = if t.dirty() { nw.on_hover_text("La ventana nueva muestra la versión guardada en disco") } else { nw };
+                        if nw.clicked() {
+                            chosen = Some(FileAction::NewWindow(i));
+                        }
+                        ui.separator();
                         if ui.button(REVEAL_LABEL).clicked() {
                             chosen = Some(FileAction::Reveal(i));
                         }
