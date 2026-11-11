@@ -131,6 +131,7 @@ impl MacMenu {
         items.borrow_mut().push((results.id().clone(), Cmd::ToggleResults));
         let detail = CheckMenuItem::new("Detalle de la línea", true, false, None);
         items.borrow_mut().push((detail.id().clone(), Cmd::ToggleDetail));
+        let wrap = item("Ajuste de línea", "Cmd+Alt+Z", Cmd::Key(Modifiers::COMMAND | Modifiers::ALT, Key::Z));
         let bigger = item("Letra más grande", "Cmd+=", cmd(Key::Equals));
         let smaller = item("Letra más pequeña", "Cmd+-", cmd(Key::Minus));
         let view = Submenu::with_items(
@@ -140,6 +141,7 @@ impl MacMenu {
                 &sidebar,
                 &results,
                 &detail,
+                &wrap,
                 &sep(),
                 &bigger,
                 &smaller,

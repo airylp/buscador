@@ -90,6 +90,10 @@ pub struct Tab {
     /// Selección en bloque (columnas), en columnas visuales: puede pasar del
     /// final de las líneas.
     colsel: Option<ColSel>,
+    /// Con ajuste de línea: dónde quedó cada línea visible en el último
+    /// fotograma (línea, y relativa, alto) y cuántas cabían enteras.
+    layout_map: Vec<(u64, f32, f32)>,
+    lines_shown: u64,
     /// Modo bloque activo (botón «Bloque» con letra monoespaciada).
     col_mode: bool,
     /// El arrastre en curso selecciona un bloque.
@@ -131,6 +135,8 @@ impl Tab {
             restore: None,
             export_request: None,
             colsel: None,
+            layout_map: Vec::new(),
+            lines_shown: 1,
             col_mode: false,
             col_dragging: false,
             edit_gen: 0,
@@ -987,6 +993,7 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
         (k("C+V"), "Pegar"),
         (k("C+A"), "Seleccionar todo"),
         (k("C+Shift+B"), "Embellecer JSON / XML (valida y sangra)"),
+        (k("C+A+Z"), "Ajuste de línea (activar / desactivar)"),
         (k("Retroceso / Supr"), "Borrar carácter"),
         (k("W+Retroceso / W+Supr"), "Borrar palabra"),
         (k("Enter"), "Nueva línea"),
@@ -1063,6 +1070,32 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
             ],
         ),
     ]
+}
+
+/// Ajuste de línea (soft wrap) de la vista principal.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Wrap {
+    Off,
+    /// Al ancho de la ventana.
+    Window,
+    /// A un número fijo de columnas.
+    Columns(u16),
+}
+
+impl Wrap {
+    pub fn parse(v: &str) -> Wrap {
+        match v {
+            "ventana" => Wrap::Window,
+            v => v.strip_prefix("columnas:").and_then(|n| n.parse().ok()).map_or(Wrap::Off, |n: u16| Wrap::Columns(n.clamp(20, 1000))),
+        }
+    }
+    pub fn as_str(self) -> String {
+        match self {
+            Wrap::Off => "no".into(),
+            Wrap::Window => "ventana".into(),
+            Wrap::Columns(n) => format!("columnas:{n}"),
+        }
+    }
 }
 
 /// Selección rectangular: (línea, columna visual) de la esquina donde empezó
@@ -1191,6 +1224,9 @@ pub struct App {
     column_mode: bool,
     /// Colorear según el lenguaje / niveles de log.
     syntax_on: bool,
+    /// Ajuste de línea y el último modo usado (para el botón de activar/desactivar).
+    wrap: Wrap,
+    wrap_last: Wrap,
     /// Siguiente número para «Sin título N».
     next_untitled: u32,
     /// Guardar/recuperar la sesión (no en ventanas nuevas ni en pruebas).
@@ -1253,6 +1289,11 @@ impl App {
             text_fg: settings.colors.map_or(DEFAULT_FG, |c| Color32::from_rgb(c.1[0], c.1[1], c.1[2])),
             column_mode: false,
             syntax_on: settings.syntax,
+            wrap: Wrap::parse(&settings.wrap),
+            wrap_last: match Wrap::parse(&settings.wrap) {
+                Wrap::Off => Wrap::Window,
+                w => w,
+            },
             next_untitled: 1,
             use_session: false,
             session_saved: Default::default(),
@@ -1416,6 +1457,7 @@ impl App {
             font: self.text_font.clone(),
             colors: self.custom_colors.then(|| (rgb(self.text_bg), rgb(self.text_fg))),
             syntax: self.syntax_on,
+            wrap: self.wrap.as_str(),
         };
         if let Err(e) = st.save() {
             self.msg(format!("No se pudieron guardar los ajustes: {e}"));
@@ -1487,6 +1529,23 @@ impl App {
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len().saturating_sub(1);
         }
+    }
+
+    fn toggle_wrap(&mut self) {
+        self.wrap = if self.wrap == Wrap::Off { self.wrap_last } else { Wrap::Off };
+        if self.wrap != Wrap::Off {
+            self.wrap_last = self.wrap;
+        }
+        for t in &mut self.tabs {
+            t.content_width = 0.0;
+            t.colsel = None;
+        }
+        self.persist();
+        self.msg(match self.wrap {
+            Wrap::Off => "Ajuste de línea desactivado".to_string(),
+            Wrap::Window => "Ajuste de línea al ancho de la ventana".to_string(),
+            Wrap::Columns(n) => format!("Ajuste de línea a {n} columnas"),
+        });
     }
 
     fn beautify(&mut self) {
@@ -1562,6 +1621,9 @@ impl App {
         }
         if pressed(sc(Modifiers::COMMAND, Key::O)) {
             self.open_dialog();
+        }
+        if pressed(sc(Modifiers::COMMAND | Modifiers::ALT, Key::Z)) {
+            self.toggle_wrap();
         }
         if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::B)) {
             self.beautify();
@@ -1700,8 +1762,10 @@ impl App {
             {
                 self.toggle_edit();
             }
-            let mono = self.mono_font();
-            let block_hint = if mono {
+            let mono = self.mono_font() && self.wrap == Wrap::Off;
+            let block_hint = if self.wrap != Wrap::Off {
+                "La selección en bloque no está disponible con el ajuste de línea activado"
+            } else if mono {
                 "Selección en bloque: arrastra para marcar un rectángulo de texto (como una matriz). Al copiar se copia solo el texto real, línea por línea. También: Opción/Alt+arrastrar."
             } else {
                 "La selección en bloque necesita una letra monoespaciada (⚙ Ajustes)"
@@ -2054,7 +2118,7 @@ impl App {
         let full = ui.available_rect_before_wrap();
         let full = Rect::from_min_size(full.min, vec2(full.width(), h));
         ui.allocate_rect(full, Sense::hover());
-        let right_w = 230.0_f32.min(full.width() / 2.0);
+        let right_w = 300.0_f32.min(full.width() / 2.0);
         let right = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
         let left = Rect::from_min_max(full.min, pos2(right.left() - 6.0, full.bottom()));
 
@@ -2067,6 +2131,16 @@ impl App {
                 self.show_keys = !self.show_keys;
             }
             ui.separator();
+            let wrap_hint = format!(
+                "Ajuste de línea (Ctrl+Alt+Z): {} · el modo se elige en ⚙ Ajustes",
+                match self.wrap_last {
+                    Wrap::Columns(n) => format!("a {n} columnas"),
+                    _ => "al ancho de la ventana".into(),
+                }
+            );
+            if ui.selectable_label(self.wrap != Wrap::Off, RichText::new("↩ Ajuste").small()).on_hover_text(wrap_hint).clicked() {
+                self.toggle_wrap();
+            }
             ui.toggle_value(&mut self.show_detail, RichText::new("📄 Detalle").small())
                 .on_hover_text("Panel con la línea actual completa, seleccionable");
             ui.toggle_value(&mut self.show_results, RichText::new("📋 Resultados").small())
@@ -2273,6 +2347,9 @@ impl App {
             if let Ok(txt) = std::env::var("BUSCADOR_NUEVO") {
                 self.new_untitled(Some(txt.replace("\\n", "\n")));
             }
+            if let Ok(w) = std::env::var("BUSCADOR_AJUSTE") {
+                self.wrap = Wrap::parse(&w);
+            }
             if let Ok(f) = std::env::var("BUSCADOR_FUENTE") {
                 ctx.set_fonts(crate::fonts::build(&f, &self.fallback_fonts).0);
                 self.text_font = f;
@@ -2440,7 +2517,8 @@ impl eframe::App for App {
         let mut view_focused = false;
         let colors = self.text_colors();
         let syntax_on = self.syntax_on;
-        let col_mode = self.column_mode && self.mono_font();
+        let wrap = self.wrap;
+        let col_mode = self.column_mode && self.mono_font() && wrap == Wrap::Off;
         for t in &mut self.tabs {
             t.col_mode = col_mode;
         }
@@ -2448,7 +2526,7 @@ impl eframe::App for App {
         let focus_view = std::mem::take(&mut self.focus_view);
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
             if let Some(t) = self.tabs.get_mut(self.active) {
-                (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors, syntax_on);
+                (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors, syntax_on, wrap);
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.heading("Arrastra archivos aquí, o pulsa Ctrl+O");
@@ -2538,8 +2616,10 @@ fn log_view(
     focus: bool,
     colors: Option<(Color32, Color32)>,
     syntax_on: bool,
+    wrap: Wrap,
 ) -> (Option<String>, bool) {
     apply_text_colors(ui, colors);
+    let wrapping = wrap != Wrap::Off;
     let mut message = None;
     let ctx = ui.ctx().clone();
     let (row_h, char_w) = ctx.fonts_mut(|f| (f.row_height(font).ceil(), f.glyph_width(font, '0')));
@@ -2556,33 +2636,46 @@ fn log_view(
     }
     let visible = ((text_area.height() / row_h).floor() as u64).max(1);
     tab.visible_rows = visible;
+    // Líneas por pantalla: con ajuste, las que cupieron enteras la última vez.
+    let page = if wrapping { tab.lines_shown.clamp(1, visible) } else { visible };
 
     // Teclado (antes de medir: puede cambiar el número de líneas).
     if resp.has_focus() {
         ui.memory_mut(|m| {
             m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true })
         });
-        message = tab.handle_events(&ctx, visible.saturating_sub(1).max(1) as i64);
+        message = tab.handle_events(&ctx, page.saturating_sub(1).max(1) as i64);
     }
 
     let total = tab.total();
-    let max_top = total.saturating_sub(visible);
+    // Con ajuste no se sabe cuántas filas ocupan las últimas líneas: se deja
+    // llegar hasta la última línea arriba del todo.
+    let max_top = if wrapping { total.saturating_sub(1) } else { total.saturating_sub(visible) };
     let digits = fmt_num(total.max(1)).chars().count().max(4);
     let gutter_w = char_w * digits as f32 + 14.0;
     let text_x = text_area.left() + gutter_w + 6.0;
     let view_w = (text_area.right() - text_x).max(char_w * 4.0);
+    // Ancho al que se parte cada línea.
+    let wrap_w = match wrap {
+        Wrap::Off => f32::INFINITY,
+        Wrap::Window => (view_w - char_w).max(char_w * 8.0),
+        Wrap::Columns(n) => n as f32 * char_w + 0.5,
+    };
+    if wrap == Wrap::Window {
+        tab.hscroll = 0.0;
+    }
 
     if let Some(l) = tab.center_on.take() {
-        if l < tab.top || l >= tab.top + visible {
-            tab.top = l.saturating_sub(visible / 2);
+        if l < tab.top || l >= tab.top + page {
+            tab.top = l.saturating_sub(page / 2);
         }
     }
     if tab.reveal {
         if let Some(c) = tab.cursor {
             if c.line < tab.top {
                 tab.top = c.line;
-            } else if c.line >= tab.top + visible {
-                tab.top = c.line + 1 - visible;
+            } else if c.line >= tab.top + page {
+                tab.top = c.line + 1 - page;
             }
         }
     }
@@ -2598,15 +2691,29 @@ fn log_view(
     }
 
     // Ratón: cursor por carácter; en el margen de números, líneas completas.
+    // Con ajuste, la línea bajo el puntero sale del mapa del último fotograma.
+    let map = std::mem::take(&mut tab.layout_map);
+    let map_at = |y: f32| -> Option<(u64, f32)> {
+        let ry = y - text_area.top();
+        let e = map.iter().find(|e| ry < e.1 + e.2).or(map.last())?;
+        Some((e.0, (ry - e.1).max(0.0)))
+    };
+    let frame_top = tab.top;
     let row_at = |top: u64, y: f32| -> u64 {
+        if wrapping && top == frame_top {
+            if let Some((l, _)) = map_at(y) {
+                return l.min(total.saturating_sub(1));
+            }
+        }
         let r = ((y - text_area.top()) / row_h).floor().max(0.0) as u64;
         (top + r).min(total.saturating_sub(1))
     };
     let pos_at = |tab: &Tab, top: u64, p: Pos2| -> Pos {
         let line = row_at(top, p.y);
         let (t, _) = cap_line(tab.line(line));
-        let g = ui.painter().layout_job(plain_job(&t, font));
-        let idx = g.cursor_from_pos(vec2(p.x - text_x + tab.hscroll, row_h / 2.0)).index.0;
+        let g = ui.painter().layout_job(plain_job(&t, font, wrap_w));
+        let in_y = if wrapping { map_at(p.y).filter(|m| m.0 == line).map_or(row_h / 2.0, |m| m.1) } else { row_h / 2.0 };
+        let idx = g.cursor_from_pos(vec2(p.x - text_x + tab.hscroll, in_y)).index.0;
         Pos::new(line, col_from_disp(&t, idx))
     };
     // Columna visual bajo el puntero (puede pasar del final de la línea).
@@ -2614,7 +2721,7 @@ fn log_view(
     if total > 0 {
         let shift = ui.input(|i| i.modifiers.shift);
         // Modo bloque, o Opción/Alt+arrastrar para un bloque puntual.
-        let block_drag = tab.col_mode || ui.input(|i| i.modifiers.alt);
+        let block_drag = !wrapping && (tab.col_mode || ui.input(|i| i.modifiers.alt));
         let press = if resp.drag_started() { ui.input(|i| i.pointer.press_origin()) } else { None };
         if let Some(p) = press.or_else(|| (resp.clicked() || resp.secondary_clicked()).then(|| resp.interact_pointer_pos()).flatten())
         {
@@ -2768,22 +2875,37 @@ fn log_view(
         };
     }
     let mut spans = Vec::new();
-    let rows: Vec<(u64, String, Arc<Galley>)> = tab
-        .rows(tab.top, visible as usize + 1, MAX_DISPLAY_BYTES)
-        .into_iter()
-        .map(|(n, t, tr)| {
-            spans.clear();
-            st = syntax::highlight(lang, &t, st, &mut spans);
-            let g = ui.painter().layout_job(line_job(&t, tr, font, visuals.text_color(), highlight, &spans, dark));
-            (n, t, g)
-        })
-        .collect();
-    let x_of = |t: &str, g: &Galley, col: usize| g.pos_from_cursor(CCursor::new(disp_col(t, col))).min.x;
+    // (línea, texto, maquetación, y relativa al área, alto). Con ajuste, cada
+    // línea puede ocupar varias filas.
+    let mut y_acc = 0.0f32;
+    let mut lines_shown = 0u64;
+    let mut rows: Vec<(u64, String, Arc<Galley>, f32, f32)> = Vec::new();
+    for (n, t, tr) in tab.rows(tab.top, visible as usize + 1, MAX_DISPLAY_BYTES) {
+        if y_acc >= text_area.height() {
+            break;
+        }
+        spans.clear();
+        st = syntax::highlight(lang, &t, st, &mut spans);
+        let mut job = line_job(&t, tr, font, visuals.text_color(), highlight, &spans, dark);
+        job.wrap.max_width = wrap_w;
+        let g = ui.painter().layout_job(job);
+        let h = if wrapping { (g.rows.len().max(1) as f32 * row_h).max(row_h) } else { row_h };
+        if y_acc + h <= text_area.height() + 0.5 {
+            lines_shown += 1;
+        }
+        rows.push((n, t, g, y_acc, h));
+        y_acc += h;
+    }
+    tab.lines_shown = lines_shown.max(1);
+    tab.layout_map = rows.iter().map(|r| (r.0, r.3, r.4)).collect();
+    // Posición (en la maquetación) de una columna: x e y de su fila.
+    let pos_of = |t: &str, g: &Galley, col: usize| g.pos_from_cursor(CCursor::new(disp_col(t, col)));
+    let x_of = |t: &str, g: &Galley, col: usize| pos_of(t, g, col).min.x;
 
     // Desplazamiento horizontal para que se vea el cursor.
     if std::mem::take(&mut tab.reveal) {
         if let Some(c) = tab.cursor {
-            if let Some((_, t, g)) = rows.iter().find(|r| r.0 == c.line) {
+            if let Some((_, t, g, _, _)) = rows.iter().find(|r| r.0 == c.line).filter(|_| wrap != Wrap::Window) {
                 let x = x_of(t, g, c.col);
                 if x < tab.hscroll {
                     tab.hscroll = (x - char_w * 8.0).max(0.0);
@@ -2812,30 +2934,25 @@ fn log_view(
     let mut max_w: f32 = 0.0;
     let mut caret_rect = None;
 
-    for (n, t, galley) in &rows {
+    for (n, t, galley, y_rel, h) in &rows {
         let n = *n;
-        let y = text_area.top() + (n - tab.top) as f32 * row_h;
-        let row = Rect::from_min_size(pos2(text_area.left(), y), vec2(text_area.width(), row_h));
+        let y = text_area.top() + y_rel;
+        let row = Rect::from_min_size(pos2(text_area.left(), y), vec2(text_area.width(), *h));
         if tab.current == Some(n) {
             painter.rect_filled(row, 0.0, match_line_color);
         } else if tab.cursor.is_some_and(|c| c.line == n) && sel.is_none() {
             painter.rect_filled(row, 0.0, cur_line_color);
         }
         if tab.search.as_ref().is_some_and(|s| s.index_of(n).is_some()) {
-            painter.rect_filled(Rect::from_min_size(row.min, vec2(3.0, row_h)), 0.0, mark_color);
+            painter.rect_filled(Rect::from_min_size(row.min, vec2(3.0, *h)), 0.0, mark_color);
         }
-        // Selección.
+        // Selección: un rectángulo por cada fila (con ajuste, varias por línea).
         if let Some((a, b)) = sel.filter(|(a, b)| a.line <= n && n <= b.line) {
-            let x0 = if n == a.line { x_of(t, galley, a.col) } else { 0.0 };
-            let mut x1 = if n == b.line { x_of(t, galley, b.col) } else { galley.size().x };
-            if n < b.line {
-                x1 += char_w * 0.6; // el salto de línea también está seleccionado
+            let d0 = if n == a.line { disp_col(t, a.col) } else { 0 };
+            let d1 = if n == b.line { disp_col(t, b.col) } else { usize::MAX };
+            for r in selection_rects(galley, d0, d1, n < b.line, char_w * 0.6, row_h) {
+                text_painter.rect_filled(r.translate(vec2(ox, y)), 0.0, sel_color);
             }
-            text_painter.rect_filled(
-                Rect::from_min_max(pos2(ox + x0, y), pos2(ox + x1.max(x0 + 1.0), y + row_h)),
-                0.0,
-                sel_color,
-            );
         }
         // Selección en bloque: el rectángulo entero, aunque pase del final de la línea.
         if let Some(cs) = tab.colsel.filter(|c| (c.lines().0..=c.lines().1).contains(&n)) {
@@ -2855,10 +2972,13 @@ fn log_view(
 
         // Cursor (y texto en composición del IME).
         if let Some(c) = tab.cursor.filter(|c| c.line == n) {
-            let x = ox + x_of(t, galley, c.col);
+            let cr = pos_of(t, galley, c.col);
+            let x = ox + cr.min.x;
+            // Con ajuste, el cursor va en su fila dentro de la línea.
+            let y = if wrapping { y + (cr.min.y / row_h).round().min((galley.rows.len().max(1) - 1) as f32) * row_h } else { y };
             let mut caret_x = x;
             if !tab.preedit.is_empty() {
-                let g = ui.painter().layout_job(plain_job(&tab.preedit, font));
+                let g = ui.painter().layout_job(plain_job(&tab.preedit, font, f32::INFINITY));
                 let r = Rect::from_min_size(pos2(x, y), vec2(g.size().x, row_h));
                 text_painter.rect_filled(r, 0.0, visuals.extreme_bg_color);
                 text_painter.galley(pos2(x, y), g, visuals.strong_text_color());
@@ -2874,7 +2994,7 @@ fn log_view(
             caret_rect = Some(Rect::from_min_size(pos2(caret_x, y), vec2(1.0, row_h)));
         }
     }
-    tab.content_width = tab.content_width.max(max_w);
+    tab.content_width = if wrap == Wrap::Window { view_w } else { tab.content_width.max(max_w) };
 
     // Permitir el IME (acentos, CJK…) cuando se puede escribir.
     if resp.has_focus() && tab.editable {
@@ -2893,9 +3013,11 @@ fn log_view(
 
     // Barras de desplazamiento.
     let mut top = tab.top;
-    vscrollbar(ui, vsb, id.with("vsb"), &mut top, total, visible);
+    vscrollbar(ui, vsb, id.with("vsb"), &mut top, total, if wrapping { 1 } else { visible });
     tab.top = top;
-    hscrollbar(ui, hsb, id.with("hsb"), &mut tab.hscroll, tab.content_width + 40.0, view_w);
+    // Con ajuste a la ventana no hay nada que desplazar en horizontal.
+    let content = if wrap == Wrap::Window { view_w } else { tab.content_width + 40.0 };
+    hscrollbar(ui, hsb, id.with("hsb"), &mut tab.hscroll, content, view_w);
     let note = if !tab.doc.indexing_done() {
         Some("indexando…")
     } else if !tab.editable {
@@ -2937,9 +3059,9 @@ fn cap_line(t: String) -> (String, bool) {
     (t[..cut].to_string(), true)
 }
 
-fn plain_job(txt: &str, font: &FontId) -> LayoutJob {
+fn plain_job(txt: &str, font: &FontId, wrap_w: f32) -> LayoutJob {
     let mut job = LayoutJob::default();
-    job.wrap.max_width = f32::INFINITY;
+    job.wrap.max_width = wrap_w;
     job.append(&sanitize(txt), 0.0, TextFormat { font_id: font.clone(), ..Default::default() });
     job
 }
@@ -2997,6 +3119,34 @@ fn line_job(
         job.append("  …[línea truncada; ver Detalle]", 0.0, TextFormat { italics: true, ..normal });
     }
     job
+}
+
+/// Rectángulos (en coordenadas de la maquetación) que cubren los caracteres
+/// mostrados `d0..d1` de una línea, uno por fila. Si `newline`, el último se
+/// alarga un poco para indicar que el salto de línea también está incluido.
+fn selection_rects(g: &Galley, d0: usize, d1: usize, newline: bool, nl_w: f32, row_h: f32) -> Vec<Rect> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let last = g.rows.len().saturating_sub(1);
+    for (k, row) in g.rows.iter().enumerate() {
+        let n_excl = row.char_count_excluding_newline().0;
+        let end = start + n_excl;
+        let (a, b) = (d0.max(start), d1.min(end));
+        let y0 = k as f32 * row_h;
+        if a < b || (a == b && a >= start && a <= end && newline && k == last) {
+            let x0 = row.pos.x + row.x_offset(epaint::text::CharIndex(a - start));
+            let mut x1 = row.pos.x + row.x_offset(epaint::text::CharIndex(b - start));
+            if newline && k == last {
+                x1 += nl_w;
+            }
+            out.push(Rect::from_min_max(pos2(x0, y0), pos2(x1.max(x0 + 1.0), y0 + row_h)));
+        }
+        start += row.char_count_including_newline().0;
+    }
+    if out.is_empty() && g.rows.is_empty() && newline {
+        out.push(Rect::from_min_size(Pos2::ZERO, vec2(nl_w, row_h)));
+    }
+    out
 }
 
 /// ¿Fondo oscuro? (para elegir los colores de sintaxis)
@@ -3290,6 +3440,11 @@ impl App {
         let mut family = self.text_font.clone();
         let (mut custom, mut bg, mut fg) = (self.custom_colors, self.text_bg, self.text_fg);
         let mut syn = self.syntax_on;
+        let mut wrap = self.wrap;
+        let mut wrap_cols = match self.wrap_last {
+            Wrap::Columns(n) => n,
+            _ => 100,
+        };
         let mut open_update = false;
         let mut reset = false;
         let mut win = Window::new("Ajustes").id(settings_window_id()).pivot(Align2::CENTER_CENTER);
@@ -3334,6 +3489,25 @@ impl App {
                     ui.label("Letra");
                     ui.color_edit_button_srgba(&mut fg);
                 });
+            });
+            ui.add_space(8.0);
+            ui.strong("Ajuste de línea");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut wrap, Wrap::Off, "No");
+                ui.radio_value(&mut wrap, Wrap::Window, "Al ancho de la ventana");
+                let cols = match wrap {
+                    Wrap::Columns(n) => n,
+                    _ => wrap_cols,
+                };
+                if ui.radio(matches!(wrap, Wrap::Columns(_)), "A").clicked() {
+                    wrap = Wrap::Columns(cols);
+                }
+                let mut c = cols;
+                if ui.add(DragValue::new(&mut c).range(20..=1000).speed(1)).changed() {
+                    wrap_cols = c;
+                    wrap = Wrap::Columns(c);
+                }
+                ui.label("columnas");
             });
             ui.add_space(8.0);
             ui.strong("Resaltado");
@@ -3384,12 +3558,25 @@ impl App {
             ctx.set_fonts(crate::fonts::build(&self.text_font, &self.fallback_fonts).0);
             self.custom_colors = false;
             self.syntax_on = d.syntax;
+            self.wrap = Wrap::parse(&d.wrap);
             self.text_bg = DEFAULT_BG;
             self.text_fg = DEFAULT_FG;
             self.persist();
             self.msg("Ajustes restablecidos");
             return;
         }
+        if wrap != self.wrap {
+            self.wrap = wrap;
+            if wrap != Wrap::Off {
+                self.wrap_last = wrap;
+            }
+            for t in &mut self.tabs {
+                t.content_width = 0.0;
+                t.colsel = None;
+            }
+            self.persist();
+        }
+        let _ = wrap_cols;
         if (custom, bg, fg, syn) != (self.custom_colors, self.text_bg, self.text_fg, self.syntax_on) {
             self.syntax_on = syn;
             self.custom_colors = custom;
@@ -4367,7 +4554,7 @@ mod copy_keeps_selection {
         for (k, events) in frames.into_iter().enumerate() {
             let input = RawInput { screen_rect: Some(screen), events, time: Some(k as f64 * 0.05), ..Default::default() };
             let _ = ctx.run_ui(input, |ui| {
-                log_view(ui, &mut t, &font, &mut show, false, None, true);
+                log_view(ui, &mut t, &font, &mut show, false, None, true, Wrap::Off);
             });
         }
         t
@@ -4414,6 +4601,43 @@ mod copy_keeps_selection {
         );
         assert_eq!(copied.as_deref(), Some("hola
 segu"));
+    }
+
+    #[test]
+    fn wrapped_click_lands_on_the_right_row() {
+        let dir = std::env::temp_dir().join("buscador-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("ajuste-clic.txt");
+        std::fs::write(&p, format!("{}\nsegunda\n", "abcdefghij".repeat(30))).unwrap();
+        let doc = Document::open(&p).unwrap();
+        while !doc.indexing_done() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut t = Tab::new(doc);
+        let ctx = Context::default();
+        let font = FontId::monospace(13.0);
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
+        let _ = ctx.run_ui(RawInput { screen_rect: Some(screen), ..Default::default() }, |_| {});
+        let row_h = ctx.fonts_mut(|f| f.row_height(&font).ceil());
+        let y2 = row_h * 1.5; // segunda fila visual de la primera línea
+        let frames = vec![
+            vec![],
+            vec![Event::PointerMoved(pos2(120.0, y2))],
+            vec![Event::PointerButton { pos: pos2(120.0, y2), button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }],
+            vec![Event::PointerButton { pos: pos2(120.0, y2), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }],
+            vec![],
+        ];
+        let mut show = false;
+        for (k, events) in frames.into_iter().enumerate() {
+            let input = RawInput { screen_rect: Some(screen), events, time: Some(k as f64 * 0.05), ..Default::default() };
+            let _ = ctx.run_ui(input, |ui| {
+                log_view(ui, &mut t, &font, &mut show, false, None, true, Wrap::Window);
+            });
+        }
+        let c = t.cursor.expect("cursor");
+        assert_eq!(c.line, 0, "el clic en la 2.ª fila sigue siendo la línea 1");
+        assert!(c.col > 20, "y cae en mitad de la línea (col {})", c.col);
+        assert!(t.lines_shown >= 1 && t.layout_map[0].2 > row_h, "la línea larga ocupa varias filas");
     }
 
     #[test]

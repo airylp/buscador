@@ -142,6 +142,8 @@ impl Updater {
             if let Some(d) = &dest {
                 cmd.env("BUSCADOR_DESTINO", d);
             }
+            // La app se reinicia sola al terminar («Reiniciar ahora»): el script no la cierra.
+            cmd.env("BUSCADOR_NO_CERRAR", "1");
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => {

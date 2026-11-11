@@ -24,6 +24,9 @@ APP="$OUT/$APP_NAME"
 CONFIG="$HOME/Library/Application Support/buscador"
 TEMPS="${TMPDIR:-/tmp}/buscador-nuevos"
 CACHE="$HOME/Library/Caches/buscador-compilacion"
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+BUNDLE_ID="io.github.airylp.buscador"
+REABRIR=0
 
 ACCION=""
 DESTINO=""
@@ -57,20 +60,31 @@ instalada() {
     return 1
 }
 
+abierta() { pgrep -f "$APP_NAME/Contents/MacOS/buscador" >/dev/null 2>&1; }
+
+# Pide a buscador que se cierre como si lo hiciera el usuario: si hay cambios
+# sin guardar, la propia app pregunta. Nunca se mata a la fuerza.
 cerrar_si_abierta() {
     [ "$NO_CERRAR" = 1 ] && return 0
-    pgrep -f "$APP_NAME/Contents/MacOS/buscador" >/dev/null 2>&1 || return 0
-    # Nunca se cierra sin preguntar (podría haber cambios sin guardar): sin
-    # terminal interactiva, o con --si, se reemplaza igual y se avisa.
-    if [ "$SI" = 1 ] || [ ! -t 0 ]; then
-        echo "Aviso: buscador está abierto; reinícialo para usar la versión nueva."
-        return 0
+    abierta || return 0
+    resp=n
+    if (: < /dev/tty) 2>/dev/null; then
+        printf "buscador está abierto. ¿Cerrarlo ahora y volver a abrirlo con la versión nueva? [S/n] " > /dev/tty
+        read -r resp < /dev/tty || resp=""
+        [ -z "$resp" ] && resp=s
     fi
-    printf "buscador está abierto. ¿Cerrarlo para continuar? (guarda antes tus cambios) [s/N] "
-    read -r r || r=""
-    case "$r" in
-        s|S|si|sí|y|Y) pkill -f "$APP_NAME/Contents/MacOS/buscador" || true; sleep 1 ;;
-        *) echo "Se reemplaza igual; reinicia buscador para usar la versión nueva." ;;
+    case "$resp" in
+        s|S|si|sí|y|Y)
+            osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+            i=0
+            while abierta && [ $i -lt 60 ]; do sleep 1; i=$((i + 1)); done
+            if abierta; then
+                echo "buscador sigue abierto (¿cambios sin guardar?): se instala igual; reinícialo después."
+            else
+                REABRIR=1
+            fi
+            ;;
+        *) echo "Se instala igual; reinicia buscador para usar la versión nueva." ;;
     esac
 }
 
@@ -125,9 +139,16 @@ copiar_a() { # copiar_a CARPETA
     dir="$1"
     mkdir -p "$dir" 2>/dev/null || true
     if [ -w "$dir" ]; then
-        rm -rf "$dir/$APP_NAME"
-        cp -R "$APP" "$dir/"
+        if [ -d "$dir/$APP_NAME" ]; then
+            # Reemplazar el contenido sin borrar la carpeta: para macOS (Dock,
+            # Launchpad) sigue siendo la misma app y no aparece un ícono nuevo.
+            rsync -a --delete "$APP/" "$dir/$APP_NAME/"
+        else
+            cp -R "$APP" "$dir/"
+        fi
+        "$LSREGISTER" -f "$dir/$APP_NAME" >/dev/null 2>&1 || true
         echo "==> Instalada en $dir/$APP_NAME"
+        INSTALADA="$dir/$APP_NAME"
         return 0
     fi
     return 1
@@ -144,7 +165,17 @@ instalar() {
             copiar_a "$HOME/Applications"
         }
     fi
-    echo "Ábrela desde Launchpad o Spotlight (Cmd+Espacio, «buscador»)."
+    # El paquete intermedio (en target/ o en la caché) ya no hace falta: así
+    # macOS no lo registra como otra app más.
+    if [ "$APP" != "${INSTALADA:-}" ]; then
+        "$LSREGISTER" -u "$APP" >/dev/null 2>&1 || true
+        rm -rf "$APP"
+    fi
+    if [ "$REABRIR" = 1 ]; then
+        open "$INSTALADA" && echo "==> buscador vuelto a abrir con la versión nueva"
+    else
+        echo "Ábrela desde Launchpad o Spotlight (Cmd+Espacio, «buscador»)."
+    fi
 }
 
 actualizar() {
@@ -167,6 +198,7 @@ desinstalar() {
         if [ -n "$d" ] && [ -d "$d/$APP_NAME" ]; then
             cerrar_si_abierta
             if pregunta "¿Quitar $d/$APP_NAME?"; then
+                "$LSREGISTER" -u "$d/$APP_NAME" >/dev/null 2>&1 || true
                 rm -rf "${d:?}/$APP_NAME" && echo "==> Quitada $d/$APP_NAME" && quitado=1
             fi
         fi

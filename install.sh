@@ -50,6 +50,8 @@ if [ "$ACCION" = "desinstalar" ] || [ "$ACCION" = "--desinstalar" ]; then
     if [ "$OS" = "Darwin" ]; then
         for d in $APP_DIRS; do
             if [ -d "$d/buscador.app" ]; then
+                osascript -e 'tell application id "io.github.airylp.buscador" to quit' >/dev/null 2>&1 || true
+                /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$d/buscador.app" >/dev/null 2>&1 || true
                 rm -rf "${d:?}/buscador.app" && info "Quitada $d/buscador.app"
             fi
         done
@@ -115,7 +117,9 @@ fi
 
 if [ "$OS" = "Darwin" ]; then
     info "Compilando y creando buscador.app (la primera vez tarda unos minutos)"
-    sh "$TMP/empaquetar-mac.sh" instalar --si --no-cerrar ${BUSCADOR_DESTINO:+--destino "$BUSCADOR_DESTINO"}
+    # Si buscador está abierto, pregunta (en la terminal) si cerrarlo y reabrirlo;
+    # desde «Buscar actualizaciones» de la propia app no se cierra (BUSCADOR_NO_CERRAR=1).
+    sh "$TMP/empaquetar-mac.sh" instalar --si ${BUSCADOR_NO_CERRAR:+--no-cerrar} ${BUSCADOR_DESTINO:+--destino "$BUSCADOR_DESTINO"}
     info "Listo. Abre buscador desde Launchpad o Spotlight (Cmd+Espacio, «buscador»)."
 else
     info "Compilando (la primera vez tarda unos minutos)"
