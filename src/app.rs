@@ -2202,18 +2202,38 @@ impl App {
             for (i, t) in self.tabs.iter().enumerate() {
                 let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
                 ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
+                    // Toda la fila se puede pulsar (se registra antes que la ×, que
+                    // queda encima y conserva su propio clic).
+                    let row_rect = ui.max_rect();
+                    let r = ui.interact(row_rect, Id::NULL.with(("fila_archivo", i)), Sense::click());
+                    let v = ui.visuals();
+                    let active = i == self.active;
+                    let fill = if active {
+                        Some(v.selection.bg_fill)
+                    } else if r.contains_pointer() {
+                        Some(v.widgets.hovered.weak_bg_fill)
+                    } else {
+                        None
+                    };
+                    if let Some(f) = fill {
+                        ui.painter().rect_filled(row_rect, v.widgets.inactive.corner_radius, f);
+                    }
+                    let ink = if active { v.selection.stroke.color } else { v.strong_text_color() };
                     // El botón de cerrar, pegado a la derecha; el nombre ocupa el resto.
                     if ui.small_button("×").on_hover_text("Cerrar (Ctrl+W)").clicked() {
                         action = Some(FileAction::Close(i));
                     }
                     let name = if t.dirty() { format!("● {}", t.doc.name) } else { t.doc.name.clone() };
-                    let r = ui
-                        .with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            ui.style_mut().wrap_mode = Some(TextWrapMode::Truncate);
-                            ui.selectable_label(i == self.active, RichText::new(name).strong())
-                        })
-                        .inner
-                        .on_hover_text(format!(
+                    let free = ui.available_rect_before_wrap();
+                    let galley = WidgetText::from(RichText::new(name).strong()).into_galley(
+                        ui,
+                        Some(TextWrapMode::Truncate),
+                        (free.width() - 8.0).max(10.0),
+                        TextStyle::Button,
+                    );
+                    let pos = pos2(row_rect.left() + 6.0, row_rect.center().y - galley.size().y / 2.0);
+                    ui.painter().galley(pos, galley, ink);
+                    let r = r.on_hover_text(format!(
                             "{}\nClic derecho: más opciones\n{}",
                             if t.untitled { "Archivo nuevo sin guardar".to_string() } else { t.doc.path.display().to_string() },
                             tab_details(t)
