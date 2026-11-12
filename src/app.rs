@@ -81,6 +81,8 @@ pub struct Tab {
     /// Posición a recuperar de la sesión anterior: (arriba, cursor). Se aplica
     /// cuando el índice ya llega hasta ahí.
     restore: Option<(u64, Pos)>,
+    /// Llevar el cursor al final en cuanto el índice esté listo («Recargar»).
+    goto_end: bool,
     /// Petición del menú contextual: crear un archivo nuevo con este texto.
     export_request: Option<String>,
     /// Lenguaje para el resaltado (por la extensión; se puede cambiar).
@@ -135,6 +137,7 @@ impl Tab {
             syntax_cache: None,
             pending_text: None,
             restore: None,
+            goto_end: false,
             export_request: None,
             colsel: None,
             layout_map: Vec::new(),
@@ -997,6 +1000,7 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
         (k("C+A"), "Seleccionar todo"),
         (k("C+Shift+B"), "Embellecer JSON / XML (valida y sangra)"),
         (k("C+A+Z"), "Ajuste de línea (activar / desactivar)"),
+        (k("C+R"), "Recargar el archivo del disco (cursor al final)"),
         (k("Retroceso / Supr"), "Borrar carácter"),
         (k("W+Retroceso / W+Supr"), "Borrar palabra"),
         (k("Enter"), "Nueva línea"),
@@ -1249,6 +1253,8 @@ fn clean_old_untitled() {
 enum Confirm {
     CloseTab(usize),
     Quit,
+    /// Recargar del disco un archivo con cambios sin guardar.
+    Reload(usize),
 }
 
 pub struct App {
@@ -1634,6 +1640,51 @@ impl App {
         }
     }
 
+    /// Vuelve a leer del disco el archivo `i` (con el mismo encoding, ajuste
+    /// y modo de edición) y deja el cursor al final. Con cambios sin guardar
+    /// pregunta antes, salvo `force`.
+    fn reload(&mut self, i: usize, force: bool) {
+        let Some(t) = self.tabs.get(i) else { return };
+        if t.untitled {
+            return;
+        }
+        if t.save.is_some() {
+            self.msg("Espera a que termine de guardarse");
+            return;
+        }
+        if !force && t.dirty() {
+            self.confirm = Some(Confirm::Reload(i));
+            return;
+        }
+        let (path, enc) = (t.doc.path.clone(), t.doc.src.encoding);
+        let mut doc = match Document::open(&path) {
+            Ok(d) => d,
+            Err(e) => {
+                self.msg(format!("No se pudo recargar {}: {e}", path.display()));
+                return;
+            }
+        };
+        if doc.src.encoding != enc {
+            doc.set_encoding(enc);
+        }
+        let old = &self.tabs[i];
+        let mut t = Tab::new(doc);
+        t.wrap = old.wrap;
+        t.editable = old.editable;
+        t.lang = old.lang;
+        t.goto_end = true;
+        // La búsqueda que hubiera se repite sobre el contenido nuevo (sin saltar a la primera).
+        if let Some(params) = old.search.as_ref().map(|s| s.params.clone()) {
+            if let Ok(s) = Search::start(t.doc.src.clone(), None, params) {
+                t.search = Some(s);
+            }
+        }
+        let size = human_size(t.doc.len() as u64);
+        self.tabs[i] = t;
+        self.focus_view = true;
+        self.msg(format!("Recargado del disco ({size})"));
+    }
+
     /// Ajuste de línea del archivo activo.
     fn cur_wrap(&self) -> Wrap {
         self.tabs.get(self.active).map_or(Wrap::Off, |t| t.wrap)
@@ -1732,6 +1783,9 @@ impl App {
         }
         if pressed(sc(Modifiers::COMMAND | Modifiers::ALT, Key::Z)) {
             self.toggle_wrap();
+        }
+        if pressed(sc(Modifiers::COMMAND, Key::R)) {
+            self.reload(self.active, false);
         }
         if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::B)) {
             self.beautify();
@@ -2240,6 +2294,15 @@ impl App {
             if ui.selectable_label(self.cur_wrap() != Wrap::Off, RichText::new("↩ Ajuste").small()).on_hover_text(wrap_hint).clicked() {
                 self.toggle_wrap();
             }
+            let can_reload = self.tabs.get(self.active).is_some_and(|t| !t.untitled);
+            let rk = if MAC { "Cmd+R" } else { "Ctrl+R" };
+            if ui
+                .add_enabled(can_reload, Button::new(RichText::new("⟳ Recargar").small()).frame(false))
+                .on_hover_text(format!("Volver a leer el archivo del disco y poner el cursor al final ({rk})"))
+                .clicked()
+            {
+                self.reload(self.active, false);
+            }
             ui.toggle_value(&mut self.show_detail, RichText::new("📄 Detalle").small())
                 .on_hover_text("Panel con la línea actual completa, seleccionable");
             ui.toggle_value(&mut self.show_results, RichText::new("📋 Resultados").small())
@@ -2372,7 +2435,7 @@ impl App {
     fn confirm_dialog(&mut self, ctx: &Context) {
         let Some(c) = self.confirm else { return };
         let names: Vec<String> = match c {
-            Confirm::CloseTab(i) => self.tabs.get(i).map(|t| t.doc.name.clone()).into_iter().collect(),
+            Confirm::CloseTab(i) | Confirm::Reload(i) => self.tabs.get(i).map(|t| t.doc.name.clone()).into_iter().collect(),
             Confirm::Quit => self.tabs.iter().filter(|t| t.dirty() || t.save.is_some()).map(|t| t.doc.name.clone()).collect(),
         };
         let mut choice = None;
@@ -2397,6 +2460,7 @@ impl App {
                 self.confirm = None;
                 match c {
                     Confirm::CloseTab(i) => self.close_tab(i, true),
+                    Confirm::Reload(i) => self.reload(i, true),
                     Confirm::Quit => {
                         self.allow_quit = true;
                         ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -2496,6 +2560,14 @@ impl App {
         let indexed = self.tabs.get(self.active).is_some_and(|t| t.doc.indexing_done());
         if self.debug_frames >= 30 && self.debug_frames < 1000 && !self.debug_typed && indexed {
             self.debug_typed = true;
+            // Pruebas: BUSCADOR_RECARGAR=texto añade esa línea al archivo y lo recarga.
+            if let (Ok(extra), Some(t)) = (std::env::var("BUSCADOR_RECARGAR"), self.tabs.get(self.active)) {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&t.doc.path) {
+                    let _ = writeln!(f, "{extra}");
+                }
+                self.reload(self.active, false);
+            }
             if let (Ok(txt), Some(t)) = (std::env::var("BUSCADOR_TYPE"), self.tabs.get_mut(self.active)) {
                 t.editable = true;
                 let p = Pos::new(1, 0);
@@ -2681,6 +2753,11 @@ impl eframe::App for App {
                     t.reveal = false;
                 }
             }
+            if t.goto_end && t.doc.indexing_done() {
+                t.goto_end = false;
+                let e = t.end_pos();
+                t.select(e, e);
+            }
             if t.pending_text.is_some() && t.doc.indexing_done() {
                 let text = t.pending_text.take().unwrap();
                 t.select(Pos::default(), Pos::default());
@@ -2691,7 +2768,7 @@ impl eframe::App for App {
                 t.center_on = Some(0);
             }
         }
-        if self.tabs.iter().any(|t| t.pending_text.is_some() || t.restore.is_some()) {
+        if self.tabs.iter().any(|t| t.pending_text.is_some() || t.restore.is_some() || t.goto_end) {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         self.save_session(ctx.input(|i| i.viewport().close_requested()));
