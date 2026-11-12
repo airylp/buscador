@@ -2552,6 +2552,7 @@ impl App {
                 // «carpeta|texto»: abre el mapa, lee la carpeta y busca el texto.
                 let (dir, q) = m.split_once('|').unwrap_or((&m, ""));
                 self.map.open = true;
+                self.map.detached = std::env::var("BUSCADOR_MAPA_APARTE").is_ok();
                 self.map.needle = q.into();
                 self.map.search_when_ready = !q.is_empty();
                 self.map.start_scan(dir.into(), ctx);
@@ -3911,7 +3912,7 @@ impl App {
         let open: Vec<Id> = [
             self.show_keys.then(keys_window_id),
             self.show_settings.then(settings_window_id),
-            self.map.open.then(crate::diskmap::window_id),
+            (self.map.open && !self.map.detached).then(crate::diskmap::window_id),
         ]
             .into_iter()
             .flatten()
@@ -4066,15 +4067,30 @@ impl App {
         }
         let mut open = true;
         let mut out = crate::diskmap::Out::default();
-        Window::new("Mapa de disco")
-            .id(crate::diskmap::window_id())
-            .open(&mut open)
-            .default_size([1000.0, 680.0])
-            .min_size([640.0, 420.0])
-            .max_width(ctx.content_rect().width() * 0.95)
-            .resizable(true)
-            .collapsible(false)
-            .show(ctx, |ui| out = self.map.ui(ui));
+        if self.map.detached {
+            let map = &mut self.map;
+            let builder = ViewportBuilder::default()
+                .with_title("Mapa de disco")
+                .with_inner_size([1100.0, 720.0])
+                .with_min_inner_size([640.0, 420.0]);
+            ctx.show_viewport_immediate(ViewportId::from_hash_of("mapa_disco"), builder, |ui, _| {
+                CentralPanel::default().show(ui, |ui| out = map.ui(ui));
+                // Cerrar la ventana del sistema o Escape la cierran.
+                if ui.ctx().input(|i| i.viewport().close_requested() || i.key_pressed(Key::Escape)) {
+                    open = false;
+                }
+            });
+        } else {
+            Window::new("Mapa de disco")
+                .id(crate::diskmap::window_id())
+                .open(&mut open)
+                .default_size([1000.0, 680.0])
+                .min_size([640.0, 420.0])
+                .max_width(ctx.content_rect().width() * 0.95)
+                .resizable(true)
+                .collapsible(false)
+                .show(ctx, |ui| out = self.map.ui(ui));
+        }
         self.map.open &= open;
         if out.pick_folder && self.dialog.is_none() {
             let fut = rfd::AsyncFileDialog::new().set_title("Carpeta para el mapa de disco").pick_folder();
@@ -4115,6 +4131,8 @@ impl App {
             }
             self.map.open = false;
             self.focus_view = true;
+            // Desde la ventana aparte: traer la principal al frente.
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Focus);
             self.msg(if n == 1 { "Archivo abierto desde el mapa".to_string() } else { format!("{n} archivos abiertos desde el mapa") });
         }
     }

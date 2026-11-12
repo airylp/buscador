@@ -414,6 +414,8 @@ pub struct Out {
 
 pub struct DiskMap {
     pub open: bool,
+    /// Se muestra en una ventana propia del sistema (otro monitor, etc.).
+    pub detached: bool,
     pub scan: Option<Arc<Scan>>,
     pub tree: Option<Arc<Tree>>,
     /// Carpeta que se ve (zoom).
@@ -439,6 +441,7 @@ impl Default for DiskMap {
     fn default() -> Self {
         DiskMap {
             open: false,
+            detached: false,
             scan: None,
             tree: None,
             view: 0,
@@ -527,6 +530,36 @@ impl DiskMap {
         self.marks_seen = found.len();
     }
 
+    /// Estado de la carpeta: leyendo (con «Detener»), o ruta y totales (con «⟳»).
+    fn status_ui(&mut self, ui: &mut Ui, ctx: &Context) {
+        if let Some(s) = &self.scan {
+            ui.spinner();
+            ui.label(format!(
+                "Leyendo… {} archivos · {}",
+                crate::app::fmt_num(s.files.load(Ordering::Relaxed)),
+                crate::app::human_size(s.bytes.load(Ordering::Relaxed))
+            ));
+            if ui.button("Detener").clicked() {
+                s.cancel.store(true, Ordering::Relaxed);
+            }
+        } else if let Some(t) = &self.tree {
+            let root = &t.nodes[0];
+            ui.label(RichText::new(t.root.display().to_string()).strong());
+            ui.weak(format!(
+                "{} · {} archivos{}",
+                crate::app::human_size(root.size),
+                crate::app::fmt_num(root.files),
+                if t.partial { " · lectura detenida (incompleto)" } else { "" }
+            ));
+            if ui.small_button("⟳").on_hover_text("Volver a leer la carpeta").clicked() {
+                let r = t.root.clone();
+                self.start_scan(r, ctx);
+            }
+        } else {
+            ui.weak("Elige una carpeta para ver qué ocupa cada carpeta y archivo.");
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut Ui) -> Out {
         let mut out = Out::default();
         let ctx = ui.ctx().clone();
@@ -550,34 +583,23 @@ impl DiskMap {
             if ui.button("📁 Elegir carpeta…").clicked() {
                 out.pick_folder = true;
             }
-            if let Some(s) = &self.scan {
-                ui.spinner();
-                ui.label(format!(
-                    "Leyendo… {} archivos · {}",
-                    crate::app::fmt_num(s.files.load(Ordering::Relaxed)),
-                    crate::app::human_size(s.bytes.load(Ordering::Relaxed))
-                ));
-                if ui.button("Detener").clicked() {
-                    s.cancel.store(true, Ordering::Relaxed);
-                }
-            } else if let Some(t) = &self.tree {
-                let root = &t.nodes[0];
-                ui.label(RichText::new(t.root.display().to_string()).strong());
-                ui.weak(format!(
-                    "{} · {} archivos{}",
-                    crate::app::human_size(root.size),
-                    crate::app::fmt_num(root.files),
-                    if t.partial { " · lectura detenida (incompleto)" } else { "" }
-                ));
-                if ui.small_button("⟳").on_hover_text("Volver a leer la carpeta").clicked() {
-                    let r = t.root.clone();
-                    self.start_scan(r, &ctx);
-                }
+            let (label, hint) = if self.detached {
+                ("Integrar", "Volver a mostrarlo dentro de la ventana principal")
             } else {
-                ui.weak("Elige una carpeta para ver qué ocupa cada carpeta y archivo.");
-            }
+                ("Ventana aparte", "Mostrarlo en una ventana propia (puedes llevarla a otro monitor)")
+            };
+            // A la derecha de la fila, antes que la ruta (que puede ser larga).
+            let w = ui.available_width();
+            ui.allocate_ui_with_layout(vec2(w, ui.spacing().interact_size.y), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(label).on_hover_text(hint).clicked() {
+                    self.detached = !self.detached;
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                    self.status_ui(ui, &ctx);
+                });
+            });
         });
-
         // --- Búsqueda ---
         ui.horizontal(|ui| {
             ui.label("Extensiones:");
