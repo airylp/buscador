@@ -765,14 +765,14 @@ impl DiskMap {
             let n = &tree.nodes[c.node as usize];
             let color = if n.dir {
                 if mark(c.node) != 0 {
-                    Color32::from_rgb(128, 196, 134)
+                    Color32::from_rgb(92, 158, 100)
                 } else {
                     // Carpetas más oscuras que los archivos: los bordes se distinguen.
-                    let g = 172u8.saturating_sub((c.depth.min(7) * 9) as u8);
+                    let g = 150u8.saturating_sub((c.depth.min(7) * 10) as u8);
                     Color32::from_gray(g)
                 }
             } else if mark(c.node) == 1 {
-                Color32::from_rgb(34, 160, 64)
+                Color32::from_rgb(16, 112, 40)
             } else {
                 file_color(tree.ext(c.node).as_deref())
             };
@@ -914,13 +914,13 @@ impl DiskMap {
 
 /// Color claro por extensión (el mismo siempre para la misma).
 fn file_color(ext: Option<&str>) -> Color32 {
-    let Some(e) = ext else { return Color32::from_rgb(224, 224, 212) };
+    let Some(e) = ext else { return Color32::from_rgb(214, 214, 198) };
     let mut h: u32 = 2166136261;
     for b in e.bytes() {
         h = (h ^ b as u32).wrapping_mul(16777619);
     }
     let hue = (h % 360) as f32 / 360.0;
-    egui::ecolor::Hsva::new(hue, 0.42, 0.93, 1.0).into()
+    egui::ecolor::Hsva::new(hue, 0.55, 0.90, 1.0).into()
 }
 
 #[cfg(test)]

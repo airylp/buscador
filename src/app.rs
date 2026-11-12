@@ -1290,6 +1290,8 @@ pub struct App {
     /// Ajuste de línea y el último modo usado (para el botón de activar/desactivar).
     wrap: Wrap,
     wrap_last: Wrap,
+    /// Bordes de los paneles (0 normales, 1 marcados, 2 muy marcados).
+    borders: u8,
     /// Siguiente número para «Sin título N».
     next_untitled: u32,
     /// Guardar/recuperar la sesión (no en ventanas nuevas ni en pruebas).
@@ -1334,6 +1336,7 @@ impl App {
         let fallbacks = crate::fonts::load_fallbacks();
         cc.egui_ctx.set_fonts(crate::fonts::build(&settings.font, &fallbacks).0);
         cc.egui_ctx.set_theme(settings.theme);
+        apply_borders(&cc.egui_ctx, settings.borders);
         let mut app = App {
             tabs: Vec::new(),
             active: 0,
@@ -1355,6 +1358,7 @@ impl App {
             column_mode: false,
             syntax_on: settings.syntax,
             wrap: Wrap::parse(&settings.wrap),
+            borders: settings.borders,
             wrap_last: match Wrap::parse(&settings.wrap) {
                 Wrap::Off => Wrap::Window,
                 w => w,
@@ -1567,6 +1571,7 @@ impl App {
             colors: self.custom_colors.then(|| (rgb(self.text_bg), rgb(self.text_fg))),
             syntax: self.syntax_on,
             wrap: self.wrap.as_str(),
+            borders: self.borders,
         };
         if let Err(e) = st.save() {
             self.msg(format!("No se pudieron guardar los ajustes: {e}"));
@@ -3629,6 +3634,26 @@ fn update_window_id() -> Id {
     Id::NULL.with("ventana_actualizar")
 }
 
+/// Hace más visibles los bordes y separaciones de paneles y ventanas, en los
+/// dos temas (claro: más oscuros; oscuro: más claros).
+fn apply_borders(ctx: &Context, level: u8) {
+    for theme in [Theme::Dark, Theme::Light] {
+        ctx.style_mut_of(theme, |s| {
+            let base = if theme == Theme::Dark { Visuals::dark() } else { Visuals::light() };
+            let (gray, width) = match (theme, level) {
+                (_, 0) => (None, 1.0),
+                (Theme::Dark, 1) => (Some(105), 1.0),
+                (Theme::Dark, _) => (Some(150), 1.5),
+                (Theme::Light, 1) => (Some(140), 1.0),
+                (Theme::Light, _) => (Some(95), 1.5),
+            };
+            let stroke = |def: Stroke| gray.map_or(def, |g| Stroke::new(width, Color32::from_gray(g)));
+            s.visuals.widgets.noninteractive.bg_stroke = stroke(base.widgets.noninteractive.bg_stroke);
+            s.visuals.window_stroke = stroke(base.window_stroke);
+        });
+    }
+}
+
 fn settings_window_id() -> Id {
     Id::NULL.with("ventana_ajustes")
 }
@@ -3655,6 +3680,7 @@ impl App {
         let mut family = self.text_font.clone();
         let (mut custom, mut bg, mut fg) = (self.custom_colors, self.text_bg, self.text_fg);
         let mut syn = self.syntax_on;
+        let mut borders = self.borders;
         let mut wrap = self.wrap;
         let mut wrap_cols = match self.wrap_last {
             Wrap::Columns(n) => n,
@@ -3666,100 +3692,136 @@ impl App {
         if just_opened {
             win = win.current_pos(ctx.content_rect().center());
         }
-        win.open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
-            ui.strong("Tema");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut theme, ThemePreference::System, "Sistema");
-                ui.radio_value(&mut theme, ThemePreference::Light, "Claro");
-                ui.radio_value(&mut theme, ThemePreference::Dark, "Oscuro");
-            });
-            ui.add_space(8.0);
-            ui.strong("Tipo de letra del texto");
-            ComboBox::from_id_salt("tipo_letra").selected_text(&family).width(220.0).show_ui(ui, |ui| {
-                let av = crate::fonts::available();
-                ui.weak("Monoespaciadas (alinean columnas)");
-                for o in av.iter().filter(|o| o.mono) {
-                    ui.selectable_value(&mut family, o.name.to_string(), o.name);
-                }
-                ui.separator();
-                ui.weak("Proporcionales");
-                for o in av.iter().filter(|o| !o.mono) {
-                    ui.selectable_value(&mut family, o.name.to_string(), o.name);
-                }
-            });
-            if crate::fonts::find(&family).is_some_and(|o| !o.mono) {
-                ui.weak("Con letra proporcional las columnas de los logs no quedan alineadas.");
-            }
-            ui.add_space(8.0);
-            ui.strong("Tamaño de letra del texto");
-            ui.add(Slider::new(&mut font, 7.0..=40.0).step_by(1.0));
-            ui.add_space(8.0);
-            ui.strong("Colores del texto");
-            ui.checkbox(&mut custom, "Usar colores propios (tienen prioridad sobre el tema)");
-            ui.add_enabled_ui(custom, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Fondo");
-                    ui.color_edit_button_srgba(&mut bg);
-                    ui.add_space(12.0);
-                    ui.label("Letra");
-                    ui.color_edit_button_srgba(&mut fg);
+        win.open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .frame(Frame::window(&ctx.global_style()).inner_margin(18.0))
+            .show(ctx, |ui| {
+                ui.set_width(560.0);
+                ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
+                // Etiqueta a la izquierda, controles a la derecha.
+                Grid::new("ajustes_grid").num_columns(2).spacing([28.0, 16.0]).min_col_width(150.0).show(ui, |ui| {
+                    ui.strong("Tema");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut theme, ThemePreference::System, "Sistema");
+                        ui.radio_value(&mut theme, ThemePreference::Light, "Claro");
+                        ui.radio_value(&mut theme, ThemePreference::Dark, "Oscuro");
+                    });
+                    ui.end_row();
+
+                    ui.strong("Bordes de paneles").on_hover_text("Separaciones entre paneles y bordes de las ventanas, en cualquier tema");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut borders, 0, "Normales");
+                        ui.radio_value(&mut borders, 1, "Marcados");
+                        ui.radio_value(&mut borders, 2, "Muy marcados");
+                    });
+                    ui.end_row();
+
+                    ui.strong("Tipo de letra");
+                    ui.vertical(|ui| {
+                        ComboBox::from_id_salt("tipo_letra").selected_text(&family).width(240.0).show_ui(ui, |ui| {
+                            let av = crate::fonts::available();
+                            ui.weak("Monoespaciadas (alinean columnas)");
+                            for o in av.iter().filter(|o| o.mono) {
+                                ui.selectable_value(&mut family, o.name.to_string(), o.name);
+                            }
+                            ui.separator();
+                            ui.weak("Proporcionales");
+                            for o in av.iter().filter(|o| !o.mono) {
+                                ui.selectable_value(&mut family, o.name.to_string(), o.name);
+                            }
+                        });
+                        if crate::fonts::find(&family).is_some_and(|o| !o.mono) {
+                            ui.weak("Con letra proporcional las columnas de los logs no quedan alineadas.");
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.strong("Tamaño de letra");
+                    ui.add(Slider::new(&mut font, 7.0..=40.0).step_by(1.0));
+                    ui.end_row();
+
+                    ui.strong("Colores del texto");
+                    ui.vertical(|ui| {
+                        ui.checkbox(&mut custom, "Usar colores propios (tienen prioridad sobre el tema)");
+                        ui.add_enabled_ui(custom, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Fondo");
+                                ui.color_edit_button_srgba(&mut bg);
+                                ui.add_space(16.0);
+                                ui.label("Letra");
+                                ui.color_edit_button_srgba(&mut fg);
+                            });
+                        });
+                    });
+                    ui.end_row();
+
+                    ui.strong("Ajuste de línea");
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut wrap, Wrap::Off, "No");
+                            ui.radio_value(&mut wrap, Wrap::Window, "Al ancho de la ventana");
+                        });
+                        ui.horizontal(|ui| {
+                            let cols = match wrap {
+                                Wrap::Columns(n) => n,
+                                _ => wrap_cols,
+                            };
+                            if ui.radio(matches!(wrap, Wrap::Columns(_)), "A").clicked() {
+                                wrap = Wrap::Columns(cols);
+                            }
+                            let mut c = cols;
+                            if ui.add(DragValue::new(&mut c).range(20..=1000).speed(1)).changed() {
+                                wrap_cols = c;
+                                wrap = Wrap::Columns(c);
+                            }
+                            ui.label("columnas");
+                        });
+                        ui.weak("Valor por defecto; cada archivo lo cambia con ↩ Ajuste.");
+                    });
+                    ui.end_row();
+
+                    ui.strong("Resaltado");
+                    ui.add(Checkbox::new(&mut syn, "Colorear según el tipo de archivo (.java, .xml, .json, .py…) y los niveles de los logs"));
+                    ui.end_row();
                 });
-            });
-            ui.add_space(8.0);
-            ui.strong("Ajuste de línea");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut wrap, Wrap::Off, "No");
-                ui.radio_value(&mut wrap, Wrap::Window, "Al ancho de la ventana");
-                let cols = match wrap {
-                    Wrap::Columns(n) => n,
-                    _ => wrap_cols,
-                };
-                if ui.radio(matches!(wrap, Wrap::Columns(_)), "A").clicked() {
-                    wrap = Wrap::Columns(cols);
-                }
-                let mut c = cols;
-                if ui.add(DragValue::new(&mut c).range(20..=1000).speed(1)).changed() {
-                    wrap_cols = c;
-                    wrap = Wrap::Columns(c);
-                }
-                ui.label("columnas");
-            });
-            ui.add_space(8.0);
-            ui.strong("Resaltado");
-            ui.checkbox(&mut syn, "Colorear según el tipo de archivo (.java, .xml, .json, .py…) y los niveles de los logs");
-            ui.add_space(6.0);
-            ui.weak("Vista previa:");
-            let (pbg, pfg) = if custom { (bg, fg) } else { (ui.visuals().extreme_bg_color, ui.visuals().text_color()) };
-            Frame::NONE.fill(pbg).inner_margin(6.0).corner_radius(4.0).show(ui, |ui| {
-                let sample = ["2026-11-10 12:00:01 [ERROR] año, acción: java.io.IOException", "0O 1lI {}[]() -> => != 日本"];
-                let lang = if syn { syntax::Lang::Log } else { syntax::Lang::Plain };
-                for line in sample {
-                    let mut spans = Vec::new();
-                    syntax::highlight(lang, line, syntax::State::Normal, &mut spans);
-                    let job = line_job(line, false, &crate::fonts::text_font(font), pfg, None, &spans, is_dark(pbg));
-                    ui.label(job);
-                }
-            });
-            ui.add_space(8.0);
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(format!("Versión {}", crate::update::version_label()));
-                if crate::update::SUPPORTED {
-                    if ui.button("⟳ Buscar actualizaciones…").on_hover_text("Descarga la última versión de GitHub, la compila y la instala").clicked() {
-                        open_update = true;
+
+                ui.add_space(14.0);
+                ui.weak("Vista previa:");
+                let (pbg, pfg) = if custom { (bg, fg) } else { (ui.visuals().extreme_bg_color, ui.visuals().text_color()) };
+                Frame::NONE.fill(pbg).inner_margin(10.0).corner_radius(6.0).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let sample = ["2026-11-10 12:00:01 [ERROR] año, acción: java.io.IOException", "0O 1lI {}[]() -> => != 日本"];
+                    let lang = if syn { syntax::Lang::Log } else { syntax::Lang::Plain };
+                    for line in sample {
+                        let mut spans = Vec::new();
+                        syntax::highlight(lang, line, syntax::State::Normal, &mut spans);
+                        let job = line_job(line, false, &crate::fonts::text_font(font), pfg, None, &spans, is_dark(pbg));
+                        ui.label(job);
                     }
+                });
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(format!("Versión {}", crate::update::version_label()));
+                    if crate::update::SUPPORTED {
+                        if ui.button("⟳ Buscar actualizaciones…").on_hover_text("Descarga la última versión de GitHub, la compila y la instala").clicked() {
+                            open_update = true;
+                        }
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("↺ Restablecer").on_hover_text("Vuelve a los ajustes predeterminados: tema del sistema, Hack 13, sin colores propios, bordes normales").clicked() {
+                            reset = true;
+                        }
+                    });
+                });
+                if !crate::update::SUPPORTED {
+                    ui.weak("En Windows, actualiza volviendo a ejecutar el instalador.");
                 }
+                ui.add_space(6.0);
+                ui.weak("Los ajustes se guardan automáticamente.");
             });
-            if !crate::update::SUPPORTED {
-                ui.weak("En Windows, actualiza volviendo a ejecutar el instalador.");
-            }
-            ui.separator();
-            if ui.button("↺ Restablecer ajustes predeterminados").on_hover_text("Tema del sistema, Hack 13, sin colores propios").clicked() {
-                reset = true;
-            }
-            ui.add_space(8.0);
-            ui.weak("Los ajustes se guardan automáticamente.");
-        });
         self.show_settings = open;
         if open_update {
             self.open_updater(ctx);
@@ -3776,6 +3838,8 @@ impl App {
             self.wrap = Wrap::parse(&d.wrap);
             self.text_bg = DEFAULT_BG;
             self.text_fg = DEFAULT_FG;
+            self.borders = d.borders;
+            apply_borders(ctx, d.borders);
             self.persist();
             self.msg("Ajustes restablecidos");
             return;
@@ -3799,6 +3863,11 @@ impl App {
             self.custom_colors = custom;
             self.text_bg = bg;
             self.text_fg = fg;
+            self.persist();
+        }
+        if borders != self.borders {
+            self.borders = borders;
+            apply_borders(ctx, borders);
             self.persist();
         }
         if theme != self.theme {

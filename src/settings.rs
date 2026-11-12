@@ -16,11 +16,13 @@ pub struct Settings {
     pub syntax: bool,
     /// Ajuste de línea: «no», «ventana» o «columnas:N».
     pub wrap: String,
+    /// Bordes y separaciones de los paneles: 0 normales, 1 marcados, 2 muy marcados.
+    pub borders: u8,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into() }
+        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0 }
     }
 }
 
@@ -128,6 +130,7 @@ impl Settings {
                 ("fuente", v) if !v.is_empty() => s.font = v.to_string(),
                 ("resaltar", v) => s.syntax = v != "no",
                 ("ajuste", v) => s.wrap = v.to_string(),
+                ("bordes", v) => s.borders = v.parse::<u8>().unwrap_or(0).min(2),
                 ("fondo", v) => bg = parse_hex(v),
                 ("color_letra", v) => fg = parse_hex(v),
                 ("letra", v) => {
@@ -155,11 +158,12 @@ impl Settings {
             ThemePreference::System => "sistema",
         };
         let mut text = format!(
-            "tema={theme}\nletra={}\nfuente={}\nresaltar={}\najuste={}\n",
+            "tema={theme}\nletra={}\nfuente={}\nresaltar={}\najuste={}\nbordes={}\n",
             self.font_size,
             self.font,
             if self.syntax { "si" } else { "no" },
-            self.wrap
+            self.wrap,
+            self.borders
         );
         if let Some((b, f)) = self.colors {
             text += &format!("fondo={}\ncolor_letra={}\n", hex(b), hex(f));
