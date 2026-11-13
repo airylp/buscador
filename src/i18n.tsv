@@ -560,3 +560,8 @@ Demasiadas líneas para borrar de una vez (máx. {n})	Too many lines to delete a
 Mostrar espacios y tabuladores	Show spaces and tabs	Afficher les espaces et tabulations
 Mostrar espacios y tabuladores (· y →)	Show spaces and tabs (· and →)	Afficher les espaces et tabulations (· et →)
 Espacios	Whitespace	Espaces
+Demasiadas líneas para cambiar de una vez (máx. {n})	Too many lines to change at once (max. {n})	Trop de lignes à modifier d’un coup (max. {n})
+No había espacios ni tabs al final	There were no trailing spaces or tabs	Il n’y avait pas d’espaces ni de tabulations en fin de ligne
+Quitados espacios y tabs al final en {n} líneas (Ctrl+Z para deshacer)	Removed trailing spaces and tabs in {n} lines (Ctrl+Z to undo)	Espaces et tabulations de fin supprimés dans {n} lignes (Ctrl+Z pour annuler)
+Quitar espacios y tabs al final	Remove trailing spaces and tabs	Supprimer les espaces et tabulations de fin
+En cada línea seleccionada, borra los espacios y tabuladores que haya al final	On each selected line, deletes any spaces and tabs at the end	Sur chaque ligne sélectionnée, supprime les espaces et tabulations en fin de ligne

@@ -472,6 +472,46 @@ impl Tab {
         Ok(())
     }
 
+    /// Quita los espacios y tabuladores del final de cada línea seleccionada
+    /// (o del bloque, o de la línea del cursor). Un solo paso de deshacer.
+    fn trim_trailing(&mut self) -> Result<String, String> {
+        let (l0, l1) = match (self.block(), self.selection()) {
+            (Some(cs), _) => cs.lines(),
+            (None, Some((a, b))) => (a.line, if b.line > a.line && b.col == 0 { b.line - 1 } else { b.line }),
+            (None, None) => {
+                let c = self.cursor_or_top();
+                (c.line, c.line)
+            }
+        };
+        if (l1 - l0) as usize >= MAX_REPLACE_LINES {
+            return Err(tf!("Demasiadas líneas para cambiar de una vez (máx. {n})", n = fmt_num(MAX_REPLACE_LINES as u64)));
+        }
+        self.can_edit()?;
+        let lines: Vec<u64> = (l0..=l1).collect();
+        let cur = (self.anchor.unwrap_or_default(), self.cursor.unwrap_or_default());
+        let buf = self.buf.as_mut().unwrap();
+        let n = buf.replace_lines(&self.doc, &lines, cur, |t| {
+            let trimmed = t.trim_end_matches([' ', '\t']);
+            (trimmed.len() != t.len()).then(|| trimmed.to_string())
+        })?;
+        if n > 0 {
+            self.detail_cache = None;
+            self.edit_gen += 1;
+            self.search_stale |= self.search.is_some();
+            // Los cursores pueden haber quedado más allá del final.
+            let fix = |t: &Tab, p: Pos| Pos::new(p.line, p.col.min(t.line_len(p.line)));
+            if let (Some(a), Some(c)) = (self.anchor, self.cursor) {
+                let (a, c) = (fix(self, a), fix(self, c));
+                self.select(a, c);
+            }
+        }
+        Ok(if n == 0 {
+            t!("No había espacios ni tabs al final").to_string()
+        } else {
+            tf!("Quitados espacios y tabs al final en {n} líneas (Ctrl+Z para deshacer)", n = fmt_num(n as u64))
+        })
+    }
+
     fn delete(&mut self, forward: bool, word: bool) -> Result<(), String> {
         self.can_edit()?;
         if let Some((a, b)) = self.selection() {
@@ -3408,6 +3448,18 @@ impl eframe::App for App {
         if os_drag {
             self.os_drop_space = into;
         }
+        // Con el foco en el texto, Tab y las flechas son para el texto: que egui
+        // no mueva el foco a otro control aunque se haya perdido el bloqueo.
+        if self.view_focused
+            && ctx.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(e, Event::Key { key: Key::Tab | Key::ArrowUp | Key::ArrowDown | Key::ArrowLeft | Key::ArrowRight, pressed: true, modifiers, .. }
+                        if !modifiers.ctrl && !modifiers.command)
+                })
+            })
+        {
+            ctx.memory_mut(|m| m.move_focus(FocusDirection::None));
+        }
         if self.confirm.is_none() {
             self.handle_shortcuts(&ctx);
             self.escape_closes_popup(&ctx);
@@ -3682,7 +3734,12 @@ fn log_view(
         let press = if resp.drag_started() { ui.input(|i| i.pointer.press_origin()) } else { None };
         if let Some(p) = press.or_else(|| (resp.clicked() || resp.secondary_clicked()).then(|| resp.interact_pointer_pos()).flatten())
         {
-            resp.request_focus();
+            // Pedir el foco de nuevo lo «reinicia» y borra el bloqueo de Tab/flechas:
+            // como egui solo repinta con eventos, el Tab siguiente movía el foco a
+            // otro control en vez de sangrar. Solo se pide si no se tiene.
+            if !resp.has_focus() {
+                resp.request_focus();
+            }
             tab.goal = None;
             tab.preedit.clear();
             if p.x < text_area.left() + gutter_w {
@@ -3803,6 +3860,12 @@ fn log_view(
             if let Err(e) = r {
                 message = Some(e);
             }
+            ui.close();
+        }
+        let has_lines = has_sel || tab.block().is_some();
+        let trim = ui.add_enabled(tab.editable && has_lines, Button::new(t!("Quitar espacios y tabs al final")));
+        if trim.on_hover_text(t!("En cada línea seleccionada, borra los espacios y tabuladores que haya al final")).clicked() {
+            message = Some(tab.trim_trailing().unwrap_or_else(|e| e));
             ui.close();
         }
         ui.separator();
@@ -3978,6 +4041,14 @@ fn log_view(
                 })
             });
         }
+    }
+
+    // También aquí: si el foco llegó en este fotograma (clic), que el próximo
+    // Tab o flecha ya sea para el texto.
+    if resp.has_focus() {
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true })
+        });
     }
 
     // Barras de desplazamiento.
@@ -6285,6 +6356,18 @@ mod tests {
     }
 
     #[test]
+    fn trim_trailing_spaces() {
+        let (mut t, _p) = tab_with("finales.txt", "uno  \ndos\t \t\ntres\ncuatro \n");
+        t.editable = true;
+        t.select(Pos::new(0, 2), Pos::new(2, 1));
+        let m = t.trim_trailing().unwrap();
+        assert!(m.contains('2'), "{m}");
+        assert_eq!([t.line(0), t.line(1), t.line(2), t.line(3)], ["uno", "dos", "tres", "cuatro "]);
+        t.undo_redo(false).unwrap();
+        assert_eq!(t.line(1), "dos\t \t");
+    }
+
+    #[test]
     fn copy_blocks_modes() {
         let (t, _) = tab_with("cb.txt", "a <x>uno\ndos</x> b <x>tres</x>\nfin\n");
         let run = |to: &str| {
@@ -6527,6 +6610,65 @@ mod copy_keeps_selection {
         assert!(t.block().is_none());
         run_frames(&mut t, &ctx, vec![vec![key(Key::Z, Modifiers::COMMAND, true)], vec![]], &mut time);
         assert_eq!(t.line(l0), before[0]);
+    }
+
+    #[test]
+    fn tab_after_several_selections() {
+        let mut text = String::new();
+        for i in 0..20 {
+            text += &format!("linea {i:02} texto\n");
+        }
+        let (mut t, _p) = super::tests::tab_with("tab_varias.txt", &text);
+        t.editable = true;
+        let ctx = Context::default();
+        let mut time = 0.0;
+        let tab_key = || vec![vec![key(Key::Tab, Modifiers::NONE, true), key(Key::Tab, Modifiers::NONE, false)], vec![]];
+        for (k, (y0, y1)) in [(20.0, 70.0), (120.0, 170.0), (40.0, 150.0)].into_iter().enumerate() {
+            run_frames(&mut t, &ctx, drag_frames(pos2(140.0, y0), pos2(200.0, y1)), &mut time);
+            let (a, b) = t.selection().unwrap_or_else(|| panic!("selección {k}: {:?} {:?}", t.anchor, t.cursor));
+            let before: Vec<String> = (0..20).map(|n| t.line(n)).collect();
+            run_frames(&mut t, &ctx, tab_key(), &mut time);
+            let last = if b.col == 0 && b.line > a.line { b.line - 1 } else { b.line };
+            for n in 0..20u64 {
+                let want = if (a.line..=last).contains(&n) { format!("\t{}", before[n as usize]) } else { before[n as usize].clone() };
+                assert_eq!(t.line(n), want, "selección {k} ({a:?}–{b:?}), línea {n}");
+            }
+        }
+    }
+
+    /// Selección con clic + Mayús+clic y Tab en el fotograma siguiente (sin
+    /// fotogramas vacíos entre medias, como pasa de verdad: egui solo repinta
+    /// cuando hay eventos).
+    #[test]
+    fn tab_right_after_shift_click() {
+        let mut text = String::new();
+        for i in 0..20 {
+            text += &format!("linea {i:02} texto\n");
+        }
+        let (mut t, _p) = super::tests::tab_with("tab_shift_clic.txt", &text);
+        t.editable = true;
+        let ctx = Context::default();
+        let mut time = 0.0;
+        let click = |p: Pos2, m: Modifiers| {
+            vec![
+                vec![Event::ModifiersChanged(m), Event::PointerMoved(p)],
+                vec![Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: m }],
+                vec![Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: m }],
+            ]
+        };
+        for round in 0..3 {
+            let y = 20.0 + round as f32 * 60.0;
+            let mut frames = click(pos2(140.0, y), Modifiers::NONE);
+            frames.extend(click(pos2(200.0, y + 40.0), Modifiers::SHIFT));
+            frames.push(vec![Event::ModifiersChanged(Modifiers::NONE), key(Key::Tab, Modifiers::NONE, true)]);
+            frames.push(vec![key(Key::Tab, Modifiers::NONE, false)]);
+            let before = t.line(t.selection().map_or(0, |s| s.0.line));
+            run_frames(&mut t, &ctx, frames, &mut time);
+            let (a, _) = t.selection().unwrap_or_else(|| panic!("vuelta {round}: sin selección"));
+            assert!(t.line(a.line).starts_with('\t'), "vuelta {round}: no se sangró ({before:?} → {:?})", t.line(a.line));
+            let focused = ctx.memory(|m| m.focused());
+            assert!(focused.is_some(), "vuelta {round}: el Tab se llevó el foco");
+        }
     }
 
     #[test]
