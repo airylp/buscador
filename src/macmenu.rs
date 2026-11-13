@@ -56,15 +56,15 @@ impl MacMenu {
         let cmd_shift = |k| Cmd::Key(Modifiers::COMMAND | Modifiers::SHIFT, k);
         let sep = PredefinedMenuItem::separator;
 
-        let settings = item("Ajustes…", "Cmd+,", Cmd::Settings);
-        let update = item("Buscar actualizaciones…", "", Cmd::Update);
-        let quit = item("Salir de buscador", "Cmd+Q", Cmd::Key(Modifiers::COMMAND, Key::Q));
+        let settings = item(t!("Ajustes…"), "Cmd+,", Cmd::Settings);
+        let update = item(t!("Buscar actualizaciones…"), "", Cmd::Update);
+        let quit = item(t!("Salir de buscador"), "Cmd+Q", Cmd::Key(Modifiers::COMMAND, Key::Q));
         let about = PredefinedMenuItem::about(
-            Some("Acerca de buscador"),
+            Some(t!("Acerca de buscador")),
             Some(AboutMetadata {
                 name: Some("buscador".into()),
                 version: Some(env!("CARGO_PKG_VERSION").into()),
-                comments: Some("Visor y editor de archivos de varios GB".into()),
+                comments: Some(t!("Visor y editor de archivos de varios GB").into()),
                 ..Default::default()
             }),
         );
@@ -77,68 +77,68 @@ impl MacMenu {
                 &sep(),
                 &settings,
                 &sep(),
-                &PredefinedMenuItem::services(Some("Servicios")),
+                &PredefinedMenuItem::services(Some(t!("Servicios"))),
                 &sep(),
-                &PredefinedMenuItem::hide(Some("Ocultar buscador")),
-                &PredefinedMenuItem::hide_others(Some("Ocultar otros")),
-                &PredefinedMenuItem::show_all(Some("Mostrar todo")),
+                &PredefinedMenuItem::hide(Some(t!("Ocultar buscador"))),
+                &PredefinedMenuItem::hide_others(Some(t!("Ocultar otros"))),
+                &PredefinedMenuItem::show_all(Some(t!("Mostrar todo"))),
                 &sep(),
                 &quit,
             ],
         )
         .unwrap();
 
-        let new = item("Nuevo", "Cmd+N", cmd(Key::N));
-        let open = item("Abrir…", "Cmd+O", cmd(Key::O));
-        let save = item("Guardar", "Cmd+S", cmd(Key::S));
-        let save_as = item("Guardar como…", "Cmd+Shift+S", cmd_shift(Key::S));
-        let reload = item("Recargar del disco", "Cmd+R", cmd(Key::R));
-        let in_folder = item("Buscar en carpeta…", "Cmd+Shift+O", cmd_shift(Key::O));
-        let close = item("Cerrar archivo", "Cmd+W", cmd(Key::W));
-        let next = item("Siguiente archivo", "Ctrl+Tab", Cmd::Key(Modifiers::CTRL, Key::Tab));
-        let file = Submenu::with_items("Archivo", true, &[&new, &open, &in_folder, &sep(), &save, &save_as, &sep(), &reload, &sep(), &next, &close]).unwrap();
+        let new = item(t!("Nuevo"), "Cmd+N", cmd(Key::N));
+        let open = item(t!("Abrir…"), "Cmd+O", cmd(Key::O));
+        let save = item(t!("Guardar"), "Cmd+S", cmd(Key::S));
+        let save_as = item(t!("Guardar como…"), "Cmd+Shift+S", cmd_shift(Key::S));
+        let reload = item(t!("Recargar del disco"), "Cmd+R", cmd(Key::R));
+        let in_folder = item(t!("Buscar en carpeta…"), "Cmd+Shift+O", cmd_shift(Key::O));
+        let close = item(t!("Cerrar archivo"), "Cmd+W", cmd(Key::W));
+        let next = item(t!("Siguiente archivo"), "Ctrl+Tab", Cmd::Key(Modifiers::CTRL, Key::Tab));
+        let file = Submenu::with_items(t!("Archivo"), true, &[&new, &open, &in_folder, &sep(), &save, &save_as, &sep(), &reload, &sep(), &next, &close]).unwrap();
 
-        let undo = item("Deshacer", "Cmd+Z", cmd(Key::Z));
-        let redo = item("Rehacer", "Cmd+Shift+Z", cmd_shift(Key::Z));
-        let cut = item("Cortar", "Cmd+X", Cmd::Cut);
-        let copy = item("Copiar", "Cmd+C", Cmd::Copy);
-        let paste = item("Pegar", "Cmd+V", Cmd::Paste);
-        let all = item("Seleccionar todo", "Cmd+A", cmd(Key::A));
-        let beautify = item("Embellecer JSON / XML", "Cmd+Shift+B", cmd_shift(Key::B));
-        let edit = CheckMenuItem::new("Permitir edición", true, false, accel("Cmd+E"));
+        let undo = item(t!("Deshacer"), "Cmd+Z", cmd(Key::Z));
+        let redo = item(t!("Rehacer"), "Cmd+Shift+Z", cmd_shift(Key::Z));
+        let cut = item(t!("Cortar"), "Cmd+X", Cmd::Cut);
+        let copy = item(t!("Copiar"), "Cmd+C", Cmd::Copy);
+        let paste = item(t!("Pegar"), "Cmd+V", Cmd::Paste);
+        let all = item(t!("Seleccionar todo"), "Cmd+A", cmd(Key::A));
+        let beautify = item(t!("Embellecer JSON / XML"), "Cmd+Shift+B", cmd_shift(Key::B));
+        let edit = CheckMenuItem::new(t!("Permitir edición"), true, false, accel("Cmd+E"));
         items.borrow_mut().push((edit.id().clone(), cmd(Key::E)));
         let edit_menu = Submenu::with_items(
-            "Edición",
+            t!("Edición"),
             true,
             &[&undo, &redo, &sep(), &cut, &copy, &paste, &all, &sep(), &beautify, &edit],
         )
         .unwrap();
 
-        let find = item("Buscar…", "Cmd+F", cmd(Key::F));
-        let find_next = item("Siguiente coincidencia", "F3", Cmd::Key(Modifiers::NONE, Key::F3));
-        let find_prev = item("Coincidencia anterior", "Shift+F3", Cmd::Key(Modifiers::SHIFT, Key::F3));
-        let replace = item("Reemplazar…", "Cmd+Alt+F", Cmd::Key(Modifiers::COMMAND | Modifiers::ALT, Key::F));
-        let adv = item("Nueva búsqueda avanzada…", "Cmd+Shift+F", cmd_shift(Key::F));
-        let goto = item("Ir a línea…", "Cmd+G", cmd(Key::G));
-        let in_folder2 = item("Buscar en carpeta…", "", cmd_shift(Key::O));
+        let find = item(t!("Buscar…"), "Cmd+F", cmd(Key::F));
+        let find_next = item(t!("Siguiente coincidencia"), "F3", Cmd::Key(Modifiers::NONE, Key::F3));
+        let find_prev = item(t!("Coincidencia anterior"), "Shift+F3", Cmd::Key(Modifiers::SHIFT, Key::F3));
+        let replace = item(t!("Reemplazar…"), "Cmd+Alt+F", Cmd::Key(Modifiers::COMMAND | Modifiers::ALT, Key::F));
+        let adv = item(t!("Nueva búsqueda avanzada…"), "Cmd+Shift+F", cmd_shift(Key::F));
+        let goto = item(t!("Ir a línea…"), "Cmd+G", cmd(Key::G));
+        let in_folder2 = item(t!("Buscar en carpeta…"), "", cmd_shift(Key::O));
         let search = Submenu::with_items(
-            "Buscar",
+            t!("Buscar"),
             true,
             &[&find, &find_next, &find_prev, &sep(), &replace, &adv, &in_folder2, &sep(), &goto],
         )
         .unwrap();
 
-        let sidebar = CheckMenuItem::new("Panel de archivos", true, true, accel("Cmd+B"));
+        let sidebar = CheckMenuItem::new(t!("Panel de archivos"), true, true, accel("Cmd+B"));
         items.borrow_mut().push((sidebar.id().clone(), cmd(Key::B)));
-        let results = CheckMenuItem::new("Resultados", true, true, None);
+        let results = CheckMenuItem::new(t!("Resultados"), true, true, None);
         items.borrow_mut().push((results.id().clone(), Cmd::ToggleResults));
-        let detail = CheckMenuItem::new("Detalle de la línea", true, false, None);
+        let detail = CheckMenuItem::new(t!("Detalle de la línea"), true, false, None);
         items.borrow_mut().push((detail.id().clone(), Cmd::ToggleDetail));
-        let wrap = item("Ajuste de línea", "Cmd+Alt+Z", Cmd::Key(Modifiers::COMMAND | Modifiers::ALT, Key::Z));
-        let bigger = item("Letra más grande", "Cmd+=", cmd(Key::Equals));
-        let smaller = item("Letra más pequeña", "Cmd+-", cmd(Key::Minus));
+        let wrap = item(t!("Ajuste de línea"), "Cmd+Alt+Z", Cmd::Key(Modifiers::COMMAND | Modifiers::ALT, Key::Z));
+        let bigger = item(t!("Letra más grande"), "Cmd+=", cmd(Key::Equals));
+        let smaller = item(t!("Letra más pequeña"), "Cmd+-", cmd(Key::Minus));
         let view = Submenu::with_items(
-            "Ver",
+            t!("Ver"),
             true,
             &[
                 &sidebar,
@@ -149,24 +149,24 @@ impl MacMenu {
                 &bigger,
                 &smaller,
                 &sep(),
-                &PredefinedMenuItem::fullscreen(Some("Pantalla completa")),
+                &PredefinedMenuItem::fullscreen(Some(t!("Pantalla completa"))),
             ],
         )
         .unwrap();
 
         let window = Submenu::with_items(
-            "Ventana",
+            t!("Ventana"),
             true,
             &[
-                &PredefinedMenuItem::minimize(Some("Minimizar")),
-                &PredefinedMenuItem::maximize(Some("Zoom")),
+                &PredefinedMenuItem::minimize(Some(t!("Minimizar"))),
+                &PredefinedMenuItem::maximize(Some(t!("Zoom"))),
                 &sep(),
-                &PredefinedMenuItem::bring_all_to_front(Some("Traer todo al frente")),
+                &PredefinedMenuItem::bring_all_to_front(Some(t!("Traer todo al frente"))),
             ],
         )
         .unwrap();
-        let keys = item("Atajos de teclado", "F1", Cmd::Key(Modifiers::NONE, Key::F1));
-        let help = Submenu::with_items("Ayuda", true, &[&keys]).unwrap();
+        let keys = item(t!("Atajos de teclado"), "F1", Cmd::Key(Modifiers::NONE, Key::F1));
+        let help = Submenu::with_items(t!("Ayuda"), true, &[&keys]).unwrap();
 
         let menu = Menu::new();
         let subs: [&dyn IsMenuItem; 7] = [&app, &file, &edit_menu, &search, &view, &window, &help];

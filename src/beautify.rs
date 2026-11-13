@@ -50,7 +50,7 @@ impl Json<'_> {
 
     fn value(&mut self, depth: usize) -> Result<(), FormatError> {
         self.ws();
-        let Some(&c) = self.b.get(self.i) else { return err(self.i, "falta un valor") };
+        let Some(&c) = self.b.get(self.i) else { return err(self.i, t!("falta un valor")) };
         match c {
             b'{' => self.container(depth, b'}', true),
             b'[' => self.container(depth, b']', false),
@@ -59,7 +59,7 @@ impl Json<'_> {
             b't' => self.literal("true"),
             b'f' => self.literal("false"),
             b'n' => self.literal("null"),
-            _ => err(self.i, format!("valor inesperado «{}»", char_at(self.s, self.i))),
+            _ => err(self.i, tf!("valor inesperado «{i}»", i = char_at(self.s, self.i))),
         }
     }
 
@@ -77,12 +77,12 @@ impl Json<'_> {
             self.ws();
             if object {
                 if self.b.get(self.i) != Some(&b'"') {
-                    return err(self.i, "se esperaba una clave entre comillas");
+                    return err(self.i, t!("se esperaba una clave entre comillas"));
                 }
                 self.string()?;
                 self.ws();
                 if self.b.get(self.i) != Some(&b':') {
-                    return err(self.i, "se esperaba «:» tras la clave");
+                    return err(self.i, t!("se esperaba «:» tras la clave"));
                 }
                 self.i += 1;
                 self.out.push_str(": ");
@@ -100,8 +100,8 @@ impl Json<'_> {
                     self.out.push(close as char);
                     return Ok(());
                 }
-                Some(_) => return err(self.i, format!("se esperaba «,» o «{}»", close as char)),
-                None => return err(self.i, format!("falta cerrar con «{}»", close as char)),
+                Some(_) => return err(self.i, tf!("se esperaba «,» o «{close_as_char}»", close_as_char = close as char)),
+                None => return err(self.i, tf!("falta cerrar con «{close_as_char}»", close_as_char = close as char)),
             }
         }
     }
@@ -120,15 +120,15 @@ impl Json<'_> {
                     match self.b.get(j + 1) {
                         Some(b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') => j += 2,
                         Some(b'u') if self.b.get(j + 2..j + 6).is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit)) => j += 6,
-                        _ => return err(j, "secuencia de escape no válida"),
+                        _ => return err(j, t!("secuencia de escape no válida")),
                     }
                     continue;
                 }
-                c if c < 0x20 => return err(j, "salto de línea o carácter de control dentro de una cadena"),
+                c if c < 0x20 => return err(j, t!("salto de línea o carácter de control dentro de una cadena")),
                 _ => j += 1,
             }
         }
-        err(start, "cadena sin cerrar")
+        err(start, t!("cadena sin cerrar"))
     }
 
     fn number(&mut self) -> Result<(), FormatError> {
@@ -148,12 +148,12 @@ impl Json<'_> {
         if b.get(j) == Some(&b'0') {
             j += 1;
         } else if !digits(&mut j) {
-            return err(start, "número no válido");
+            return err(start, t!("número no válido"));
         }
         if b.get(j) == Some(&b'.') {
             j += 1;
             if !digits(&mut j) {
-                return err(j, "faltan decimales");
+                return err(j, t!("faltan decimales"));
             }
         }
         if matches!(b.get(j), Some(b'e' | b'E')) {
@@ -162,11 +162,11 @@ impl Json<'_> {
                 j += 1;
             }
             if !digits(&mut j) {
-                return err(j, "exponente no válido");
+                return err(j, t!("exponente no válido"));
             }
         }
         if b.get(j).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'.') {
-            return err(j, "número no válido");
+            return err(j, t!("número no válido"));
         }
         self.out.push_str(&self.s[start..j]);
         self.i = j;
@@ -179,7 +179,7 @@ impl Json<'_> {
             self.i += w.len();
             Ok(())
         } else {
-            err(self.i, format!("valor inesperado «{}»", char_at(self.s, self.i)))
+            err(self.i, tf!("valor inesperado «{i}»", i = char_at(self.s, self.i)))
         }
     }
 }
@@ -193,7 +193,7 @@ pub fn format_json(s: &str, indent: &str) -> Result<String, FormatError> {
     let mut p = Json { s, b: s.as_bytes(), i: 0, out: String::with_capacity(s.len() + s.len() / 4), indent };
     p.ws();
     if p.i >= p.b.len() {
-        return err(0, "el texto está vacío");
+        return err(0, t!("el texto está vacío"));
     }
     loop {
         p.value(0)?;
@@ -236,7 +236,7 @@ fn tokenize(s: &str, html: bool) -> Result<Vec<(usize, Tok<'_>)>, FormatError> {
     let mut toks = Vec::new();
     let mut i = 0;
     let find = |from: usize, pat: &str, what: &str| -> Result<usize, FormatError> {
-        s[from..].find(pat).map(|e| from + e + pat.len()).ok_or(FormatError { pos: from, msg: format!("{what} sin cerrar") })
+        s[from..].find(pat).map(|e| from + e + pat.len()).ok_or(FormatError { pos: from, msg: tf!("{what} sin cerrar", what = what) })
     };
     while i < n {
         if b[i] != b'<' {
@@ -255,7 +255,7 @@ fn tokenize(s: &str, html: bool) -> Result<Vec<(usize, Tok<'_>)>, FormatError> {
             toks.push((i, Tok::Raw(&s[i..end])));
             i = end;
         } else if rest.starts_with("<?") {
-            let end = find(i + 2, "?>", "instrucción «<?»")?;
+            let end = find(i + 2, "?>", t!("instrucción «<?»"))?;
             toks.push((i, Tok::Raw(&s[i..end])));
             i = end;
         } else if rest.starts_with("<!") {
@@ -272,7 +272,7 @@ fn tokenize(s: &str, html: bool) -> Result<Vec<(usize, Tok<'_>)>, FormatError> {
                 j += 1;
             }
             if j >= n {
-                return err(i, "declaración «<!» sin cerrar");
+                return err(i, t!("declaración «<!» sin cerrar"));
             }
             toks.push((i, Tok::Raw(&s[i..=j])));
             i = j + 1;
@@ -286,7 +286,7 @@ fn tokenize(s: &str, html: bool) -> Result<Vec<(usize, Tok<'_>)>, FormatError> {
                 j += 1;
             }
             if name.is_empty() || b.get(j) != Some(&b'>') {
-                return err(i, "etiqueta de cierre mal formada");
+                return err(i, t!("etiqueta de cierre mal formada"));
             }
             toks.push((i, Tok::End { name, pos: i }));
             i = j + 1;
@@ -297,7 +297,7 @@ fn tokenize(s: &str, html: bool) -> Result<Vec<(usize, Tok<'_>)>, FormatError> {
             }
             let name = &s[i + 1..j];
             if name.is_empty() {
-                return err(i, "«<» suelto (en texto se escribe &lt;)");
+                return err(i, t!("«<» suelto (en texto se escribe &lt;)"));
             }
             // Atributos: nombre = "valor" | 'valor' (en HTML también sin valor o sin comillas).
             loop {
@@ -305,7 +305,7 @@ fn tokenize(s: &str, html: bool) -> Result<Vec<(usize, Tok<'_>)>, FormatError> {
                     j += 1;
                 }
                 match b.get(j) {
-                    None => return err(i, format!("etiqueta <{name}> sin cerrar")),
+                    None => return err(i, tf!("etiqueta <{name}> sin cerrar", name = name)),
                     Some(b'>') => {
                         j += 1;
                         break;
@@ -330,20 +330,20 @@ fn tokenize(s: &str, html: bool) -> Result<Vec<(usize, Tok<'_>)>, FormatError> {
                             match b.get(j) {
                                 Some(&q @ (b'"' | b'\'')) => match s[j + 1..].find(q as char) {
                                     Some(e) => j = j + 1 + e + 1,
-                                    None => return err(j, format!("valor del atributo «{}» sin cerrar", &s[a0..j])),
+                                    None => return err(j, tf!("valor del atributo «{j}» sin cerrar", j = &s[a0..j])),
                                 },
                                 Some(_) if html => {
                                     while j < n && !b[j].is_ascii_whitespace() && b[j] != b'>' {
                                         j += 1;
                                     }
                                 }
-                                _ => return err(j, format!("el atributo «{}» necesita el valor entre comillas", s[a0..j].trim_end_matches(['=', ' ']))),
+                                _ => return err(j, tf!("el atributo «{trim_end_matches}» necesita el valor entre comillas", trim_end_matches = s[a0..j].trim_end_matches(['=', ' ']))),
                             }
                         } else if !html {
-                            return err(j, format!("el atributo «{}» necesita un valor", &s[a0..j].trim_end()));
+                            return err(j, tf!("el atributo «{trim_end}» necesita un valor", trim_end = &s[a0..j].trim_end()));
                         }
                     }
-                    Some(_) => return err(j, format!("carácter inesperado en la etiqueta <{name}>")),
+                    Some(_) => return err(j, tf!("carácter inesperado en la etiqueta <{name}>", name = name)),
                 }
             }
             let raw = &s[i..j];
@@ -356,7 +356,7 @@ fn tokenize(s: &str, html: bool) -> Result<Vec<(usize, Tok<'_>)>, FormatError> {
                 let close = format!("</{lower}");
                 let end = s[i..].to_ascii_lowercase().find(&close).map(|e| i + e).ok_or(FormatError {
                     pos: i,
-                    msg: format!("<{name}> sin cerrar"),
+                    msg: tf!("<{name}> sin cerrar", name = name),
                 })?;
                 if end > i {
                     toks.push((i, Tok::Raw(&s[i..end])));
@@ -396,7 +396,7 @@ pub fn format_xml(s: &str, indent: &str, html: bool) -> Result<String, FormatErr
                 let tt = txt.trim();
                 if !tt.is_empty() {
                     if stack.is_empty() && !html {
-                        return err(pos, "texto fuera del elemento raíz");
+                        return err(pos, t!("texto fuera del elemento raíz"));
                     }
                     line(&mut out, stack.len());
                     out.push_str(tt);
@@ -406,7 +406,7 @@ pub fn format_xml(s: &str, indent: &str, html: bool) -> Result<String, FormatErr
                 if stack.is_empty() {
                     roots += 1;
                     if roots > 1 && !html {
-                        return err(pos, format!("hay más de un elemento raíz (<{name}>)"));
+                        return err(pos, tf!("hay más de un elemento raíz (<{name}>)", name = name));
                     }
                 }
                 line(&mut out, stack.len());
@@ -438,18 +438,18 @@ pub fn format_xml(s: &str, indent: &str, html: bool) -> Result<String, FormatErr
                 }
                 Some((open, opos)) => {
                     let (l, _) = line_col(s, opos);
-                    return err(*pos, format!("se esperaba </{open}> (abierto en la línea {l}) y llegó </{name}>"));
+                    return err(*pos, tf!("se esperaba </{open}> (abierto en la línea {l}) y llegó </{name}>", open = open, l = l, name = name));
                 }
-                None => return err(*pos, format!("</{name}> sin etiqueta de apertura")),
+                None => return err(*pos, tf!("</{name}> sin etiqueta de apertura", name = name)),
             },
         }
         k += 1;
     }
     if let Some((open, opos)) = stack.pop() {
-        return err(opos, format!("<{open}> no se cierra"));
+        return err(opos, tf!("<{open}> no se cierra", open = open));
     }
     if roots == 0 && !html {
-        return err(0, "no hay ningún elemento");
+        return err(0, t!("no hay ningún elemento"));
     }
     Ok(out)
 }

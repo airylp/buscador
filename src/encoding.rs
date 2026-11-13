@@ -62,7 +62,7 @@ pub fn available() -> Vec<&'static Encoding> {
 /// Nombre amigable para mostrar.
 pub fn label(enc: &'static Encoding) -> String {
     if enc == WINDOWS_1252 {
-        "windows-1252 / Latin-1".to_string()
+        t!("windows-1252 / Latin-1").to_string()
     } else {
         enc.name().to_string()
     }
@@ -76,7 +76,7 @@ pub fn detect(data: &[u8]) -> (&'static Encoding, &'static str) {
     }
     let sample = &data[..data.len().min(1 << 20)];
     if sample.is_empty() {
-        return (UTF_8, "vacío");
+        return (UTF_8, t!("vacío"));
     }
 
     // UTF-16 sin BOM: muchos bytes 0 en posiciones pares o impares.
@@ -93,17 +93,17 @@ pub fn detect(data: &[u8]) -> (&'static Encoding, &'static str) {
         }
         let half = sample.len() / 2;
         if zero_odd > half * 3 / 10 && zero_even < half / 20 {
-            return (UTF_16LE, "heurística");
+            return (UTF_16LE, t!("heurística"));
         }
         if zero_even > half * 3 / 10 && zero_odd < half / 20 {
-            return (UTF_16BE, "heurística");
+            return (UTF_16BE, t!("heurística"));
         }
     }
 
     // UTF-8: tolera algunos bytes inválidos (logs con basura ocasional).
     let (errors, multibyte) = utf8_stats(sample);
     if errors == 0 || multibyte > errors * 4 {
-        return (UTF_8, if errors == 0 { "UTF-8 válido" } else { "UTF-8 (con errores)" });
+        return (UTF_8, if errors == 0 { t!("UTF-8 válido") } else { t!("UTF-8 (con errores)") });
     }
 
     let mut det = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Deny);

@@ -95,7 +95,7 @@ impl Lang {
 
     pub fn name(self) -> &'static str {
         match self {
-            Lang::Plain => "Texto sin formato",
+            Lang::Plain => t!("Texto sin formato"),
             Lang::Log => "Log",
             Lang::Java => "Java",
             Lang::Kotlin => "Kotlin",

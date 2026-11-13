@@ -1,0 +1,544 @@
+# español	inglés	francés (\n = salto de línea; mismas {marcas} en las tres columnas)
+Solo lectura: pulsa «Editar» (Ctrl+E) para modificar	Read-only: press “Edit” (Ctrl+E) to modify	Lecture seule : appuyez sur «Modifier» (Ctrl+E) pour modifier
+Guardando… espera a que termine	Saving… wait for it to finish	Enregistrement… attendez la fin
+Espera a que termine de indexar para editar	Wait for indexing to finish before editing	Attendez la fin de l'indexation pour modifier
+Demasiadas líneas para sangrar de una vez (máx. {fmt_num})	Too many lines to indent at once (max. {fmt_num})	Trop de lignes à indenter d'un coup (max. {fmt_num})
+Nada que rehacer	Nothing to redo	Rien à rétablir
+Nada que deshacer	Nothing to undo	Rien à annuler
+Nada seleccionado	Nothing selected	Rien de sélectionné
+Copiado: {len}	Copied: {len}	Copié : {len}
+Selección demasiado grande para copiar (> {human_size})	Selection too large to copy (> {human_size})	Sélection trop grande pour être copiée (> {human_size})
+Selección demasiado grande para cortar	Selection too large to cut	Sélection trop grande pour être coupée
+Cortado: {len}	Cut: {len}	Coupé : {len}
+Busca algo primero	Search for something first	Recherchez d'abord quelque chose
+Espera a que termine la búsqueda	Wait for the search to finish	Attendez la fin de la recherche
+La búsqueda está desactualizada: pulsa Enter en «Buscar» para repetirla	The search is out of date: press Enter in “Search” to repeat it	La recherche n'est plus à jour : appuyez sur Entrée dans «Rechercher» pour la relancer
+Demasiadas líneas para reemplazar de una vez (máx. {fmt_num})	Too many lines to replace at once (max. {fmt_num})	Trop de lignes à remplacer d'un coup (max. {fmt_num})
+Reemplazado en {fmt_num} líneas (Ctrl+Z para deshacer)	Replaced in {fmt_num} lines (Ctrl+Z to undo)	Remplacé dans {fmt_num} lignes (Ctrl+Z pour annuler)
+Ya se está guardando	Already saving	Enregistrement déjà en cours
+No hay cambios que guardar	No changes to save	Aucune modification à enregistrer
+Espera a que termine de indexar	Wait for indexing to finish	Attendez la fin de l'indexation
+Guardado {name} ({len})	Saved {name} ({len})	{name} enregistré ({len})
+ · {lossy} caracteres no representables se guardaron como «?»	 · {lossy} unrepresentable characters were saved as “?”	 · {lossy} caractères non représentables ont été enregistrés comme «?»
+Guardado, pero no se pudo reabrir: {e}	Saved, but could not reopen: {e}	Enregistré, mais impossible de rouvrir : {e}
+Error al guardar: {e}	Error saving: {e}	Erreur d'enregistrement : {e}
+Copiado bloque de {fmt_num} líneas ({len})	Copied block of {fmt_num} lines ({len})	Bloc de {fmt_num} lignes copié ({len})
+Bloque demasiado grande para copiar (> {human_size})	Block too large to copy (> {human_size})	Bloc trop grand pour être copié (> {human_size})
+El embellecedor está disponible para JSON y XML/HTML (el tipo se cambia en la barra de estado)	The beautifier is available for JSON and XML/HTML (change the type in the status bar)	L'embellisseur est disponible pour JSON et XML/HTML (le type se change dans la barre d'état)
+Demasiado grande para embellecer (máx. {human_size})	Too large to beautify (max. {human_size})	Trop grand pour être embelli (max. {human_size})
+{kind} mal formado en la línea {line_1}, columna {c}: {msg}	Malformed {kind} at line {line_1}, column {c}: {msg}	{kind} mal formé à la ligne {line_1}, colonne {c} : {msg}
+{kind} bien formado; ya estaba embellecido	{kind} well-formed; already beautified	{kind} bien formé ; déjà embelli
+{kind} bien formado. Activa «Editar» (Ctrl+E) para embellecerlo	{kind} well-formed. Turn on “Edit” (Ctrl+E) to beautify it	{kind} bien formé. Activez «Modifier» (Ctrl+E) pour l'embellir
+{kind} embellecido: {count} líneas (Ctrl+Z para deshacer)	{kind} beautified: {count} lines (Ctrl+Z to undo)	{kind} embelli : {count} lignes (Ctrl+Z pour annuler)
+No hay bloque seleccionado	No block selected	Aucun bloc sélectionné
+Demasiado texto para el portapapeles (> {human_size})	Too much text for the clipboard (> {human_size})	Trop de texte pour le presse-papiers (> {human_size})
+{copy_block} (en un bloque, Cortar solo copia)	{copy_block} (in a block, Cut only copies)	{copy_block} (en bloc, Couper ne fait que copier)
+Opción	Option	Option
+Deshacer	Undo	Annuler
+Rehacer	Redo	Rétablir
+Copiar (sin selección: la línea entera)	Copy (no selection: the whole line)	Copier (sans sélection : toute la ligne)
+Cortar (sin selección: la línea entera)	Cut (no selection: the whole line)	Couper (sans sélection : toute la ligne)
+Pegar	Paste	Coller
+Seleccionar todo	Select all	Tout sélectionner
+Embellecer JSON / XML (valida y sangra)	Beautify JSON / XML (validate and indent)	Embellir JSON / XML (valide et indente)
+Ajuste de línea (activar / desactivar)	Line wrap (on / off)	Retour à la ligne (activer / désactiver)
+Recargar el archivo del disco (cursor al final)	Reload the file from disk (cursor at the end)	Recharger le fichier depuis le disque (curseur à la fin)
+Vista filtrada (solo las líneas que cumplen las reglas)	Filtered view (only lines matching the rules)	Vue filtrée (seulement les lignes qui respectent les règles)
+Buscar en carpeta (todos sus archivos)	Search in folder (all its files)	Rechercher dans un dossier (tous ses fichiers)
+Retroceso / Supr	Backspace / Delete	Retour arrière / Suppr
+Borrar carácter	Delete character	Effacer un caractère
+W+Retroceso / W+Supr	W+Backspace / W+Delete	W+Retour arrière / W+Suppr
+Borrar palabra	Delete word	Effacer un mot
+Nueva línea	New line	Nouvelle ligne
+Tab	Tab	Tab
+Insertar tabulador · con texto seleccionado: desplazar sus líneas	Insert tab · with text selected: shift its lines	Insérer une tabulation · avec du texte sélectionné : décaler ses lignes
+Quitar sangría a las líneas seleccionadas (o a la del cursor)	Unindent the selected lines (or the cursor's line)	Désindenter les lignes sélectionnées (ou celle du curseur)
+Cmd+← / Inicio	Cmd+← / Home	Cmd+← / Début
+Cmd+→ / Fin	Cmd+→ / End	Cmd+→ / Fin
+Cmd+↑ / Cmd+Inicio	Cmd+↑ / Cmd+Home	Cmd+↑ / Cmd+Début
+Cmd+↓ / Cmd+Fin	Cmd+↓ / Cmd+End	Cmd+↓ / Cmd+Fin
+Inicio	Home	Début
+Fin	End	Fin
+Archivos	Files	Fichiers
+Archivo nuevo (para pegar y guardar lo copiado)	New file (to paste and save what you copied)	Nouveau fichier (pour coller et enregistrer ce qui a été copié)
+Abrir (también arrastrando archivos)	Open (also by dragging files)	Ouvrir (aussi en glissant des fichiers)
+Guardar	Save	Enregistrer
+Guardar como…	Save as…	Enregistrer sous…
+Cerrar archivo	Close file	Fermer le fichier
+Siguiente archivo	Next file	Fichier suivant
+Mostrar/ocultar panel de archivos	Show/hide files panel	Afficher/masquer le panneau des fichiers
+Activar/desactivar edición	Turn editing on/off	Activer/désactiver l'édition
+Clic derecho en un archivo	Right-click on a file	Clic droit sur un fichier
+Abrir en ventana nueva, mostrar en carpeta, copiar ruta, duplicar…	Open in new window, show in folder, copy path, duplicate…	Ouvrir dans une nouvelle fenêtre, afficher dans le dossier, copier le chemin, dupliquer…
+Buscar	Search	Rechercher
+Ir a la caja de búsqueda	Go to the search box	Aller au champ de recherche
+Enter / F3	Enter / F3	Entrée / F3
+Buscar / siguiente coincidencia	Search / next match	Rechercher / occurrence suivante
+Shift+Enter / Shift+F3	Shift+Enter / Shift+F3	Shift+Entrée / Shift+F3
+Coincidencia anterior	Previous match	Occurrence précédente
+Reemplazar	Replace	Remplacer
+Nueva ventana de búsqueda avanzada	New advanced search window	Nouvelle fenêtre de recherche avancée
+Buscar (búsqueda avanzada multilínea)	Search (multiline advanced search)	Rechercher (recherche avancée multiligne)
+Ir a línea	Go to line	Aller à la ligne
+Edición	Editing	Édition
+Moverse y seleccionar	Move and select	Se déplacer et sélectionner
+Carácter / línea	Character / line	Caractère / ligne
+Palabra	Word	Mot
+Inicio de línea (tras la sangría; otra vez: columna 1)	Start of line (after indentation; again: column 1)	Début de ligne (après l'indentation ; à nouveau : colonne 1)
+Fin de línea	End of line	Fin de ligne
+Inicio del archivo	Start of file	Début du fichier
+Fin del archivo	End of file	Fin du fichier
+RePág / AvPág	Page Up / Page Down	Pg préc / Pg suiv
+Página arriba / abajo	Page up / down	Page précédente / suivante
+Shift + movimiento	Shift + movement	Shift + déplacement
+Seleccionar	Select	Sélectionner
+Quitar la selección	Clear the selection	Désélectionner
+Ratón	Mouse	Souris
+Clic / arrastrar	Click / drag	Clic / glisser
+Colocar el cursor / seleccionar	Place the cursor / select	Placer le curseur / sélectionner
+Extender la selección	Extend the selection	Étendre la sélection
+Doble clic	Double-click	Double-clic
+Seleccionar palabra	Select word	Sélectionner un mot
+Seleccionar un bloque (rectángulo); siempre con el botón ▦ Bloque	Select a block (rectangle); always with the ▦ Block button	Sélectionner un bloc (rectangle) ; toujours avec le bouton ▦ Bloc
+Mayús+flechas (▦ Bloque)	Shift+arrows (▦ Block)	Maj+flèches (▦ Bloc)
+Ampliar el bloque	Extend the block	Agrandir le bloc
+Clic en nº de línea	Click on line number	Clic sur le nº de ligne
+Seleccionar la línea entera	Select the whole line	Sélectionner toute la ligne
+Clic derecho	Right-click	Clic droit
+Copiar, cortar, pegar, ver línea completa…	Copy, cut, paste, view full line…	Copier, couper, coller, voir la ligne complète…
+Clic en el minimapa	Click on the minimap	Clic sur la minicarte
+Ir al bloque más cercano (búsqueda avanzada)	Go to the nearest block (advanced search)	Aller au bloc le plus proche (recherche avancée)
+Vista	View	Affichage
+Letra más grande / más pequeña	Larger / smaller font	Police plus grande / plus petite
+Esta lista de atajos	This list of shortcuts	Cette liste de raccourcis
+Mostrar en Finder	Show in Finder	Afficher dans le Finder
+Mostrar en el Explorador	Show in Explorer	Afficher dans l'Explorateur
+Abrir carpeta contenedora	Open containing folder	Ouvrir le dossier parent
+{stem} copia{ext}	{stem} copy{ext}	{stem} copie{ext}
+{stem} copia {n}{ext}	{stem} copy {n}{ext}	{stem} copie {n}{ext}
+No se encontró (no se reabrió): {join}	Not found (not reopened): {join}	Introuvable (non rouvert) : {join}
+No se pudo guardar la sesión: {e}	Could not save the session: {e}	Impossible d'enregistrer la session : {e}
+No se pudo abrir {display}: {e}	Could not open {display}: {e}	Impossible d'ouvrir {display} : {e}
+Sin título {n}	Untitled {n}	Sans titre {n}
+No se pudo crear el archivo nuevo: {e}	Could not create the new file: {e}	Impossible de créer le nouveau fichier : {e}
+No se pudieron guardar los ajustes: {e}	Could not save the settings: {e}	Impossible d'enregistrer les réglages : {e}
+{name} se truncó o se reemplazó: se volvió a abrir	{name} was truncated or replaced: reopened	{name} a été tronqué ou remplacé : il a été rouvert
+Los archivos con cambios sin guardar no se cerraron	Files with unsaved changes were not closed	Les fichiers avec des modifications non enregistrées n'ont pas été fermés
+Espera a que termine de guardarse	Wait for saving to finish	Attendez la fin de l'enregistrement
+No se pudo recargar {display}: {e}	Could not reload {display}: {e}	Impossible de recharger {display} : {e}
+Recargado del disco ({size})	Reloaded from disk ({size})	Rechargé depuis le disque ({size})
+Ajuste de línea desactivado	Line wrap off	Retour à la ligne désactivé
+Ajuste de línea al ancho de la ventana	Line wrap at window width	Retour à la ligne à la largeur de la fenêtre
+Ajuste de línea a {n} columnas	Line wrap at {n} columns	Retour à la ligne à {n} colonnes
+Edición activada. Las líneas que cambies se guardan en RAM; al guardar se escribe una copia completa ({len}) y se renombra	Editing on. Lines you change are kept in RAM; saving writes a full copy ({len}) and renames it	Édition activée. Les lignes modifiées sont gardées en RAM ; à l'enregistrement, une copie complète ({len}) est écrite puis renommée
+Edición activada	Editing on	Édition activée
+Solo lectura	Read-only	Lecture seule
+Ajustes: tema y tamaño de letra (Cmd+,)	Settings: theme and font size (Cmd+,)	Réglages : thème et taille de police (Cmd+,)
+Ajustes: tema y tamaño de letra	Settings: theme and font size	Réglages : thème et taille de police
+Encoding con el que se lee el archivo	Encoding used to read the file	Encodage utilisé pour lire le fichier
+Guarda o deshaz los cambios antes de reabrir con otro encoding	Save or undo your changes before reopening with another encoding	Enregistrez ou annulez les modifications avant de rouvrir avec un autre encodage
+Letra más grande (Ctrl++)	Larger font (Ctrl++)	Police plus grande (Ctrl++)
+Tamaño de letra del texto (arrastra o escribe)	Text font size (drag or type)	Taille de police du texte (glissez ou saisissez)
+Letra más pequeña (Ctrl+-)	Smaller font (Ctrl+-)	Police plus petite (Ctrl+-)
+Monoespaciadas (alinean columnas)	Monospaced (align columns)	Chasse fixe (alignent les colonnes)
+Proporcionales	Proportional	Proportionnelles
+Tipo de letra del texto: {family}	Text font: {family}	Police du texte : {family}
+Panel de archivos (Ctrl+B)	Files panel (Ctrl+B)	Panneau des fichiers (Ctrl+B)
+Nuevo	New	Nouveau
+Archivo nuevo, por ejemplo para pegar lo copiado (Ctrl+N)	New file, e.g. to paste what you copied (Ctrl+N)	Nouveau fichier, par exemple pour coller ce qui a été copié (Ctrl+N)
+Abrir	Open	Ouvrir
+Abrir archivos (Ctrl+O) · también puedes arrastrarlos	Open files (Ctrl+O) · you can also drag them	Ouvrir des fichiers (Ctrl+O) · vous pouvez aussi les glisser
+Guardar (Ctrl+S) · Guardar como: Ctrl+Shift+S	Save (Ctrl+S) · Save as: Ctrl+Shift+S	Enregistrer (Ctrl+S) · Enregistrer sous : Ctrl+Shift+S
+Deshacer (Ctrl+Z)	Undo (Ctrl+Z)	Annuler (Ctrl+Z)
+Rehacer (Ctrl+Shift+Z)	Redo (Ctrl+Shift+Z)	Rétablir (Ctrl+Shift+Z)
+Editar	Edit	Modifier
+Activar/desactivar edición (Ctrl+E)	Turn editing on/off (Ctrl+E)	Activer/désactiver l'édition (Ctrl+E)
+La selección en bloque no está disponible con el ajuste de línea activado	Block selection is not available while line wrap is on	La sélection en bloc n'est pas disponible avec le retour à la ligne activé
+Selección en bloque: arrastra para marcar un rectángulo de texto (como una matriz). Al copiar se copia solo el texto real, línea por línea. También: Opción/Alt+arrastrar.	Block selection: drag to mark a rectangle of text (like a matrix). Copying copies only the actual text, line by line. Also: Option/Alt+drag.	Sélection en bloc : glissez pour marquer un rectangle de texte (comme une matrice). La copie ne prend que le texte réel, ligne par ligne. Aussi : Option/Alt+glisser.
+La selección en bloque necesita una letra monoespaciada (⚙ Ajustes)	Block selection needs a monospaced font (⚙ Settings)	La sélection en bloc nécessite une police à chasse fixe (⚙ Réglages)
+Embellecer {k}: comprueba que esté bien formado y lo ordena con sangría (Ctrl+Shift+B). Se aplica a la selección o a todo el archivo; Ctrl+Z lo deshace.	Beautify {k}: checks that it is well-formed and indents it (Ctrl+Shift+B). Applies to the selection or the whole file; Ctrl+Z undoes it.	Embellir {k} : vérifie qu'il est bien formé et l'indente (Ctrl+Shift+B). S'applique à la sélection ou à tout le fichier ; Ctrl+Z l'annule.
+Embellecer: disponible para JSON y XML/HTML	Beautify: available for JSON and XML/HTML	Embellir : disponible pour JSON et XML/HTML
+🔍 Buscar…  (Ctrl+F, Enter)	🔍 Search…  (Ctrl+F, Enter)	🔍 Rechercher…  (Ctrl+F, Entrée)
+Distinguir mayúsculas	Match case	Respecter la casse
+Expresión regular	Regular expression	Expression régulière
+Anterior (Shift+Enter, Shift+F3)	Previous (Shift+Enter, Shift+F3)	Précédent (Shift+Entrée, Shift+F3)
+Siguiente (Enter, F3)	Next (Enter, F3)	Suivant (Entrée, F3)
+regex inválida	invalid regex	regex invalide
+{fmt_num} líneas con coincidencias	{fmt_num} lines with matches	{fmt_num} lignes avec occurrences
+ (límite {fmt_num})	 (limit {fmt_num})	 (limite {fmt_num})
+\nDesactualizada por las ediciones: Enter para repetir	\nOut of date due to edits: Enter to repeat	\nObsolète à cause des modifications : Entrée pour relancer
+Reemplazar ({rk})	Replace ({rk})	Remplacer ({rk})
+Búsqueda avanzada: nueva ventana de búsqueda por bloques (desde… hasta…, multilínea), con minimapa y copia en varias líneas (Ctrl+Shift+F). Puedes abrir varias.	Advanced search: new window for searching by blocks (from… to…, multiline), with minimap and multi-line copy (Ctrl+Shift+F). You can open several.	Recherche avancée : nouvelle fenêtre de recherche par blocs (de… à…, multiligne), avec minicarte et copie sur plusieurs lignes (Ctrl+Shift+F). Vous pouvez en ouvrir plusieurs.
+Mapa de disco: qué ocupa cada carpeta y archivo de una carpeta, y búsqueda de texto en sus archivos (se resaltan en verde)	Disk map: what each folder and file in a folder takes up, and text search in its files (highlighted in green)	Carte du disque : ce qu'occupe chaque dossier et fichier d'un dossier, et recherche de texte dans ses fichiers (surlignés en vert)
+Buscar en carpeta: el texto en todos los archivos de una carpeta ({fk})	Search in folder: the text in all files of a folder ({fk})	Rechercher dans un dossier : le texte dans tous les fichiers d'un dossier ({fk})
+Reemplazar por:	Replace with:	Remplacer par :
+texto ($1, $2… para grupos)	text ($1, $2… for groups)	texte ($1, $2… pour les groupes)
+Reemplaza la coincidencia seleccionada y va a la siguiente	Replaces the selected match and goes to the next one	Remplace l'occurrence sélectionnée et passe à la suivante
+Reemplazar todo	Replace all	Tout remplacer
+En todas las líneas encontradas · se deshace con Ctrl+Z	In all matched lines · undo with Ctrl+Z	Dans toutes les lignes trouvées · s'annule avec Ctrl+Z
+No se pudo abrir la carpeta: {e}	Could not open the folder: {e}	Impossible d'ouvrir le dossier : {e}
+Ruta copiada: {p}	Path copied: {p}	Chemin copié : {p}
+Nombre copiado: {n}	Name copied: {n}	Nom copié : {n}
+{name} abierto en otra ventana (versión guardada en disco)	{name} opened in another window (version saved on disk)	{name} ouvert dans une autre fenêtre (version enregistrée sur le disque)
+{name} abierto en otra ventana	{name} opened in another window	{name} ouvert dans une autre fenêtre
+No se pudo abrir otra ventana: {e}	Could not open another window: {e}	Impossible d'ouvrir une autre fenêtre : {e}
+Espacio {n}	Space {n}	Espace {n}
+Duplicando como {to_string_lossy}…	Duplicating as {to_string_lossy}…	Duplication sous {to_string_lossy}…
+No se pudo duplicar: {e}	Could not duplicate: {e}	Impossible de dupliquer : {e}
+Archivos abiertos	Open files	Fichiers ouverts
+Ocultar (Ctrl+B)	Hide (Ctrl+B)	Masquer (Ctrl+B)
++ Espacio	+ Space	+ Espace
+Crear un espacio: un grupo de archivos que se abre y cierra como una carpeta.\nArrastra archivos encima o usa su menú (clic derecho).	Create a space: a group of files that opens and closes like a folder.\nDrag files onto it or use their menu (right-click).	Créer un espace : un groupe de fichiers qui s'ouvre et se ferme comme un dossier.\nGlissez-y des fichiers ou utilisez leur menu (clic droit).
+↩ Ajuste	↩ Wrap	↩ Retour
+Ajuste de línea del archivo seleccionado (Ctrl+Alt+Z)	Line wrap for the selected file (Ctrl+Alt+Z)	Retour à la ligne du fichier sélectionné (Ctrl+Alt+Z)
+Sin archivos.\nUsa «Abrir…» o arrastra archivos aquí.	No files.\nUse “Open…” or drag files here.	Aucun fichier.\nUtilisez «Ouvrir…» ou glissez des fichiers ici.
+Soltar aquí: fuera de los espacios	Drop here: outside the spaces	Déposer ici : hors des espaces
+Clic: abrir/cerrar el espacio (los archivos siguen abiertos)\nDoble clic: renombrar · Clic derecho: más opciones\nArrastra archivos aquí para meterlos · arrastra la cabecera para cambiar el orden	Click: open/close the space (files stay open)\nDouble-click: rename · Right-click: more options\nDrag files here to add them · drag the header to reorder	Clic : ouvrir/fermer l'espace (les fichiers restent ouverts)\nDouble-clic : renommer · Clic droit : plus d'options\nGlissez des fichiers ici pour les y mettre · glissez l'en-tête pour changer l'ordre
+Cerrar el espacio	Close the space	Fermer l'espace
+Abrir el espacio	Open the space	Ouvrir l'espace
+Renombrar	Rename	Renommer
+Cerrar sus archivos	Close its files	Fermer ses fichiers
+Quitar el espacio	Remove the space	Supprimer l'espace
+Los archivos siguen abiertos, fuera de los espacios	The files stay open, outside the spaces	Les fichiers restent ouverts, hors des espaces
+Atajos de teclado (F1)	Keyboard shortcuts (F1)	Raccourcis clavier (F1)
+Ajuste de línea (Ctrl+Alt+Z): {into} · el modo se elige en ⚙ Ajustes	Line wrap (Ctrl+Alt+Z): {into} · the mode is chosen in ⚙ Settings	Retour à la ligne (Ctrl+Alt+Z) : {into} · le mode se choisit dans ⚙ Réglages
+a {n} columnas	at {n} columns	à {n} colonnes
+al ancho de la ventana	at window width	à la largeur de la fenêtre
+⟳ Recargar	⟳ Reload	⟳ Recharger
+Volver a leer el archivo del disco y poner el cursor al final ({rk})	Reread the file from disk and put the cursor at the end ({rk})	Relire le fichier depuis le disque et placer le curseur à la fin ({rk})
+Disponible para archivos guardados en disco	Available for files saved on disk	Disponible pour les fichiers enregistrés sur le disque
+En vivo en pausa: hay cambios sin guardar (guárdalos o deshazlos)	Live paused: there are unsaved changes (save or undo them)	En direct en pause : modifications non enregistrées (enregistrez-les ou annulez-les)
+En vivo: muestra lo que se va añadiendo al archivo (como tail -f) y baja hasta el final.\nSi el archivo se trunca o rota, se vuelve a abrir.	Live: shows what is appended to the file (like tail -f) and scrolls to the end.\nIf the file is truncated or rotated, it is reopened.	En direct : affiche ce qui est ajouté au fichier (comme tail -f) et descend jusqu'à la fin.\nSi le fichier est tronqué ou subit une rotation, il est rouvert.
+⏸ En vivo	⏸ Live	⏸ En direct
+⏵ En vivo	⏵ Live	⏵ En direct
+⚟ Filtro ({n})	⚟ Filter ({n})	⚟ Filtre ({n})
+⚟ Filtro	⚟ Filter	⚟ Filtre
+Vista filtrada: solo las líneas que cumplen las reglas (incluir / excluir), sin tocar el archivo (Ctrl+Shift+L)	Filtered view: only lines matching the rules (include / exclude), without touching the file (Ctrl+Shift+L)	Vue filtrée : seulement les lignes qui respectent les règles (inclure / exclure), sans toucher au fichier (Ctrl+Shift+L)
+📄 Detalle	📄 Detail	📄 Détail
+Panel con la línea actual completa, seleccionable	Panel with the full current line, selectable	Panneau avec la ligne actuelle complète, sélectionnable
+📋 Resultados	📋 Results	📋 Résultats
+Panel con la lista de líneas encontradas	Panel with the list of matched lines	Panneau avec la liste des lignes trouvées
+EDICIÓN	EDITING	ÉDITION
+SOLO LECTURA	READ ONLY	LECTURE SEULE
+Ir a línea:	Go to line:	Aller à la ligne :
+nº de línea	line number	nº de ligne
+Lín {line_1}, Col {fmt_num}	Ln {line_1}, Col {fmt_num}	Lig {line_1}, Col {fmt_num}
+Ir a línea…	Go to line…	Aller à la ligne…
+ · bloque {fmt_num} × {fmt_num2}	 · block {fmt_num} × {fmt_num2}	 · bloc {fmt_num} × {fmt_num2}
+ · {col_as_u64} seleccionados	 · {col_as_u64} selected	 · {col_as_u64} sélectionnés
+ · {line_1} líneas seleccionadas	 · {line_1} lines selected	 · {line_1} lignes sélectionnées
+Ir a línea (Ctrl+G)	Go to line (Ctrl+G)	Aller à la ligne (Ctrl+G)
+{lines} líneas	{lines} lines	{lines} lignes
+indexando… {lines} líneas	indexing… {lines} lines	indexation… {lines} lignes
+Detectado por: {detect_reason}	Detected by: {detect_reason}	Détecté par : {detect_reason}
+Lenguaje para colorear (se deduce de la extensión)	Language for highlighting (inferred from the extension)	Langage pour la coloration (déduit de l'extension)
+● sin guardar	● unsaved	● non enregistré
+{fmt_num} piezas · {human_size} de texto editado en RAM	{fmt_num} pieces · {human_size} of edited text in RAM	{fmt_num} pièces · {human_size} de texte modifié en RAM
+guardando…	saving…	enregistrement…
+sin guardar en disco · Ctrl+S para elegir dónde	not saved to disk · Ctrl+S to choose where	non enregistré sur le disque · Ctrl+S pour choisir où
+Ruta del archivo	File path	Chemin du fichier
+Cambios sin guardar	Unsaved changes	Modifications non enregistrées
+Hay cambios sin guardar en: {join}	There are unsaved changes in: {join}	Modifications non enregistrées dans : {join}
+Si continúas se perderán. Para conservarlos, cancela y pulsa Ctrl+S.	If you continue they will be lost. To keep them, cancel and press Ctrl+S.	Si vous continuez, elles seront perdues. Pour les garder, annulez et appuyez sur Ctrl+S.
+Descartar cambios	Discard changes	Ignorer les modifications
+Cancelar	Cancel	Annuler
+No se pudo abrir la versión nueva: {e}	Could not open the new version: {e}	Impossible d'ouvrir la nouvelle version : {e}
+Duplicado: {display}	Duplicated: {display}	Dupliqué : {display}
+Arrastra archivos aquí, o pulsa Ctrl+O	Drag files here, or press Ctrl+O	Glissez des fichiers ici, ou appuyez sur Ctrl+O
+Copiar (Ctrl+C)	Copy (Ctrl+C)	Copier (Ctrl+C)
+📝 Nuevo archivo con la selección	📝 New file with the selection	📝 Nouveau fichier avec la sélection
+Abre un archivo nuevo con el texto seleccionado (o el bloque), listo para guardar	Opens a new file with the selected text (or block), ready to save	Ouvre un nouveau fichier avec le texte sélectionné (ou le bloc), prêt à enregistrer
+Selección demasiado grande (> {human_size})	Selection too large (> {human_size})	Sélection trop grande (> {human_size})
+Cortar (Ctrl+X)	Cut (Ctrl+X)	Couper (Ctrl+X)
+Pegar (Ctrl+V)	Paste (Ctrl+V)	Coller (Ctrl+V)
+Borrar selección	Delete selection	Effacer la sélection
+Seleccionar todo (Ctrl+A)	Select all (Ctrl+A)	Tout sélectionner (Ctrl+A)
+Ver línea completa	View full line	Voir la ligne complète
+indexando…	indexing…	indexation…
+solo lectura · Ctrl+E para editar	read-only · Ctrl+E to edit	lecture seule · Ctrl+E pour modifier
+  …[línea truncada; ver Detalle]	  …[line truncated; see Detail]	  …[ligne tronquée ; voir Détail]
+{line_1} líneas ({human_size})	{line_1} lines ({human_size})	{line_1} lignes ({human_size})
+Búsqueda avanzada {id}{unwrap_or_default}	Advanced search {id}{unwrap_or_default}	Recherche avancée {id}{unwrap_or_default}
+Ajustes	Settings	Réglages
+Tema	Theme	Thème
+Sistema	System	Système
+Claro	Light	Clair
+Oscuro	Dark	Sombre
+Bordes de paneles	Panel borders	Bordures des panneaux
+Separaciones entre paneles y bordes de las ventanas, en cualquier tema	Separators between panels and window borders, in any theme	Séparations entre panneaux et bordures des fenêtres, quel que soit le thème
+Normales	Normal	Normales
+Marcados	Strong	Marquées
+Muy marcados	Very strong	Très marquées
+Tipo de letra	Font	Police
+Con letra proporcional las columnas de los logs no quedan alineadas.	With a proportional font, log columns are not aligned.	Avec une police proportionnelle, les colonnes des logs ne sont pas alignées.
+Tamaño de letra	Font size	Taille de police
+Colores del texto	Text colors	Couleurs du texte
+Usar colores propios (tienen prioridad sobre el tema)	Use custom colors (they override the theme)	Utiliser mes couleurs (prioritaires sur le thème)
+Fondo	Background	Fond
+Letra	Text	Texte
+Ajuste de línea	Line wrap	Retour à la ligne
+Al ancho de la ventana	At window width	À la largeur de la fenêtre
+Valor por defecto; cada archivo lo cambia con ↩ Ajuste.	Default value; each file changes it with ↩ Wrap.	Valeur par défaut ; chaque fichier la change avec ↩ Retour.
+Resaltado	Highlighting	Coloration
+Colorear según el tipo de archivo (.java, .xml, .json, .py…) y los niveles de los logs	Color by file type (.java, .xml, .json, .py…) and log levels	Colorer selon le type de fichier (.java, .xml, .json, .py…) et les niveaux des logs
+Vista previa:	Preview:	Aperçu :
+2026-11-10 12:00:01 [ERROR] año, acción: java.io.IOException	2026-11-10 12:00:01 [ERROR] year, action: java.io.IOException	2026-11-10 12:00:01 [ERROR] année, action : java.io.IOException
+Versión {crate_update_version_label}	Version {crate_update_version_label}	Version {crate_update_version_label}
+⟳ Buscar actualizaciones…	⟳ Check for updates…	⟳ Rechercher des mises à jour…
+Descarga la última versión de GitHub, la compila y la instala	Downloads the latest version from GitHub, builds it and installs it	Télécharge la dernière version depuis GitHub, la compile et l'installe
+↺ Restablecer	↺ Reset	↺ Réinitialiser
+Vuelve a los ajustes predeterminados: tema del sistema, Hack 13, sin colores propios, bordes normales	Restores the default settings: system theme, Hack 13, no custom colors, normal borders	Revient aux réglages par défaut : thème du système, Hack 13, sans couleurs personnalisées, bordures normales
+En Windows, actualiza volviendo a ejecutar el instalador.	On Windows, update by running the installer again.	Sous Windows, mettez à jour en relançant l'installateur.
+Los ajustes se guardan automáticamente.	Settings are saved automatically.	Les réglages sont enregistrés automatiquement.
+Ajustes restablecidos	Settings reset	Réglages réinitialisés
+No se pudo cargar «{family}»; se usa {crate_fonts_DEFAULT}	Could not load “{family}”; using {crate_fonts_DEFAULT}	Impossible de charger «{family}» ; {crate_fonts_DEFAULT} est utilisée
+Actualizar buscador	Update buscador	Mettre à jour buscador
+Versión instalada: {crate_update_version_label}	Installed version: {crate_update_version_label}	Version installée : {crate_update_version_label}
+Comprobando la última versión en GitHub…	Checking the latest version on GitHub…	Vérification de la dernière version sur GitHub…
+✔ Ya tienes la última versión ({h}).	✔ You already have the latest version ({h}).	✔ Vous avez déjà la dernière version ({h}).
+Reinstalar de todos modos	Reinstall anyway	Réinstaller quand même
+Hay una versión nueva: {h}	A new version is available: {h}	Nouvelle version disponible : {h}
+Se descarga el código a una carpeta temporal, se compila (la primera vez tarda unos minutos) y se reemplaza la app instalada. Puedes seguir trabajando mientras tanto.	The code is downloaded to a temporary folder, built (the first time takes a few minutes) and the installed app is replaced. You can keep working in the meantime.	Le code est téléchargé dans un dossier temporaire, compilé (la première fois prend quelques minutes) et remplace l'app installée. Vous pouvez continuer à travailler pendant ce temps.
+⬇ Descargar, compilar e instalar	⬇ Download, build and install	⬇ Télécharger, compiler et installer
+Descargando, compilando e instalando…	Downloading, building and installing…	Téléchargement, compilation et installation…
+✔ Instalada en {display}	✔ Installed in {display}	✔ Installée dans {display}
+⟳ Reiniciar ahora	⟳ Restart now	⟳ Redémarrer maintenant
+Cierra buscador y lo abre con la versión nueva (recupera los archivos abiertos)	Closes buscador and opens it with the new version (restores open files)	Ferme buscador et le rouvre avec la nouvelle version (récupère les fichiers ouverts)
+Hay cambios sin guardar: al reiniciar se preguntará si descartarlos (o cancela y guárdalos).	There are unsaved changes: on restart you will be asked whether to discard them (or cancel and save them).	Modifications non enregistrées : au redémarrage, il vous sera demandé de les ignorer (ou annulez et enregistrez-les).
+No se pudo actualizar: {e}	Could not update: {e}	Impossible de mettre à jour : {e}
+Reintentar	Retry	Réessayer
+Registro:	Log:	Journal :
+La actualización sigue en segundo plano; vuelve a abrirla desde Ajustes	The update continues in the background; reopen it from Settings	La mise à jour continue en arrière-plan ; rouvrez-la depuis Réglages
+Atajos de teclado	Keyboard shortcuts	Raccourcis clavier
+Buscar en carpeta	Search in folder	Rechercher dans un dossier
+Mapa de disco	Disk map	Carte du disque
+Archivo abierto desde el mapa	File opened from the map	Fichier ouvert depuis la carte
+{n} archivos abiertos desde el mapa	{n} files opened from the map	{n} fichiers ouverts depuis la carte
+Archivo:	File:	Fichier :
++ Nueva	+ New	+ Nouvelle
+Abrir otra ventana de búsqueda avanzada	Open another advanced search window	Ouvrir une autre fenêtre de recherche avancée
+Integrar	Attach	Intégrer
+Ventana aparte	Separate window	Fenêtre séparée
+Volver a mostrarla dentro de la ventana principal	Show it inside the main window again	La réafficher dans la fenêtre principale
+Mostrarla en una ventana propia (puedes llevarla a otro monitor)	Show it in its own window (you can move it to another monitor)	L'afficher dans sa propre fenêtre (vous pouvez la mettre sur un autre écran)
+Abre un archivo primero (o el archivo elegido se cerró).	Open a file first (or the chosen file was closed).	Ouvrez d'abord un fichier (ou le fichier choisi a été fermé).
+Desde:	From:	De :
+inicio del bloque (texto o regex)	start of the block (text or regex)	début du bloc (texte ou regex)
+Multilínea	Multiline	Multiligne
+Cada patrón puede ocupar varias líneas (hasta 1 MB).\nTexto: escribe los saltos tal cual (sirve para LF y CRLF); busca con Ctrl+Enter.\nRegex: usa \\n o \\r?\\n; (?s) para que «.» cruce líneas.	Each pattern can span several lines (up to 1 MB).\nText: type line breaks as they are (works for LF and CRLF); search with Ctrl+Enter.\nRegex: use \\n or \\r?\\n; (?s) to make “.” cross lines.	Chaque motif peut occuper plusieurs lignes (jusqu'à 1 Mo).\nTexte : saisissez les sauts tels quels (valable pour LF et CRLF) ; recherchez avec Ctrl+Entrée.\nRegex : utilisez \\n ou \\r?\\n ; (?s) pour que «.» traverse les lignes.
+Hasta:	To:	À :
+fin del bloque, puede estar en otra línea (opcional)	end of the block, may be on another line (optional)	fin du bloc, peut être sur une autre ligne (facultatif)
+{pos}{fmt_num} bloques	{pos}{fmt_num} blocks	{pos}{fmt_num} blocs
+ · buscando {v}%	 · searching {v}%	 · recherche {v}%
+ · el último inicio no tiene fin	 · the last start has no end	 · le dernier début n'a pas de fin
+desactualizada (Buscar para repetir)	out of date (Search to repeat)	obsolète (Rechercher pour relancer)
+Copiar:	Copy:	Copier :
+desde… hasta (incluidos)	from… to (included)	de… à (inclus)
+solo lo de en medio	only what is in between	seulement ce qui est entre les deux
+Sin los textos de «Desde» y «Hasta»	Without the “From” and “To” texts	Sans les textes de «De» et «À»
+líneas completas	whole lines	lignes complètes
+Separar bloques con:	Separate blocks with:	Séparer les blocs par :
+salto de línea	line break	saut de ligne
+línea en blanco	blank line	ligne vide
+Bloque anterior	Previous block	Bloc précédent
+Bloque siguiente	Next block	Bloc suivant
+Seleccionar en el editor	Select in the editor	Sélectionner dans l'éditeur
+Selecciona el bloque actual (según «Copiar») para copiarlo o editarlo	Selects the current block (according to “Copy”) to copy or edit it	Sélectionne le bloc actuel (selon «Copier») pour le copier ou le modifier
+Copiados {fmt_num} bloques ({len})	Copied {fmt_num} blocks ({len})	{fmt_num} blocs copiés ({len})
+Copiar bloque	Copy block	Copier le bloc
+Copiar todos ({fmt_num})	Copy all ({fmt_num})	Tout copier ({fmt_num})
+📝 A archivo nuevo	📝 To new file	📝 Vers un nouveau fichier
+Abre un archivo nuevo con todos los bloques (según «Copiar» y el separador), listo para guardar	Opens a new file with all blocks (according to “Copy” and the separator), ready to save	Ouvre un nouveau fichier avec tous les blocs (selon «Copier» et le séparateur), prêt à enregistrer
+Verde: bloques encontrados (más intenso = más bloques) · recuadro: lo que se ve · clic: ir allí	Green: blocks found (more intense = more blocks) · box: what is visible · click: go there	Vert : blocs trouvés (plus intense = plus de blocs) · cadre : partie visible · clic : y aller
+− Excluir	− Exclude	− Exclure
+Se ocultan las líneas que contienen esto (clic: cambiar a Incluir)	Lines containing this are hidden (click: switch to Include)	Les lignes qui contiennent ceci sont masquées (clic : passer à Inclure)
++ Incluir	+ Include	+ Inclure
+Se muestran las líneas que contienen esto (clic: cambiar a Excluir)	Lines containing this are shown (click: switch to Exclude)	Les lignes qui contiennent ceci sont affichées (clic : passer à Exclure)
+expresión regular	regular expression	expression régulière
+Quitar esta regla	Remove this rule	Supprimer cette règle
++ Regla	+ Rule	+ Règle
+Varias de Incluir: basta con que coincida una. Las de Excluir quitan líneas.	Several Include rules: matching any one is enough. Exclude rules remove lines.	Plusieurs Inclure : il suffit qu'une corresponde. Les Exclure retirent des lignes.
+Regla no válida: {e}	Invalid rule: {e}	Règle invalide : {e}
+Filtrando… {v}%	Filtering… {v}%	Filtrage… {v}%
+{fmt_num} de {fmt_num2} líneas	{fmt_num} of {fmt_num2} lines	{fmt_num} sur {fmt_num2} lignes
+Doble clic en una línea (o Enter): ir a ella en el archivo completo	Double-click a line (or Enter): go to it in the full file	Double-clic sur une ligne (ou Entrée) : y aller dans le fichier complet
+Ver todo	Show all	Tout voir
+Volver al archivo completo (las reglas se guardan)	Back to the full file (rules are kept)	Revenir au fichier complet (les règles sont conservées)
+Nuevo archivo con estas líneas	New file with these lines	Nouveau fichier avec ces lignes
+Copiar	Copy	Copier
+Copiar todas las líneas filtradas	Copy all filtered lines	Copier toutes les lignes filtrées
+Copiadas {fmt_num} líneas	Copied {fmt_num} lines	{fmt_num} lignes copiées
+Ninguna línea cumple las reglas	No lines match the rules	Aucune ligne ne respecte les règles
+Demasiado grande (máx. {human_size})	Too large (max. {human_size})	Trop grand (max. {human_size})
+Selecciona una línea para verla completa aquí.	Select a line to see it in full here.	Sélectionnez une ligne pour la voir complète ici.
+\n…[truncado: la línea mide más de 1 MB]	\n…[truncated: the line is longer than 1 MB]	\n…[tronqué : la ligne dépasse 1 Mo]
+Línea {fmt_num}	Line {fmt_num}	Ligne {fmt_num}
+Cerrar (Ctrl+W)	Close (Ctrl+W)	Fermer (Ctrl+W)
+{to_string}\nClic derecho: más opciones · Arrastrar: mover a un espacio\n{if_MAC_Cmd_else_Ctrl} + clic / Shift + clic: seleccionar varios\n{tab_details}	{to_string}\nRight-click: more options · Drag: move to a space\n{if_MAC_Cmd_else_Ctrl} + click / Shift + click: select several\n{tab_details}	{to_string}\nClic droit : plus d'options · Glisser : déplacer vers un espace\n{if_MAC_Cmd_else_Ctrl} + clic / Shift + clic : sélection multiple\n{tab_details}
+Archivo nuevo sin guardar	New unsaved file	Nouveau fichier non enregistré
+{multi} archivos seleccionados	{multi} files selected	{multi} fichiers sélectionnés
+Mover los {multi} a un espacio	Move the {multi} to a space	Déplacer les {multi} vers un espace
+Nuevo espacio…	New space…	Nouvel espace…
+Sacar de los espacios	Remove from spaces	Retirer des espaces
+Cerrar los {multi}	Close the {multi}	Fermer les {multi}
+Abrir en una ventana nueva	Open in a new window	Ouvrir dans une nouvelle fenêtre
+La ventana nueva muestra la versión guardada en disco	The new window shows the version saved on disk	La nouvelle fenêtre affiche la version enregistrée sur le disque
+Copiar ruta	Copy path	Copier le chemin
+Copiar nombre	Copy name	Copier le nom
+Mover a un espacio	Move to a space	Déplacer vers un espace
+Sacar del espacio	Remove from the space	Retirer de l'espace
+Duplicar	Duplicate	Dupliquer
+La copia incluye los cambios sin guardar; el original no se modifica	The copy includes unsaved changes; the original is not modified	La copie inclut les modifications non enregistrées ; l'original n'est pas modifié
+Cerrar	Close	Fermer
+Cerrar los demás	Close others	Fermer les autres
+{total} líneas	{total} lines	{total} lignes
+indexando {v}%	indexing {v}%	indexation {v}%
+ · solo lectura	 · read-only	 · lecture seule
+falta un valor	missing value	valeur manquante
+valor inesperado «{i}»	unexpected value “{i}”	valeur inattendue «{i}»
+se esperaba una clave entre comillas	expected a quoted key	clé entre guillemets attendue
+se esperaba «:» tras la clave	expected “:” after the key	«:» attendu après la clé
+se esperaba «,» o «{close_as_char}»	expected “,” or “{close_as_char}”	«,» ou «{close_as_char}» attendu
+falta cerrar con «{close_as_char}»	missing closing “{close_as_char}”	fermeture «{close_as_char}» manquante
+secuencia de escape no válida	invalid escape sequence	séquence d'échappement invalide
+salto de línea o carácter de control dentro de una cadena	line break or control character inside a string	saut de ligne ou caractère de contrôle dans une chaîne
+cadena sin cerrar	unterminated string	chaîne non fermée
+número no válido	invalid number	nombre invalide
+faltan decimales	missing decimals	décimales manquantes
+exponente no válido	invalid exponent	exposant invalide
+el texto está vacío	the text is empty	le texte est vide
+{what} sin cerrar	unterminated {what}	{what} non fermé
+instrucción «<?»	“<?” instruction	instruction «<?»
+declaración «<!» sin cerrar	unterminated “<!” declaration	déclaration «<!» non fermée
+etiqueta de cierre mal formada	malformed closing tag	balise de fermeture mal formée
+«<» suelto (en texto se escribe &lt;)	stray “<” (in text write &lt;)	«<» isolé (dans le texte, on écrit &lt;)
+etiqueta <{name}> sin cerrar	unterminated tag <{name}>	balise <{name}> non fermée
+valor del atributo «{j}» sin cerrar	unterminated value of attribute “{j}”	valeur de l'attribut «{j}» non fermée
+el atributo «{trim_end_matches}» necesita el valor entre comillas	attribute “{trim_end_matches}” needs a quoted value	l'attribut «{trim_end_matches}» exige une valeur entre guillemets
+el atributo «{trim_end}» necesita un valor	attribute “{trim_end}” needs a value	l'attribut «{trim_end}» exige une valeur
+carácter inesperado en la etiqueta <{name}>	unexpected character in tag <{name}>	caractère inattendu dans la balise <{name}>
+<{name}> sin cerrar	unclosed <{name}>	<{name}> non fermé
+texto fuera del elemento raíz	text outside the root element	texte hors de l'élément racine
+hay más de un elemento raíz (<{name}>)	there is more than one root element (<{name}>)	il y a plus d'un élément racine (<{name}>)
+se esperaba </{open}> (abierto en la línea {l}) y llegó </{name}>	expected </{open}> (opened at line {l}) but got </{name}>	</{open}> attendu (ouvert à la ligne {l}) mais </{name}> trouvé
+</{name}> sin etiqueta de apertura	</{name}> without an opening tag	</{name}> sans balise d'ouverture
+<{open}> no se cierra	<{open}> is not closed	<{open}> n'est pas fermé
+no hay ningún elemento	there is no element	aucun élément
+Escribe qué buscar en «Desde»	Type what to search for in “From”	Saisissez quoi chercher dans «De»
+«{c}» no se puede representar en {name}	“{c}” cannot be represented in {name}	«{c}» ne peut pas être représenté en {name}
+El reemplazo no puede contener saltos de línea	The replacement cannot contain line breaks	Le remplacement ne peut pas contenir de sauts de ligne
+la ruta no tiene nombre de archivo	the path has no file name	le chemin n'a pas de nom de fichier
+Escribe el texto a buscar	Type the text to search for	Saisissez le texte à rechercher
+Leyendo… {load} archivos · {load2}	Reading… {load} files · {load2}	Lecture… {load} fichiers · {load2}
+Detener	Stop	Arrêter
+{size} · {files} archivos{partial_lectura_detenida}	{size} · {files} files{partial_lectura_detenida}	{size} · {files} fichiers{partial_lectura_detenida}
+ · lectura detenida (incompleto)	 · reading stopped (incomplete)	 · lecture arrêtée (incomplet)
+Volver a leer la carpeta	Reread the folder	Relire le dossier
+Elige una carpeta para ver qué ocupa cada carpeta y archivo.	Choose a folder to see what each folder and file takes up.	Choisissez un dossier pour voir ce qu'occupe chaque dossier et fichier.
+Mapa: {errors} carpetas o archivos sin permiso de lectura	Map: {errors} folders or files without read permission	Carte : {errors} dossiers ou fichiers sans permission de lecture
+📁 Elegir carpeta…	📁 Choose folder…	📁 Choisir un dossier…
+Volver a mostrarlo dentro de la ventana principal	Show it inside the main window again	Le réafficher dans la fenêtre principale
+Mostrarlo en una ventana propia (puedes llevarla a otro monitor)	Show it in its own window (you can move it to another monitor)	L'afficher dans sa propre fenêtre (vous pouvez la mettre sur un autre écran)
+Extensiones:	Extensions:	Extensions :
+vacío = todas	empty = all	vide = toutes
+Solo se busca en archivos con estas extensiones (separadas por comas). Vacío = en todos.\nEl mapa siempre muestra todos los archivos.	Only files with these extensions (comma-separated) are searched. Empty = all.\nThe map always shows all files.	Recherche seulement dans les fichiers avec ces extensions (séparées par des virgules). Vide = dans tous.\nLa carte affiche toujours tous les fichiers.
+Texto:	Text:	Texte :
+texto a buscar	text to search for	texte à rechercher
+⏳ En espera	⏳ Waiting	⏳ En attente
+🔍 Buscar	🔍 Search	🔍 Rechercher
+La búsqueda empieza sola cuando termine de leerse la carpeta (clic otra vez para no buscar)	The search starts by itself when the folder has been read (click again to not search)	La recherche démarre seule une fois le dossier lu (cliquez à nouveau pour ne pas rechercher)
+Quitar el resaltado	Clear highlighting	Retirer le surlignage
+Se buscará «{needle}» en cuanto termine de generarse el mapa	“{needle}” will be searched for as soon as the map is generated	«{needle}» sera recherché dès que la carte sera générée
+{crate_app_fmt_num} de {total_files} archivos contienen «{needle}»{if_cancelled} · {unwrap}s	{crate_app_fmt_num} of {total_files} files contain “{needle}”{if_cancelled} · {unwrap}s	{crate_app_fmt_num} sur {total_files} fichiers contiennent «{needle}»{if_cancelled} · {unwrap}s
+ (cancelada)	 (cancelled)	 (annulée)
+Buscando… {crate_app_fmt_num} / {total_files} archivos ({v}%) · {crate_app_fmt_num2} encontrados	Searching… {crate_app_fmt_num} / {total_files} files ({v}%) · {crate_app_fmt_num2} found	Recherche… {crate_app_fmt_num} / {total_files} fichiers ({v}%) · {crate_app_fmt_num2} trouvés
+ · {e} sin poder leer	 · {e} unreadable	 · {e} illisibles
+Subir un nivel	Up one level	Monter d'un niveau
+Con el texto ({len})	With the text ({len})	Avec le texte ({len})
+Todos	All	Tous
+Ninguno	None	Aucun
+📂 Abrir ({n})	📂 Open ({n})	📂 Ouvrir ({n})
+Abrir en el editor los archivos marcados y buscar en ellos el texto	Open the marked files in the editor and search the text in them	Ouvrir dans l'éditeur les fichiers cochés et y rechercher le texte
+{rel}\nClic: señalar en el mapa · Doble clic: abrir	{rel}\nClick: point out on the map · Double-click: open	{rel}\nClic : montrer sur la carte · Double-clic : ouvrir
+{node}\n{size} en disco	{node}\n{size} on disk	{node}\n{size} sur le disque
+ · {files} archivos\nDoble clic: entrar	 · {files} files\nDouble-click: enter	 · {files} fichiers\nDouble-clic : entrer
+ · {len} bytes	 · {len} bytes	 · {len} octets
+\n✔ Contiene el texto	\n✔ Contains the text	\n✔ Contient le texte
+\nClic: marcar (Cmd/Ctrl+clic: varios) · Doble clic: abrir	\nClick: mark (Cmd/Ctrl+click: several) · Double-click: open	\nClic : cocher (Cmd/Ctrl+clic : plusieurs) · Double-clic : ouvrir
+\n✔ Tiene archivos con el texto	\n✔ Has files with the text	\n✔ Contient des fichiers avec le texte
+Abrir en el editor	Open in the editor	Ouvrir dans l'éditeur
+Abrir los marcados ({len})	Open the marked ones ({len})	Ouvrir les fichiers cochés ({len})
+Entrar en la carpeta	Enter the folder	Entrer dans le dossier
+windows-1252 / Latin-1	windows-1252 / Latin-1	windows-1252 / Latin-1
+vacío	empty	vide
+heurística	heuristic	heuristique
+UTF-8 válido	valid UTF-8	UTF-8 valide
+UTF-8 (con errores)	UTF-8 (with errors)	UTF-8 (avec erreurs)
+No existe la carpeta «{display}»	The folder “{display}” does not exist	Le dossier «{display}» n'existe pas
+Expresión no válida: {e}	Invalid expression: {e}	Expression invalide : {e}
+Ir a carpeta:	Go to folder:	Aller au dossier :
+/ruta/a/la/carpeta  (también ~/…)	/path/to/the/folder  (also ~/…)	/chemin/du/dossier  (aussi ~/…)
+La carpeta existe	The folder exists	Le dossier existe
+No se encuentra la carpeta	Folder not found	Dossier introuvable
+📁 Elegir…	📁 Choose…	📁 Choisir…
+Buscar:	Search:	Rechercher :
+⏹ Detener	⏹ Stop	⏹ Arrêter
+todas (texto); ej.: log, txt, xml	all (text); e.g.: log, txt, xml	toutes (texte) ; ex. : log, txt, xml
+Solo los archivos con estas extensiones (separadas por comas). Vacío: todos los que no sean binarios.	Only files with these extensions (comma-separated). Empty: all non-binary files.	Seulement les fichiers avec ces extensions (séparées par des virgules). Vide : tous les non binaires.
+ · {crate_app_fmt_num} binarios o ilegibles omitidos	 · {crate_app_fmt_num} binary or unreadable skipped	 · {crate_app_fmt_num} binaires ou illisibles ignorés
+(se paró en {crate_app_fmt_num} coincidencias)	(stopped at {crate_app_fmt_num} matches)	(arrêté à {crate_app_fmt_num} occurrences)
+Expandir todo	Expand all	Tout déplier
+Plegar todo	Collapse all	Tout replier
+Escribe o elige una carpeta y el texto, y pulsa Enter.	Type or choose a folder and the text, and press Enter.	Saisissez ou choisissez un dossier et le texte, puis appuyez sur Entrée.
+{display}\nClic: plegar/desplegar · Doble clic: abrir	{display}\nClick: collapse/expand · Double-click: open	{display}\nClic : replier/déplier · Double-clic : ouvrir
+Clic: abrir el archivo en esta línea	Click: open the file at this line	Clic : ouvrir le fichier à cette ligne
+Ajustes…	Settings…	Réglages…
+Buscar actualizaciones…	Check for updates…	Rechercher des mises à jour…
+Salir de buscador	Quit buscador	Quitter buscador
+Acerca de buscador	About buscador	À propos de buscador
+Visor y editor de archivos de varios GB	Viewer and editor for multi-GB files	Visionneuse et éditeur de fichiers de plusieurs Go
+Servicios	Services	Services
+Ocultar buscador	Hide buscador	Masquer buscador
+Ocultar otros	Hide others	Masquer les autres
+Mostrar todo	Show all	Tout afficher
+Abrir…	Open…	Ouvrir…
+Recargar del disco	Reload from disk	Recharger depuis le disque
+Buscar en carpeta…	Search in folder…	Rechercher dans un dossier…
+Archivo	File	Fichier
+Cortar	Cut	Couper
+Embellecer JSON / XML	Beautify JSON / XML	Embellir JSON / XML
+Permitir edición	Allow editing	Autoriser l'édition
+Buscar…	Find…	Rechercher…
+Siguiente coincidencia	Next match	Occurrence suivante
+Reemplazar…	Replace…	Remplacer…
+Nueva búsqueda avanzada…	New advanced search…	Nouvelle recherche avancée…
+Panel de archivos	Files panel	Panneau des fichiers
+Resultados	Results	Résultats
+Detalle de la línea	Line detail	Détail de la ligne
+Letra más grande	Larger font	Police plus grande
+Letra más pequeña	Smaller font	Police plus petite
+Ver	View	Présentation
+Pantalla completa	Full screen	Plein écran
+Ventana	Window	Fenêtre
+Minimizar	Minimize	Réduire
+Zoom	Zoom	Zoom
+Traer todo al frente	Bring all to front	Tout ramener au premier plan
+Ayuda	Help	Aide
+Texto sin formato	Plain text	Texte brut
+{env} (compilación local)	{env} (local build)	{env} (compilation locale)
+respuesta inesperada de GitHub	unexpected response from GitHub	réponse inattendue de GitHub
+no se pudo consultar GitHub: {trim}	could not query GitHub: {trim}	impossible d'interroger GitHub : {trim}
+no se pudo ejecutar curl: {e}	could not run curl: {e}	impossible d'exécuter curl : {e}
+no se pudo iniciar: {e}	could not start: {e}	impossible de démarrer : {e}
+terminó sin instalar la app	finished without installing the app	terminé sans installer l'app
+falló (mira el registro)	failed (see the log)	échec (voir le journal)
+Idioma	Language	Langue
+no se pudo consultar GitHub: {e}	could not query GitHub: {e}	impossible d’interroger GitHub : {e}
+{m} coincidencias en 1 archivo · {done} de {seen} archivos revisados	{m} matches in 1 file · {done} of {seen} files checked	{m} occurrences dans 1 fichier · {done} sur {seen} fichiers examinés
+{m} coincidencias en {n} archivos · {done} de {seen} archivos revisados	{m} matches in {n} files · {done} of {seen} files checked	{m} occurrences dans {n} fichiers · {done} sur {seen} fichiers examinés
+{v} (compilación local)	{v} (local build)	{v} (compilation locale)
+incluida	built-in	intégrée
+No	No	Non
+A	At	À
+columnas	columns	colonnes
+nada	nothing	rien

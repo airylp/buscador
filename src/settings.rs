@@ -18,11 +18,13 @@ pub struct Settings {
     pub wrap: String,
     /// Bordes y separaciones de los paneles: 0 normales, 1 marcados, 2 muy marcados.
     pub borders: u8,
+    /// Idioma de la interfaz («es», «en», «fr»); `None` = el del sistema.
+    pub lang: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0 }
+        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0, lang: None }
     }
 }
 
@@ -152,6 +154,7 @@ impl Settings {
                 ("resaltar", v) => s.syntax = v != "no",
                 ("ajuste", v) => s.wrap = v.to_string(),
                 ("bordes", v) => s.borders = v.parse::<u8>().unwrap_or(0).min(2),
+                ("idioma", v) if !v.is_empty() => s.lang = Some(v.to_string()),
                 ("fondo", v) => bg = parse_hex(v),
                 ("color_letra", v) => fg = parse_hex(v),
                 ("letra", v) => {
@@ -188,6 +191,9 @@ impl Settings {
         );
         if let Some((b, f)) = self.colors {
             text += &format!("fondo={}\ncolor_letra={}\n", hex(b), hex(f));
+        }
+        if let Some(l) = &self.lang {
+            text += &format!("idioma={l}\n");
         }
         std::fs::write(&p, text).map_err(|e| e.to_string())
     }

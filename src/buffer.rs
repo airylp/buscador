@@ -294,7 +294,7 @@ impl Buffer {
         let text = normalize_newlines(text);
         let mut probe = Vec::new();
         if let Err(c) = encoding::encode_into(doc.src.encoding, &text, &mut probe) {
-            return Err(format!("«{c}» no se puede representar en {}", doc.src.encoding.name()));
+            return Err(tf!("«{c}» no se puede representar en {name}", c = c, name = doc.src.encoding.name()));
         }
         drop(probe);
         let first = self.line(doc, a.line);
@@ -383,11 +383,11 @@ impl Buffer {
         let enc = doc.src.encoding;
         let check = |t: String| -> Result<Piece, String> {
             if t.contains('\n') {
-                return Err("El reemplazo no puede contener saltos de línea".into());
+                return Err(t!("El reemplazo no puede contener saltos de línea").into());
             }
             let mut probe = Vec::new();
             encoding::encode_into(enc, &t, &mut probe)
-                .map_err(|c| format!("«{c}» no se puede representar en {}", enc.name()))?;
+                .map_err(|c| tf!("«{c}» no se puede representar en {name}", c = c, name = enc.name()))?;
             Ok(Piece::New(t.into()))
         };
         for (pi, piece) in self.pieces.iter().enumerate() {
@@ -529,7 +529,7 @@ pub fn save_file(
 ) -> Result<usize, String> {
     let target = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
     let dir = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let name = target.file_name().ok_or("la ruta no tiene nombre de archivo")?.to_string_lossy();
+    let name = target.file_name().ok_or(t!("la ruta no tiene nombre de archivo"))?.to_string_lossy();
     let tmp = dir.join(format!(".{name}.buscador-tmp"));
     let res = (|| -> io::Result<usize> {
         let f = std::fs::File::create(&tmp)?;

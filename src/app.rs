@@ -382,14 +382,14 @@ impl Tab {
 
     fn can_edit(&mut self) -> Result<(), String> {
         if !self.editable {
-            return Err("Solo lectura: pulsa «Editar» (Ctrl+E) para modificar".into());
+            return Err(t!("Solo lectura: pulsa «Editar» (Ctrl+E) para modificar").into());
         }
         if self.save.is_some() {
-            return Err("Guardando… espera a que termine".into());
+            return Err(t!("Guardando… espera a que termine").into());
         }
         if self.buf.is_none() {
             if !self.doc.indexing_done() {
-                return Err("Espera a que termine de indexar para editar".into());
+                return Err(t!("Espera a que termine de indexar para editar").into());
             }
             self.buf = Some(Buffer::new(&self.doc));
         }
@@ -426,7 +426,7 @@ impl Tab {
         // Si la selección acaba al principio de una línea, esa no cuenta.
         let last = if b.line > a.line && b.col == 0 { b.line - 1 } else { b.line };
         if (last - a.line) as usize >= MAX_REPLACE_LINES {
-            return Err(format!("Demasiadas líneas para sangrar de una vez (máx. {})", fmt_num(MAX_REPLACE_LINES as u64)));
+            return Err(tf!("Demasiadas líneas para sangrar de una vez (máx. {fmt_num})", fmt_num = fmt_num(MAX_REPLACE_LINES as u64)));
         }
         self.can_edit()?;
         let lines: Vec<u64> = (a.line..=last).collect();
@@ -481,7 +481,7 @@ impl Tab {
         let buf = self.buf.as_mut().unwrap();
         let r = if redo { buf.redo(now) } else { buf.undo(now) };
         let Some(((a, c), ch)) = r else {
-            return Err(if redo { "Nada que rehacer" } else { "Nada que deshacer" }.into());
+            return Err(if redo { t!("Nada que rehacer") } else { t!("Nada que deshacer") }.into());
         };
         self.select(a, c);
         self.center_on = Some(c.line);
@@ -511,17 +511,17 @@ impl Tab {
         let (a, b) = match self.selection() {
             Some(s) => s,
             None => {
-                let Some(c) = self.cursor else { return "Nada seleccionado".into() };
+                let Some(c) = self.cursor else { return t!("Nada seleccionado").into() };
                 (Pos::new(c.line, 0), Pos::new(c.line, usize::MAX))
             }
         };
         match self.text(a, b, MAX_COPY_BYTES) {
             Some(t) => {
-                let msg = format!("Copiado: {}", describe_span(a, b, t.len()));
+                let msg = tf!("Copiado: {len}", len = describe_span(a, b, t.len()));
                 ctx.copy_text(t);
                 msg
             }
-            None => format!("Selección demasiado grande para copiar (> {})", human_size(MAX_COPY_BYTES as u64)),
+            None => tf!("Selección demasiado grande para copiar (> {human_size})", human_size = human_size(MAX_COPY_BYTES as u64)),
         }
     }
 
@@ -541,8 +541,8 @@ impl Tab {
                 }
             }
         };
-        let t = self.text(a, b, MAX_COPY_BYTES).ok_or("Selección demasiado grande para cortar")?;
-        let msg = format!("Cortado: {}", describe_span(a, b, t.len()));
+        let t = self.text(a, b, MAX_COPY_BYTES).ok_or(t!("Selección demasiado grande para cortar"))?;
+        let msg = tf!("Cortado: {len}", len = describe_span(a, b, t.len()));
         ctx.copy_text(t);
         self.replace_range(a, b, "", EditKind::Other)?;
         Ok(msg)
@@ -551,7 +551,7 @@ impl Tab {
     // ---- Reemplazar ----
 
     fn replace_current(&mut self, repl: &str, regex_mode: bool) -> Result<(), String> {
-        let Some(s) = &self.search else { return Err("Busca algo primero".into()) };
+        let Some(s) = &self.search else { return Err(t!("Busca algo primero").into()) };
         if let Some((a, b)) = self.selection().filter(|(a, b)| a.line == b.line) {
             let t = self.line(a.line);
             let sel = &t[buffer::floor_char(&t, a.col)..buffer::floor_char(&t, b.col)];
@@ -573,15 +573,15 @@ impl Tab {
     }
 
     fn replace_all(&mut self, repl: &str, regex_mode: bool) -> Result<String, String> {
-        let Some(s) = &self.search else { return Err("Busca algo primero".into()) };
+        let Some(s) = &self.search else { return Err(t!("Busca algo primero").into()) };
         if !s.is_done() {
-            return Err("Espera a que termine la búsqueda".into());
+            return Err(t!("Espera a que termine la búsqueda").into());
         }
         if self.search_stale {
-            return Err("La búsqueda está desactualizada: pulsa Enter en «Buscar» para repetirla".into());
+            return Err(t!("La búsqueda está desactualizada: pulsa Enter en «Buscar» para repetirla").into());
         }
         if s.truncated.load(Ordering::Relaxed) || s.count() > MAX_REPLACE_LINES {
-            return Err(format!("Demasiadas líneas para reemplazar de una vez (máx. {})", fmt_num(MAX_REPLACE_LINES as u64)));
+            return Err(tf!("Demasiadas líneas para reemplazar de una vez (máx. {fmt_num})", fmt_num = fmt_num(MAX_REPLACE_LINES as u64)));
         }
         let lines = s.results.lock().unwrap().clone();
         let re = s.highlight.clone();
@@ -601,28 +601,28 @@ impl Tab {
             self.search_stale = true;
             self.current = None;
         }
-        Ok(format!("Reemplazado en {} líneas (Ctrl+Z para deshacer)", fmt_num(n as u64)))
+        Ok(tf!("Reemplazado en {fmt_num} líneas (Ctrl+Z para deshacer)", fmt_num = fmt_num(n as u64)))
     }
 
     // ---- Guardar ----
 
     fn start_save(&mut self, target: PathBuf) -> Result<(), String> {
         if self.save.is_some() {
-            return Err("Ya se está guardando".into());
+            return Err(t!("Ya se está guardando").into());
         }
         let same = target == self.doc.path;
         if self.buf.is_none() {
             if same {
-                return Err("No hay cambios que guardar".into());
+                return Err(t!("No hay cambios que guardar").into());
             }
             if !self.doc.indexing_done() {
-                return Err("Espera a que termine de indexar".into());
+                return Err(t!("Espera a que termine de indexar").into());
             }
             self.buf = Some(Buffer::new(&self.doc));
         }
         let buf = self.buf.as_ref().unwrap();
         if same && !buf.is_dirty() {
-            return Err("No hay cambios que guardar".into());
+            return Err(t!("No hay cambios que guardar").into());
         }
         let (pieces, src, index, nl) = (buf.snapshot(), self.doc.src.clone(), self.doc.index.clone(), self.doc.newline_bytes());
         let job = SaveJob {
@@ -668,16 +668,16 @@ impl Tab {
                         }
                         self.buf = None;
                         self.detail_cache = None;
-                        let mut m = format!("Guardado {} ({})", self.doc.name, human_size(self.doc.len() as u64));
+                        let mut m = tf!("Guardado {name} ({len})", name = self.doc.name, len = human_size(self.doc.len() as u64));
                         if lossy > 0 {
-                            m += &format!(" · {lossy} caracteres no representables se guardaron como «?»");
+                            m += &tf!(" · {lossy} caracteres no representables se guardaron como «?»", lossy = lossy);
                         }
                         m
                     }
-                    Err(e) => format!("Guardado, pero no se pudo reabrir: {e}"),
+                    Err(e) => tf!("Guardado, pero no se pudo reabrir: {e}", e = e),
                 }
             }
-            Err(e) => format!("Error al guardar: {e}"),
+            Err(e) => tf!("Error al guardar: {e}", e = e),
         })
     }
 
@@ -728,11 +728,11 @@ impl Tab {
         let (l0, l1) = cs.lines();
         match self.column_text(cs, MAX_COPY_BYTES) {
             Some(t) => {
-                let m = format!("Copiado bloque de {} líneas ({})", fmt_num(l1 - l0 + 1), human_size(t.len() as u64));
+                let m = tf!("Copiado bloque de {fmt_num} líneas ({len})", fmt_num = fmt_num(l1 - l0 + 1), len = human_size(t.len() as u64));
                 ctx.copy_text(t);
                 m
             }
-            None => format!("Bloque demasiado grande para copiar (> {})", human_size(MAX_COPY_BYTES as u64)),
+            None => tf!("Bloque demasiado grande para copiar (> {human_size})", human_size = human_size(MAX_COPY_BYTES as u64)),
         }
     }
 
@@ -776,12 +776,12 @@ impl Tab {
     /// formado, no cambia nada y lleva el cursor al error.
     fn beautify(&mut self) -> Result<String, String> {
         let Some((kind, html)) = self.beautifier() else {
-            return Err("El embellecedor está disponible para JSON y XML/HTML (el tipo se cambia en la barra de estado)".into());
+            return Err(t!("El embellecedor está disponible para JSON y XML/HTML (el tipo se cambia en la barra de estado)").into());
         };
         let (a, b) = self.selection().unwrap_or((Pos::default(), self.end_pos()));
         let text = self
             .text(a, b, MAX_COPY_BYTES)
-            .ok_or_else(|| format!("Demasiado grande para embellecer (máx. {})", human_size(MAX_COPY_BYTES as u64)))?;
+            .ok_or_else(|| tf!("Demasiado grande para embellecer (máx. {human_size})", human_size = human_size(MAX_COPY_BYTES as u64)))?;
         let res = if kind == "JSON" {
             crate::beautify::format_json(&text, "  ")
         } else {
@@ -799,22 +799,22 @@ impl Tab {
                 self.select(p, p);
                 self.center_on = Some(p.line);
                 let c = if l == 1 { c + a.col } else { c };
-                return Err(format!("{kind} mal formado en la línea {}, columna {c}: {}", fmt_num(p.line + 1), e.msg));
+                return Err(tf!("{kind} mal formado en la línea {line_1}, columna {c}: {msg}", kind = kind, line_1 = fmt_num(p.line + 1), c = c, msg = e.msg));
             }
         };
         if text.ends_with('\n') && !out.ends_with('\n') {
             out.push('\n');
         }
         if out == text {
-            return Ok(format!("{kind} bien formado; ya estaba embellecido"));
+            return Ok(tf!("{kind} bien formado; ya estaba embellecido", kind = kind));
         }
         if !self.editable {
-            return Ok(format!("{kind} bien formado. Activa «Editar» (Ctrl+E) para embellecerlo"));
+            return Ok(tf!("{kind} bien formado. Activa «Editar» (Ctrl+E) para embellecerlo", kind = kind));
         }
         self.replace_range(a, b, &out, EditKind::Other)?;
         self.select(a, a);
         self.center_on = Some(a.line);
-        Ok(format!("{kind} embellecido: {} líneas (Ctrl+Z para deshacer)", fmt_num(out.lines().count() as u64)))
+        Ok(tf!("{kind} embellecido: {count} líneas (Ctrl+Z para deshacer)", kind = kind, count = fmt_num(out.lines().count() as u64)))
     }
 
     // ---- Búsqueda avanzada (bloques) ----
@@ -828,7 +828,7 @@ impl Tab {
     /// Texto de los bloques según el modo de copia: (texto, nº de bloques).
     fn blocks_text(&self, list: &[Block], mode: CopyMode, sep: Sep) -> Result<(String, usize), String> {
         if list.is_empty() {
-            return Err("No hay bloque seleccionado".into());
+            return Err(t!("No hay bloque seleccionado").into());
         }
         let sep = match sep {
             Sep::Newline => "\n",
@@ -858,7 +858,7 @@ impl Tab {
             let left = MAX_COPY_BYTES.saturating_sub(out.len());
             let t = self
                 .text(a, z, left)
-                .ok_or_else(|| format!("Demasiado texto para el portapapeles (> {})", human_size(MAX_COPY_BYTES as u64)))?;
+                .ok_or_else(|| tf!("Demasiado texto para el portapapeles (> {human_size})", human_size = human_size(MAX_COPY_BYTES as u64)))?;
             out.push_str(&t);
             n += 1;
         }
@@ -973,7 +973,7 @@ impl Tab {
                 }
                 Event::Cut => match self.block() {
                     Some(cs) => {
-                        msg = Some(format!("{} (en un bloque, Cortar solo copia)", self.copy_block(ctx, cs)));
+                        msg = Some(tf!("{copy_block} (en un bloque, Cortar solo copia)", copy_block = self.copy_block(ctx, cs)));
                         Ok(())
                     }
                     None => self.cut(ctx).map(|m| msg = Some(m)),
@@ -997,7 +997,7 @@ impl Tab {
                         }
                         Key::X => match self.block() {
                             Some(cs) => {
-                                msg = Some(format!("{} (en un bloque, Cortar solo copia)", self.copy_block(ctx, cs)));
+                                msg = Some(tf!("{copy_block} (en un bloque, Cortar solo copia)", copy_block = self.copy_block(ctx, cs)));
                                 Ok(())
                             }
                             None => self.cut(ctx).map(|m| msg = Some(m)),
@@ -1046,95 +1046,95 @@ fn is_modifier_key(k: Key) -> bool {
 /// Todos los atajos, con los nombres de tecla de la plataforma.
 fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
     let c = if MAC { "Cmd" } else { "Ctrl" };
-    let alt = if MAC { "Opción" } else { "Alt" };
-    let word = if MAC { "Opción" } else { "Ctrl" };
+    let alt = if MAC { t!("Opción") } else { "Alt" };
+    let word = if MAC { t!("Opción") } else { "Ctrl" };
     let k = |s: &str| s.replace("C+", &format!("{c}+")).replace("A+", &format!("{alt}+")).replace("W+", &format!("{word}+"));
     let mut edit = vec![
-        (k("C+Z"), "Deshacer"),
-        (k("C+Shift+Z"), "Rehacer"),
-        (k("C+C"), "Copiar (sin selección: la línea entera)"),
-        (k("C+X"), "Cortar (sin selección: la línea entera)"),
-        (k("C+V"), "Pegar"),
-        (k("C+A"), "Seleccionar todo"),
-        (k("C+Shift+B"), "Embellecer JSON / XML (valida y sangra)"),
-        (k("C+A+Z"), "Ajuste de línea (activar / desactivar)"),
-        (k("C+R"), "Recargar el archivo del disco (cursor al final)"),
-        (k("C+Shift+L"), "Vista filtrada (solo las líneas que cumplen las reglas)"),
-        (k("C+Shift+O"), "Buscar en carpeta (todos sus archivos)"),
-        (k("Retroceso / Supr"), "Borrar carácter"),
-        (k("W+Retroceso / W+Supr"), "Borrar palabra"),
-        (k("Enter"), "Nueva línea"),
-        (k("Tab"), "Insertar tabulador · con texto seleccionado: desplazar sus líneas"),
-        (k("Shift+Tab"), "Quitar sangría a las líneas seleccionadas (o a la del cursor)"),
+        (k("C+Z"), t!("Deshacer")),
+        (k("C+Shift+Z"), t!("Rehacer")),
+        (k("C+C"), t!("Copiar (sin selección: la línea entera)")),
+        (k("C+X"), t!("Cortar (sin selección: la línea entera)")),
+        (k("C+V"), t!("Pegar")),
+        (k("C+A"), t!("Seleccionar todo")),
+        (k("C+Shift+B"), t!("Embellecer JSON / XML (valida y sangra)")),
+        (k("C+A+Z"), t!("Ajuste de línea (activar / desactivar)")),
+        (k("C+R"), t!("Recargar el archivo del disco (cursor al final)")),
+        (k("C+Shift+L"), t!("Vista filtrada (solo las líneas que cumplen las reglas)")),
+        (k("C+Shift+O"), t!("Buscar en carpeta (todos sus archivos)")),
+        (k(t!("Retroceso / Supr")), t!("Borrar carácter")),
+        (k(t!("W+Retroceso / W+Supr")), t!("Borrar palabra")),
+        (k("Enter"), t!("Nueva línea")),
+        (k(t!("Tab")), t!("Insertar tabulador · con texto seleccionado: desplazar sus líneas")),
+        (k("Shift+Tab"), t!("Quitar sangría a las líneas seleccionadas (o a la del cursor)")),
     ];
     if !MAC {
-        edit.insert(2, (k("C+Y"), "Rehacer"));
+        edit.insert(2, (k("C+Y"), t!("Rehacer")));
     }
     let (line_start, line_end, doc_start, doc_end) = if MAC {
-        ("Cmd+← / Inicio", "Cmd+→ / Fin", "Cmd+↑ / Cmd+Inicio", "Cmd+↓ / Cmd+Fin")
+        (t!("Cmd+← / Inicio"), t!("Cmd+→ / Fin"), t!("Cmd+↑ / Cmd+Inicio"), t!("Cmd+↓ / Cmd+Fin"))
     } else {
-        ("Inicio", "Fin", "Ctrl+Inicio", "Ctrl+Fin")
+        (t!("Inicio"), t!("Fin"), "Ctrl+Inicio", "Ctrl+Fin")
     };
     vec![
         (
-            "Archivos",
+            t!("Archivos"),
             vec![
-                (k("C+N"), "Archivo nuevo (para pegar y guardar lo copiado)"),
-                (k("C+O"), "Abrir (también arrastrando archivos)"),
-                (k("C+S"), "Guardar"),
-                (k("C+Shift+S"), "Guardar como…"),
-                (k("C+W"), "Cerrar archivo"),
-                ("Ctrl+Tab".into(), "Siguiente archivo"),
-                (k("C+B"), "Mostrar/ocultar panel de archivos"),
-                (k("C+E"), "Activar/desactivar edición"),
-                ("Clic derecho en un archivo".into(), "Abrir en ventana nueva, mostrar en carpeta, copiar ruta, duplicar…"),
+                (k("C+N"), t!("Archivo nuevo (para pegar y guardar lo copiado)")),
+                (k("C+O"), t!("Abrir (también arrastrando archivos)")),
+                (k("C+S"), t!("Guardar")),
+                (k("C+Shift+S"), t!("Guardar como…")),
+                (k("C+W"), t!("Cerrar archivo")),
+                ("Ctrl+Tab".into(), t!("Siguiente archivo")),
+                (k("C+B"), t!("Mostrar/ocultar panel de archivos")),
+                (k("C+E"), t!("Activar/desactivar edición")),
+                (t!("Clic derecho en un archivo").into(), t!("Abrir en ventana nueva, mostrar en carpeta, copiar ruta, duplicar…")),
             ],
         ),
         (
-            "Buscar",
+            t!("Buscar"),
             vec![
-                (k("C+F"), "Ir a la caja de búsqueda"),
-                ("Enter / F3".into(), "Buscar / siguiente coincidencia"),
-                ("Shift+Enter / Shift+F3".into(), "Coincidencia anterior"),
-                (if MAC { "Cmd+Opción+F".into() } else { "Ctrl+H".to_string() }, "Reemplazar"),
-                (k("C+Shift+F"), "Nueva ventana de búsqueda avanzada"),
-                (k("C+Enter"), "Buscar (búsqueda avanzada multilínea)"),
-                (k("C+G"), "Ir a línea"),
+                (k("C+F"), t!("Ir a la caja de búsqueda")),
+                (t!("Enter / F3").into(), t!("Buscar / siguiente coincidencia")),
+                (t!("Shift+Enter / Shift+F3").into(), t!("Coincidencia anterior")),
+                (if MAC { "Cmd+Opción+F".into() } else { "Ctrl+H".to_string() }, t!("Reemplazar")),
+                (k("C+Shift+F"), t!("Nueva ventana de búsqueda avanzada")),
+                (k("C+Enter"), t!("Buscar (búsqueda avanzada multilínea)")),
+                (k("C+G"), t!("Ir a línea")),
             ],
         ),
-        ("Edición", edit),
+        (t!("Edición"), edit),
         (
-            "Moverse y seleccionar",
+            t!("Moverse y seleccionar"),
             vec![
-                ("← → ↑ ↓".into(), "Carácter / línea"),
-                (k("W+← / W+→"), "Palabra"),
-                (line_start.into(), "Inicio de línea (tras la sangría; otra vez: columna 1)"),
-                (line_end.into(), "Fin de línea"),
-                (doc_start.into(), "Inicio del archivo"),
-                (doc_end.into(), "Fin del archivo"),
-                ("RePág / AvPág".into(), "Página arriba / abajo"),
-                ("Shift + movimiento".into(), "Seleccionar"),
-                ("Esc".into(), "Quitar la selección"),
-            ],
-        ),
-        (
-            "Ratón",
-            vec![
-                ("Clic / arrastrar".into(), "Colocar el cursor / seleccionar"),
-                ("Shift+clic".into(), "Extender la selección"),
-                ("Doble clic".into(), "Seleccionar palabra"),
-                (k("A+arrastrar"), "Seleccionar un bloque (rectángulo); siempre con el botón ▦ Bloque"),
-                ("Mayús+flechas (▦ Bloque)".into(), "Ampliar el bloque"),
-                ("Clic en nº de línea".into(), "Seleccionar la línea entera"),
-                ("Clic derecho".into(), "Copiar, cortar, pegar, ver línea completa…"),
-                ("Clic en el minimapa".into(), "Ir al bloque más cercano (búsqueda avanzada)"),
+                ("← → ↑ ↓".into(), t!("Carácter / línea")),
+                (k("W+← / W+→"), t!("Palabra")),
+                (line_start.into(), t!("Inicio de línea (tras la sangría; otra vez: columna 1)")),
+                (line_end.into(), t!("Fin de línea")),
+                (doc_start.into(), t!("Inicio del archivo")),
+                (doc_end.into(), t!("Fin del archivo")),
+                (t!("RePág / AvPág").into(), t!("Página arriba / abajo")),
+                (t!("Shift + movimiento").into(), t!("Seleccionar")),
+                ("Esc".into(), t!("Quitar la selección")),
             ],
         ),
         (
-            "Vista",
+            t!("Ratón"),
             vec![
-                (k("C++ / C+-"), "Letra más grande / más pequeña"),
-                ("F1".into(), "Esta lista de atajos"),
+                (t!("Clic / arrastrar").into(), t!("Colocar el cursor / seleccionar")),
+                ("Shift+clic".into(), t!("Extender la selección")),
+                (t!("Doble clic").into(), t!("Seleccionar palabra")),
+                (k("A+arrastrar"), t!("Seleccionar un bloque (rectángulo); siempre con el botón ▦ Bloque")),
+                (t!("Mayús+flechas (▦ Bloque)").into(), t!("Ampliar el bloque")),
+                (t!("Clic en nº de línea").into(), t!("Seleccionar la línea entera")),
+                (t!("Clic derecho").into(), t!("Copiar, cortar, pegar, ver línea completa…")),
+                (t!("Clic en el minimapa").into(), t!("Ir al bloque más cercano (búsqueda avanzada)")),
+            ],
+        ),
+        (
+            t!("Vista"),
+            vec![
+                (k("C++ / C+-"), t!("Letra más grande / más pequeña")),
+                ("F1".into(), t!("Esta lista de atajos")),
             ],
         ),
     ]
@@ -1276,13 +1276,15 @@ struct Space {
     open: bool,
 }
 
-pub(crate) const REVEAL_LABEL: &str = if MAC {
-    "Mostrar en Finder"
-} else if cfg!(windows) {
-    "Mostrar en el Explorador"
-} else {
-    "Abrir carpeta contenedora"
-};
+pub(crate) fn reveal_label() -> &'static str {
+    if MAC {
+        t!("Mostrar en Finder")
+    } else if cfg!(windows) {
+        t!("Mostrar en el Explorador")
+    } else {
+        t!("Abrir carpeta contenedora")
+    }
+}
 
 /// Abre el gestor de archivos con el archivo seleccionado (o su carpeta en Linux).
 fn reveal_in_file_manager(path: &std::path::Path) -> std::io::Result<()> {
@@ -1309,7 +1311,7 @@ fn copy_name(path: &std::path::Path) -> PathBuf {
     let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
     let dir = path.parent().unwrap_or(std::path::Path::new("."));
     (1..)
-        .map(|n| dir.join(if n == 1 { format!("{stem} copia{ext}") } else { format!("{stem} copia {n}{ext}") }))
+        .map(|n| dir.join(if n == 1 { tf!("{stem} copia{ext}", stem = stem, ext = ext) } else { tf!("{stem} copia {n}{ext}", stem = stem, n = n, ext = ext) }))
         .find(|p| !p.exists())
         .unwrap()
 }
@@ -1386,6 +1388,8 @@ pub struct App {
     wrap_last: Wrap,
     /// Bordes de los paneles (0 normales, 1 marcados, 2 muy marcados).
     borders: u8,
+    /// Idioma elegido en Ajustes (`None`: el del sistema).
+    lang_chosen: Option<crate::i18n::Lang>,
     /// Siguiente número para «Sin título N».
     next_untitled: u32,
     /// Espacios del panel de archivos (grupos que se abren y cierran como carpetas).
@@ -1440,6 +1444,13 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         let settings = Settings::load();
+        // Idioma: el elegido (ajustes o instalador), si no el del sistema, si no español.
+        let chosen = settings.lang.as_deref().and_then(crate::i18n::Lang::from_code);
+        crate::i18n::set(chosen.or_else(crate::i18n::system).unwrap_or(crate::i18n::Lang::Es));
+        // Pruebas: BUSCADOR_IDIOMA=en|fr|es fuerza el idioma (sin guardarlo).
+        if let Some(l) = std::env::var("BUSCADOR_IDIOMA").ok().and_then(|v| crate::i18n::Lang::from_code(&v)) {
+            crate::i18n::set(l);
+        }
         clean_old_untitled();
         let fallbacks = crate::fonts::load_fallbacks();
         cc.egui_ctx.set_fonts(crate::fonts::build(&settings.font, &fallbacks).0);
@@ -1467,6 +1478,7 @@ impl App {
             syntax_on: settings.syntax,
             wrap: Wrap::parse(&settings.wrap),
             borders: settings.borders,
+            lang_chosen: chosen,
             wrap_last: match Wrap::parse(&settings.wrap) {
                 Wrap::Off => Wrap::Window,
                 w => w,
@@ -1557,7 +1569,7 @@ impl App {
         }
         self.session_saved = self.current_session();
         if !missing.is_empty() {
-            self.msg(format!("No se encontró (no se reabrió): {}", missing.join(", ")));
+            self.msg(tf!("No se encontró (no se reabrió): {join}", join = missing.join(", ")));
         }
     }
 
@@ -1593,7 +1605,7 @@ impl App {
         let cur = self.current_session();
         if cur != self.session_saved {
             if let Err(e) = cur.save() {
-                self.msg(format!("No se pudo guardar la sesión: {e}"));
+                self.msg(tf!("No se pudo guardar la sesión: {e}", e = e));
             }
             self.session_saved = cur;
         }
@@ -1612,7 +1624,7 @@ impl App {
                 self.active = self.tabs.len() - 1;
                 self.focus_view = true;
             }
-            Err(e) => self.msg(format!("No se pudo abrir {}: {e}", path.display())),
+            Err(e) => self.msg(tf!("No se pudo abrir {display}: {e}", display = path.display(), e = e)),
         }
     }
 
@@ -1625,7 +1637,7 @@ impl App {
         let r = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, b"")).and_then(|_| Document::open(&path));
         match r {
             Ok(mut doc) => {
-                doc.name = format!("Sin título {n}");
+                doc.name = tf!("Sin título {n}", n = n);
                 let mut t = Tab::new(doc);
                 t.untitled = true;
                 t.editable = true;
@@ -1635,7 +1647,7 @@ impl App {
                 self.active = self.tabs.len() - 1;
                 self.focus_view = true;
             }
-            Err(e) => self.msg(format!("No se pudo crear el archivo nuevo: {e}")),
+            Err(e) => self.msg(tf!("No se pudo crear el archivo nuevo: {e}", e = e)),
         }
     }
 
@@ -1701,9 +1713,10 @@ impl App {
             syntax: self.syntax_on,
             wrap: self.wrap.as_str(),
             borders: self.borders,
+            lang: self.lang_chosen.map(|l| l.code().to_string()),
         };
         if let Err(e) = st.save() {
-            self.msg(format!("No se pudieron guardar los ajustes: {e}"));
+            self.msg(tf!("No se pudieron guardar los ajustes: {e}", e = e));
         }
     }
 
@@ -1870,7 +1883,7 @@ impl App {
         for i in reopen {
             let name = self.tabs[i].doc.name.clone();
             self.reload(i, true);
-            self.msg(format!("{name} se truncó o se reemplazó: se volvió a abrir"));
+            self.msg(tf!("{name} se truncó o se reemplazó: se volvió a abrir", name = name));
         }
         if any {
             ctx.request_repaint_after(FOLLOW_EVERY);
@@ -1890,7 +1903,7 @@ impl App {
         });
         self.active = self.tabs.iter().position(|t| Some(&t.doc.path) == active.as_ref()).unwrap_or(0);
         if kept {
-            self.msg("Los archivos con cambios sin guardar no se cerraron");
+            self.msg(t!("Los archivos con cambios sin guardar no se cerraron"));
         }
     }
 
@@ -1903,7 +1916,7 @@ impl App {
             return;
         }
         if t.save.is_some() {
-            self.msg("Espera a que termine de guardarse");
+            self.msg(t!("Espera a que termine de guardarse"));
             return;
         }
         if !force && t.dirty() {
@@ -1914,7 +1927,7 @@ impl App {
         let mut doc = match Document::open(&path) {
             Ok(d) => d,
             Err(e) => {
-                self.msg(format!("No se pudo recargar {}: {e}", path.display()));
+                self.msg(tf!("No se pudo recargar {display}: {e}", display = path.display(), e = e));
                 return;
             }
         };
@@ -1940,7 +1953,7 @@ impl App {
         let size = human_size(t.doc.len() as u64);
         self.tabs[i] = t;
         self.focus_view = true;
-        self.msg(format!("Recargado del disco ({size})"));
+        self.msg(tf!("Recargado del disco ({size})", size = size));
     }
 
     /// Ajuste de línea del archivo activo.
@@ -1957,9 +1970,9 @@ impl App {
         t.colsel = None;
         let w = t.wrap;
         self.msg(match w {
-            Wrap::Off => "Ajuste de línea desactivado".to_string(),
-            Wrap::Window => "Ajuste de línea al ancho de la ventana".to_string(),
-            Wrap::Columns(n) => format!("Ajuste de línea a {n} columnas"),
+            Wrap::Off => t!("Ajuste de línea desactivado").to_string(),
+            Wrap::Window => t!("Ajuste de línea al ancho de la ventana").to_string(),
+            Wrap::Columns(n) => tf!("Ajuste de línea a {n} columnas", n = n),
         });
     }
 
@@ -1975,15 +1988,12 @@ impl App {
         t.editable = !t.editable;
         let m = if t.editable {
             if t.doc.len() > EDIT_BY_DEFAULT_MAX {
-                format!(
-                    "Edición activada. Las líneas que cambies se guardan en RAM; al guardar se escribe una copia completa ({}) y se renombra",
-                    human_size(t.doc.len() as u64)
-                )
+                tf!("Edición activada. Las líneas que cambies se guardan en RAM; al guardar se escribe una copia completa ({len}) y se renombra", len = human_size(t.doc.len() as u64))
             } else {
-                "Edición activada".to_string()
+                t!("Edición activada").to_string()
             }
         } else {
-            "Solo lectura".to_string()
+            t!("Solo lectura").to_string()
         };
         self.msg(m);
         self.focus_view = true;
@@ -2112,7 +2122,7 @@ impl App {
         ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)), |ui| {
             if ui
                 .selectable_label(self.show_settings, "⚙")
-                .on_hover_text(if MAC { "Ajustes: tema y tamaño de letra (Cmd+,)" } else { "Ajustes: tema y tamaño de letra" })
+                .on_hover_text(if MAC { t!("Ajustes: tema y tamaño de letra (Cmd+,)") } else { t!("Ajustes: tema y tamaño de letra") })
                 .clicked()
             {
                 self.show_settings = !self.show_settings;
@@ -2130,10 +2140,10 @@ impl App {
                         }
                     })
                     .response
-                    .on_hover_text("Encoding con el que se lee el archivo");
+                    .on_hover_text(t!("Encoding con el que se lee el archivo"));
                 if enc != t.doc.src.encoding {
                     if t.dirty() || t.save.is_some() {
-                        msg = Some("Guarda o deshaz los cambios antes de reabrir con otro encoding");
+                        msg = Some(t!("Guarda o deshaz los cambios antes de reabrir con otro encoding"));
                     } else {
                         t.buf = None;
                         t.doc.set_encoding(enc);
@@ -2150,12 +2160,12 @@ impl App {
             // Tamaño y tipo de letra del texto.
             ui.separator();
             let mut size = self.font_size;
-            if !narrow && ui.small_button("A+").on_hover_text("Letra más grande (Ctrl++)").clicked() {
+            if !narrow && ui.small_button("A+").on_hover_text(t!("Letra más grande (Ctrl++)")).clicked() {
                 size += 1.0;
             }
             ui.add(DragValue::new(&mut size).range(7.0..=40.0).speed(0.2).max_decimals(0))
-                .on_hover_text("Tamaño de letra del texto (arrastra o escribe)");
-            if !narrow && ui.small_button("A−").on_hover_text("Letra más pequeña (Ctrl+-)").clicked() {
+                .on_hover_text(t!("Tamaño de letra del texto (arrastra o escribe)"));
+            if !narrow && ui.small_button("A−").on_hover_text(t!("Letra más pequeña (Ctrl+-)")).clicked() {
                 size -= 1.0;
             }
             let size = size.round().clamp(7.0, 40.0);
@@ -2164,23 +2174,23 @@ impl App {
             }
             let mut family = self.text_font.clone();
             ComboBox::from_id_salt("tipo_letra_barra")
-                .selected_text(&family)
+                .selected_text(crate::fonts::label(&family))
                 .width(if narrow { 56.0 } else { 90.0 })
                 .truncate()
                 .show_ui(ui, |ui| {
                     let av = crate::fonts::available();
-                    ui.weak("Monoespaciadas (alinean columnas)");
+                    ui.weak(t!("Monoespaciadas (alinean columnas)"));
                     for o in av.iter().filter(|o| o.mono) {
-                        ui.selectable_value(&mut family, o.name.to_string(), o.name);
+                        ui.selectable_value(&mut family, o.name.to_string(), crate::fonts::label(o.name));
                     }
                     ui.separator();
-                    ui.weak("Proporcionales");
+                    ui.weak(t!("Proporcionales"));
                     for o in av.iter().filter(|o| !o.mono) {
-                        ui.selectable_value(&mut family, o.name.to_string(), o.name);
+                        ui.selectable_value(&mut family, o.name.to_string(), crate::fonts::label(o.name));
                     }
                 })
                 .response
-                .on_hover_text(format!("Tipo de letra del texto: {family}"));
+                .on_hover_text(tf!("Tipo de letra del texto: {family}", family = family));
             if family != self.text_font {
                 self.set_text_font(ui.ctx(), family);
             }
@@ -2191,13 +2201,13 @@ impl App {
         ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.set_clip_rect(left.intersect(ui.clip_rect()));
             // --- Archivo y edición ---
-            if ui.selectable_label(self.show_sidebar, "☰").on_hover_text("Panel de archivos (Ctrl+B)").clicked() {
+            if ui.selectable_label(self.show_sidebar, "☰").on_hover_text(t!("Panel de archivos (Ctrl+B)")).clicked() {
                 self.show_sidebar = !self.show_sidebar;
             }
-            if ui.button(lb("📝", "Nuevo")).on_hover_text("Archivo nuevo, por ejemplo para pegar lo copiado (Ctrl+N)").clicked() {
+            if ui.button(lb("📝", t!("Nuevo"))).on_hover_text(t!("Archivo nuevo, por ejemplo para pegar lo copiado (Ctrl+N)")).clicked() {
                 self.new_untitled(None);
             }
-            if ui.button(lb("📂", "Abrir")).on_hover_text("Abrir archivos (Ctrl+O) · también puedes arrastrarlos").clicked() {
+            if ui.button(lb("📂", t!("Abrir"))).on_hover_text(t!("Abrir archivos (Ctrl+O) · también puedes arrastrarlos")).clicked() {
                 self.open_dialog();
             }
             let has_tab = !self.tabs.is_empty();
@@ -2210,33 +2220,33 @@ impl App {
                 )
             });
             let untitled = self.tabs.get(self.active).is_some_and(|t| t.untitled);
-            if ui.add_enabled(dirty || untitled, Button::new(lb("💾", "Guardar"))).on_hover_text("Guardar (Ctrl+S) · Guardar como: Ctrl+Shift+S").clicked() {
+            if ui.add_enabled(dirty || untitled, Button::new(lb("💾", t!("Guardar")))).on_hover_text(t!("Guardar (Ctrl+S) · Guardar como: Ctrl+Shift+S")).clicked() {
                 self.save(false);
             }
-            if ui.add_enabled(can_undo && editable, Button::new("↶")).on_hover_text("Deshacer (Ctrl+Z)").clicked() {
+            if ui.add_enabled(can_undo && editable, Button::new("↶")).on_hover_text(t!("Deshacer (Ctrl+Z)")).clicked() {
                 if let Some(Err(e)) = self.tab().map(|t| t.undo_redo(false)) {
                     self.msg(e);
                 }
             }
-            if ui.add_enabled(can_redo && editable, Button::new("↷")).on_hover_text("Rehacer (Ctrl+Shift+Z)").clicked() {
+            if ui.add_enabled(can_redo && editable, Button::new("↷")).on_hover_text(t!("Rehacer (Ctrl+Shift+Z)")).clicked() {
                 if let Some(Err(e)) = self.tab().map(|t| t.undo_redo(true)) {
                     self.msg(e);
                 }
             }
             if ui
-                .add_enabled(has_tab, Button::selectable(editable, lb("✏", "Editar")))
-                .on_hover_text("Activar/desactivar edición (Ctrl+E)")
+                .add_enabled(has_tab, Button::selectable(editable, lb("✏", t!("Editar"))))
+                .on_hover_text(t!("Activar/desactivar edición (Ctrl+E)"))
                 .clicked()
             {
                 self.toggle_edit();
             }
             let mono = self.mono_font() && self.cur_wrap() == Wrap::Off;
             let block_hint = if self.cur_wrap() != Wrap::Off {
-                "La selección en bloque no está disponible con el ajuste de línea activado"
+                t!("La selección en bloque no está disponible con el ajuste de línea activado")
             } else if mono {
-                "Selección en bloque: arrastra para marcar un rectángulo de texto (como una matriz). Al copiar se copia solo el texto real, línea por línea. También: Opción/Alt+arrastrar."
+                t!("Selección en bloque: arrastra para marcar un rectángulo de texto (como una matriz). Al copiar se copia solo el texto real, línea por línea. También: Opción/Alt+arrastrar.")
             } else {
-                "La selección en bloque necesita una letra monoespaciada (⚙ Ajustes)"
+                t!("La selección en bloque necesita una letra monoespaciada (⚙ Ajustes)")
             };
             if ui
                 .add_enabled(mono && has_tab, Button::selectable(self.column_mode && mono, "▦".to_string()))
@@ -2254,8 +2264,8 @@ impl App {
             }
             let beaut = self.tabs.get(self.active).and_then(|t| t.beautifier()).map(|b| b.0);
             let bhint = match beaut {
-                Some(k) => format!("Embellecer {k}: comprueba que esté bien formado y lo ordena con sangría (Ctrl+Shift+B). Se aplica a la selección o a todo el archivo; Ctrl+Z lo deshace."),
-                None => "Embellecer: disponible para JSON y XML/HTML".to_string(),
+                Some(k) => tf!("Embellecer {k}: comprueba que esté bien formado y lo ordena con sangría (Ctrl+Shift+B). Se aplica a la selección o a todo el archivo; Ctrl+Z lo deshace.", k = k),
+                None => t!("Embellecer: disponible para JSON y XML/HTML").to_string(),
             };
             if ui
                 .add_enabled(beaut.is_some(), Button::new("✨"))
@@ -2273,7 +2283,7 @@ impl App {
             let r = ui.add(
                 TextEdit::singleline(&mut self.query)
                     .desired_width(search_w)
-                    .hint_text("🔍 Buscar…  (Ctrl+F, Enter)")
+                    .hint_text(t!("🔍 Buscar…  (Ctrl+F, Enter)"))
                     .font(TextStyle::Monospace),
             );
             if self.focus_search {
@@ -2290,14 +2300,14 @@ impl App {
                 }
                 r.request_focus();
             }
-            ui.toggle_value(&mut self.case_sensitive, "Aa").on_hover_text("Distinguir mayúsculas");
-            ui.toggle_value(&mut self.use_regex, ".*").on_hover_text("Expresión regular");
-            if ui.add_enabled(has_tab, Button::new("◀")).on_hover_text("Anterior (Shift+Enter, Shift+F3)").clicked() {
+            ui.toggle_value(&mut self.case_sensitive, "Aa").on_hover_text(t!("Distinguir mayúsculas"));
+            ui.toggle_value(&mut self.use_regex, ".*").on_hover_text(t!("Expresión regular"));
+            if ui.add_enabled(has_tab, Button::new("◀")).on_hover_text(t!("Anterior (Shift+Enter, Shift+F3)")).clicked() {
                 if let Some(t) = self.tab() {
                     t.prev_match();
                 }
             }
-            if ui.add_enabled(has_tab, Button::new("▶")).on_hover_text("Siguiente (Enter, F3)").clicked() {
+            if ui.add_enabled(has_tab, Button::new("▶")).on_hover_text(t!("Siguiente (Enter, F3)")).clicked() {
                 if self.tabs.get(self.active).is_some_and(|t| t.search.is_some()) {
                     if let Some(t) = self.tab() {
                         t.next_match();
@@ -2308,16 +2318,16 @@ impl App {
             }
             if let Some(t) = self.tabs.get(self.active) {
                 if let Some(e) = &t.search_error {
-                    ui.colored_label(ui.visuals().error_fg_color, "regex inválida").on_hover_text(e);
+                    ui.colored_label(ui.visuals().error_fg_color, t!("regex inválida")).on_hover_text(e);
                 } else if let Some(s) = &t.search {
                     // Compacto en la barra; el detalle, al pasar el ratón.
                     let n = s.count();
                     let pos = t.current.and_then(|l| s.index_of(l)).map(|i| format!("{}/", fmt_num(i as u64 + 1))).unwrap_or_default();
                     let mut txt = format!("{pos}{}", fmt_num(n as u64));
-                    let mut hint = format!("{} líneas con coincidencias", fmt_num(n as u64));
+                    let mut hint = tf!("{fmt_num} líneas con coincidencias", fmt_num = fmt_num(n as u64));
                     if s.truncated.load(Ordering::Relaxed) {
                         txt += "+";
-                        hint += &format!(" (límite {})", fmt_num(MAX_RESULTS as u64));
+                        hint += &tf!(" (límite {fmt_num})", fmt_num = fmt_num(MAX_RESULTS as u64));
                     }
                     if !s.is_done() {
                         let p = s.progress.load(Ordering::Relaxed) as f64 / s.total.max(1) as f64;
@@ -2327,7 +2337,7 @@ impl App {
                     }
                     let color = if t.search_stale { ui.visuals().warn_fg_color } else { ui.visuals().text_color() };
                     if t.search_stale {
-                        hint += "\nDesactualizada por las ediciones: Enter para repetir";
+                        hint += t!("\nDesactualizada por las ediciones: Enter para repetir");
                     }
                     ui.label(RichText::new(txt).color(color)).on_hover_text(hint);
                 }
@@ -2336,21 +2346,21 @@ impl App {
 
             // --- Reemplazar y avanzada ---
             let rk = if MAC { "Cmd+Opción+F" } else { "Ctrl+H" };
-            ui.toggle_value(&mut self.show_replace, "🔁").on_hover_text(format!("Reemplazar ({rk})"));
+            ui.toggle_value(&mut self.show_replace, "🔁").on_hover_text(tf!("Reemplazar ({rk})", rk = rk));
             let n_adv = self.advs.len();
             let adv_label = if n_adv > 0 { format!("🔎 {n_adv}") } else { "🔎".to_string() };
             if ui
                 .selectable_label(n_adv > 0, adv_label)
-                .on_hover_text("Búsqueda avanzada: nueva ventana de búsqueda por bloques (desde… hasta…, multilínea), con minimapa y copia en varias líneas (Ctrl+Shift+F). Puedes abrir varias.")
+                .on_hover_text(t!("Búsqueda avanzada: nueva ventana de búsqueda por bloques (desde… hasta…, multilínea), con minimapa y copia en varias líneas (Ctrl+Shift+F). Puedes abrir varias."))
                 .clicked()
             {
                 self.new_adv_window();
             }
             ui.toggle_value(&mut self.map.open, "🗺").on_hover_text(
-                "Mapa de disco: qué ocupa cada carpeta y archivo de una carpeta, y búsqueda de texto en sus archivos (se resaltan en verde)",
+                t!("Mapa de disco: qué ocupa cada carpeta y archivo de una carpeta, y búsqueda de texto en sus archivos (se resaltan en verde)"),
             );
             let fk = if MAC { "Cmd+Shift+O" } else { "Ctrl+Shift+O" };
-            if ui.selectable_label(self.folder.open, "📁").on_hover_text(format!("Buscar en carpeta: el texto en todos los archivos de una carpeta ({fk})")).clicked() {
+            if ui.selectable_label(self.folder.open, "📁").on_hover_text(tf!("Buscar en carpeta: el texto en todos los archivos de una carpeta ({fk})", fk = fk)).clicked() {
                 if self.folder.open {
                     self.folder.open = false;
                 } else {
@@ -2361,16 +2371,16 @@ impl App {
         });
         if self.show_replace {
             ui.horizontal(|ui| {
-                ui.label("Reemplazar por:");
+                ui.label(t!("Reemplazar por:"));
                 let r = ui.add(
                     TextEdit::singleline(&mut self.replacement)
                         .desired_width(260.0)
-                        .hint_text(if self.use_regex { "texto ($1, $2… para grupos)" } else { "texto" })
+                        .hint_text(if self.use_regex { t!("texto ($1, $2… para grupos)") } else { "texto" })
                         .font(TextStyle::Monospace),
                 );
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 let (repl, re) = (self.replacement.clone(), self.use_regex);
-                if ui.button("Reemplazar").on_hover_text("Reemplaza la coincidencia seleccionada y va a la siguiente").clicked() || enter
+                if ui.button(t!("Reemplazar")).on_hover_text(t!("Reemplaza la coincidencia seleccionada y va a la siguiente")).clicked() || enter
                 {
                     if let Some(Err(e)) = self.tab().map(|t| t.replace_current(&repl, re)) {
                         self.msg(e);
@@ -2379,7 +2389,7 @@ impl App {
                         r.request_focus();
                     }
                 }
-                if ui.button("Reemplazar todo").on_hover_text("En todas las líneas encontradas · se deshace con Ctrl+Z").clicked() {
+                if ui.button(t!("Reemplazar todo")).on_hover_text(t!("En todas las líneas encontradas · se deshace con Ctrl+Z")).clicked() {
                     if let Some(r) = self.tab().map(|t| t.replace_all(&repl, re)) {
                         self.msg(r.unwrap_or_else(|e| e));
                     }
@@ -2418,18 +2428,18 @@ impl App {
         match a {
             FileAction::Reveal(i) => {
                 if let Err(e) = reveal_in_file_manager(&self.tabs[i].doc.path) {
-                    self.msg(format!("No se pudo abrir la carpeta: {e}"));
+                    self.msg(tf!("No se pudo abrir la carpeta: {e}", e = e));
                 }
             }
             FileAction::CopyPath(i) => {
                 let p = self.tabs[i].doc.path.display().to_string();
                 ctx.copy_text(p.clone());
-                self.msg(format!("Ruta copiada: {p}"));
+                self.msg(tf!("Ruta copiada: {p}", p = p));
             }
             FileAction::CopyName(i) => {
                 let n = self.tabs[i].doc.name.clone();
                 ctx.copy_text(n.clone());
-                self.msg(format!("Nombre copiado: {n}"));
+                self.msg(tf!("Nombre copiado: {n}", n = n));
             }
             FileAction::Duplicate(i) => self.duplicate(i),
             FileAction::NewWindow(i) => {
@@ -2437,9 +2447,9 @@ impl App {
                 let r = std::env::current_exe()
                     .and_then(|exe| std::process::Command::new(exe).arg("--sin-sesion").arg(&t.doc.path).spawn());
                 let m = match r {
-                    Ok(_) if t.dirty() => format!("{} abierto en otra ventana (versión guardada en disco)", t.doc.name),
-                    Ok(_) => format!("{} abierto en otra ventana", t.doc.name),
-                    Err(e) => format!("No se pudo abrir otra ventana: {e}"),
+                    Ok(_) if t.dirty() => tf!("{name} abierto en otra ventana (versión guardada en disco)", name = t.doc.name),
+                    Ok(_) => tf!("{name} abierto en otra ventana", name = t.doc.name),
+                    Err(e) => tf!("No se pudo abrir otra ventana: {e}", e = e),
                 };
                 self.msg(m);
             }
@@ -2487,7 +2497,7 @@ impl App {
                 let id = self.next_space;
                 self.next_space += 1;
                 let n = self.spaces.len() + 1;
-                let name = format!("Espacio {n}");
+                let name = tf!("Espacio {n}", n = n);
                 self.spaces.push(Space { id, name: name.clone(), open: true });
                 for j in file.map(|i| self.targets(i)).unwrap_or_default() {
                     self.tabs[j].space = Some(id);
@@ -2544,27 +2554,27 @@ impl App {
         };
         match spawned {
             Ok(_) => {
-                self.msg(format!("Duplicando como {}…", target.file_name().unwrap_or_default().to_string_lossy()));
+                self.msg(tf!("Duplicando como {to_string_lossy}…", to_string_lossy = target.file_name().unwrap_or_default().to_string_lossy()));
                 self.duplicating.push((target, result));
             }
-            Err(e) => self.msg(format!("No se pudo duplicar: {e}")),
+            Err(e) => self.msg(tf!("No se pudo duplicar: {e}", e = e)),
         }
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.strong("Archivos").on_hover_text("Archivos abiertos");
+            ui.strong(t!("Archivos")).on_hover_text(t!("Archivos abiertos"));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("«").on_hover_text("Ocultar (Ctrl+B)").clicked() {
+                if ui.small_button("«").on_hover_text(t!("Ocultar (Ctrl+B)")).clicked() {
                     self.show_sidebar = false;
                 }
-                if ui.add(Button::new(RichText::new("+ Espacio").small()).small()).on_hover_text("Crear un espacio: un grupo de archivos que se abre y cierra como una carpeta.\nArrastra archivos encima o usa su menú (clic derecho).").clicked() {
+                if ui.add(Button::new(RichText::new(t!("+ Espacio")).small()).small()).on_hover_text(t!("Crear un espacio: un grupo de archivos que se abre y cierra como una carpeta.\nArrastra archivos encima o usa su menú (clic derecho).")).clicked() {
                     self.file_action(ui.ctx(), FileAction::NewSpace(None));
                 }
                 let on = self.cur_wrap() != Wrap::Off;
-                let r = ui.add_enabled(!self.tabs.is_empty(), Button::new(RichText::new("↩ Ajuste").small()).small().selected(on));
-                if r.on_hover_text("Ajuste de línea del archivo seleccionado (Ctrl+Alt+Z)").clicked() {
+                let r = ui.add_enabled(!self.tabs.is_empty(), Button::new(RichText::new(t!("↩ Ajuste")).small()).small().selected(on));
+                if r.on_hover_text(t!("Ajuste de línea del archivo seleccionado (Ctrl+Alt+Z)")).clicked() {
                     self.toggle_wrap();
                 }
             });
@@ -2600,7 +2610,7 @@ impl App {
                 file_row(ui, i, &self.tabs[i], i == self.active, self.multi(i), &spaces, 0.0, self.tabs.len(), &mut action);
             }
             if self.tabs.is_empty() {
-                ui.weak("Sin archivos.\nUsa «Abrir…» o arrastra archivos aquí.");
+                ui.weak(t!("Sin archivos.\nUsa «Abrir…» o arrastra archivos aquí."));
             }
             // El resto del panel: soltar aquí saca el archivo de su espacio.
             let rest = ui.available_rect_before_wrap();
@@ -2608,7 +2618,7 @@ impl App {
             let r = ui.allocate_rect(rest, Sense::click());
             if r.dnd_hover_payload::<DragFile>().is_some() && !spaces.is_empty() {
                 ui.painter().rect_stroke(rest.shrink(2.0), 3.0, ui.visuals().selection.stroke, StrokeKind::Inside);
-                ui.painter().text(rest.center_top() + vec2(0.0, 12.0), Align2::CENTER_CENTER, "Soltar aquí: fuera de los espacios", FontId::proportional(11.0), ui.visuals().weak_text_color());
+                ui.painter().text(rest.center_top() + vec2(0.0, 12.0), Align2::CENTER_CENTER, t!("Soltar aquí: fuera de los espacios"), FontId::proportional(11.0), ui.visuals().weak_text_color());
             }
             if let Some(d) = r.dnd_release_payload::<DragFile>() {
                 action = Some(FileAction::ToSpace(d.0, None));
@@ -2699,7 +2709,7 @@ impl App {
             TextStyle::Button,
         );
         ui.painter().galley(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, v.strong_text_color());
-        let r = r.on_hover_text("Clic: abrir/cerrar el espacio (los archivos siguen abiertos)\nDoble clic: renombrar · Clic derecho: más opciones\nArrastra archivos aquí para meterlos · arrastra la cabecera para cambiar el orden");
+        let r = r.on_hover_text(t!("Clic: abrir/cerrar el espacio (los archivos siguen abiertos)\nDoble clic: renombrar · Clic derecho: más opciones\nArrastra archivos aquí para meterlos · arrastra la cabecera para cambiar el orden"));
         if r.double_clicked() {
             *action = Some(FileAction::RenameSpace(sp.id));
         } else if r.clicked() {
@@ -2710,17 +2720,17 @@ impl App {
         }
         r.context_menu(|ui| {
             let mut chosen = None;
-            if ui.button(if sp.open { "Cerrar el espacio" } else { "Abrir el espacio" }).clicked() {
+            if ui.button(if sp.open { t!("Cerrar el espacio") } else { t!("Abrir el espacio") }).clicked() {
                 chosen = Some(FileAction::ToggleSpace(sp.id));
             }
-            if ui.button("Renombrar").clicked() {
+            if ui.button(t!("Renombrar")).clicked() {
                 chosen = Some(FileAction::RenameSpace(sp.id));
             }
             ui.separator();
-            if ui.add_enabled(count > 0, Button::new("Cerrar sus archivos")).clicked() {
+            if ui.add_enabled(count > 0, Button::new(t!("Cerrar sus archivos"))).clicked() {
                 chosen = Some(FileAction::CloseSpace(sp.id));
             }
-            let del = ui.button("Quitar el espacio").on_hover_text("Los archivos siguen abiertos, fuera de los espacios");
+            let del = ui.button(t!("Quitar el espacio")).on_hover_text(t!("Los archivos siguen abiertos, fuera de los espacios"));
             if del.clicked() {
                 chosen = Some(FileAction::DeleteSpace(sp.id));
             }
@@ -2745,41 +2755,38 @@ impl App {
         ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)), |ui| {
             if ui
                 .add(Button::new(RichText::new("?").small().strong()).small().selected(self.show_keys))
-                .on_hover_text("Atajos de teclado (F1)")
+                .on_hover_text(t!("Atajos de teclado (F1)"))
                 .clicked()
             {
                 self.show_keys = !self.show_keys;
             }
             ui.separator();
-            let wrap_hint = format!(
-                "Ajuste de línea (Ctrl+Alt+Z): {} · el modo se elige en ⚙ Ajustes",
-                match self.wrap_last {
-                    Wrap::Columns(n) => format!("a {n} columnas"),
-                    _ => "al ancho de la ventana".into(),
-                }
-            );
-            if ui.selectable_label(self.cur_wrap() != Wrap::Off, RichText::new("↩ Ajuste").small()).on_hover_text(wrap_hint).clicked() {
+            let wrap_hint = tf!("Ajuste de línea (Ctrl+Alt+Z): {into} · el modo se elige en ⚙ Ajustes", into = match self.wrap_last {
+                    Wrap::Columns(n) => tf!("a {n} columnas", n = n),
+                    _ => t!("al ancho de la ventana").into(),
+                });
+            if ui.selectable_label(self.cur_wrap() != Wrap::Off, RichText::new(t!("↩ Ajuste")).small()).on_hover_text(wrap_hint).clicked() {
                 self.toggle_wrap();
             }
             let can_reload = self.tabs.get(self.active).is_some_and(|t| !t.untitled);
             let rk = if MAC { "Cmd+R" } else { "Ctrl+R" };
             if ui
-                .add_enabled(can_reload, Button::new(RichText::new("⟳ Recargar").small()).frame(false))
-                .on_hover_text(format!("Volver a leer el archivo del disco y poner el cursor al final ({rk})"))
+                .add_enabled(can_reload, Button::new(RichText::new(t!("⟳ Recargar")).small()).frame(false))
+                .on_hover_text(tf!("Volver a leer el archivo del disco y poner el cursor al final ({rk})", rk = rk))
                 .clicked()
             {
                 self.reload(self.active, false);
             }
             if let Some(t) = self.tabs.get_mut(self.active) {
                 let hint = if t.untitled {
-                    "Disponible para archivos guardados en disco".to_string()
+                    t!("Disponible para archivos guardados en disco").to_string()
                 } else if t.buf.is_some() && t.follow {
-                    "En vivo en pausa: hay cambios sin guardar (guárdalos o deshazlos)".to_string()
+                    t!("En vivo en pausa: hay cambios sin guardar (guárdalos o deshazlos)").to_string()
                 } else {
-                    "En vivo: muestra lo que se va añadiendo al archivo (como tail -f) y baja hasta el final.\nSi el archivo se trunca o rota, se vuelve a abrir.".to_string()
+                    t!("En vivo: muestra lo que se va añadiendo al archivo (como tail -f) y baja hasta el final.\nSi el archivo se trunca o rota, se vuelve a abrir.").to_string()
                 };
                 let paused = t.buf.is_some();
-                let label = if t.follow && paused { "⏸ En vivo" } else { "⏵ En vivo" };
+                let label = if t.follow && paused { t!("⏸ En vivo") } else { t!("⏵ En vivo") };
                 let r = ui.add_enabled(!t.untitled, Button::selectable(t.follow, RichText::new(label).small()));
                 if r.on_hover_text(&hint).on_disabled_hover_text(&hint).clicked() {
                     t.follow = !t.follow;
@@ -2790,16 +2797,16 @@ impl App {
                     }
                 }
                 let n = t.filter.rules.iter().filter(|r| !r.text.is_empty()).count();
-                let flabel = if n > 0 { format!("⚟ Filtro ({n})") } else { "⚟ Filtro".to_string() };
+                let flabel = if n > 0 { tf!("⚟ Filtro ({n})", n = n) } else { t!("⚟ Filtro").to_string() };
                 let r = ui.add(Button::selectable(t.filter.on, RichText::new(flabel).small()));
-                if r.on_hover_text("Vista filtrada: solo las líneas que cumplen las reglas (incluir / excluir), sin tocar el archivo (Ctrl+Shift+L)").clicked() {
+                if r.on_hover_text(t!("Vista filtrada: solo las líneas que cumplen las reglas (incluir / excluir), sin tocar el archivo (Ctrl+Shift+L)")).clicked() {
                     toggle_filter(t, &self.query, self.use_regex, self.case_sensitive);
                 }
             }
-            ui.toggle_value(&mut self.show_detail, RichText::new("📄 Detalle").small())
-                .on_hover_text("Panel con la línea actual completa, seleccionable");
-            ui.toggle_value(&mut self.show_results, RichText::new("📋 Resultados").small())
-                .on_hover_text("Panel con la lista de líneas encontradas");
+            ui.toggle_value(&mut self.show_detail, RichText::new(t!("📄 Detalle")).small())
+                .on_hover_text(t!("Panel con la línea actual completa, seleccionable"));
+            ui.toggle_value(&mut self.show_results, RichText::new(t!("📋 Resultados")).small())
+                .on_hover_text(t!("Panel con la lista de líneas encontradas"));
         });
 
         ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
@@ -2808,12 +2815,12 @@ impl App {
             let mut set_lang = None;
             if let Some(t) = self.tabs.get(self.active) {
                 let d = &t.doc;
-                ui.label(RichText::new(if t.editable { "EDICIÓN" } else { "SOLO LECTURA" }).small().strong());
+                ui.label(RichText::new(if t.editable { t!("EDICIÓN") } else { t!("SOLO LECTURA") }).small().strong());
                 ui.separator();
                 // Cursor / ir a línea.
                 if self.goto_open {
-                    ui.label(RichText::new("Ir a línea:").small());
-                    let r = ui.add(TextEdit::singleline(&mut self.goto).desired_width(90.0).hint_text("nº de línea"));
+                    ui.label(RichText::new(t!("Ir a línea:")).small());
+                    let r = ui.add(TextEdit::singleline(&mut self.goto).desired_width(90.0).hint_text(t!("nº de línea")));
                     if std::mem::take(&mut self.focus_goto) {
                         r.request_focus();
                     }
@@ -2828,21 +2835,21 @@ impl App {
                         Some(c) => {
                             let line = t.rows(c.line, 1, c.col.max(1)).into_iter().next().map(|r| r.1).unwrap_or_default();
                             let col = line[..buffer::floor_char(&line, c.col)].chars().count() + 1;
-                            format!("Lín {}, Col {}", fmt_num(c.line + 1), fmt_num(col as u64))
+                            tf!("Lín {line_1}, Col {fmt_num}", line_1 = fmt_num(c.line + 1), fmt_num = fmt_num(col as u64))
                         }
-                        None => "Ir a línea…".to_string(),
+                        None => t!("Ir a línea…").to_string(),
                     };
                     if let Some(cs) = t.block() {
                         let ((l0, l1), (c0, c1)) = (cs.lines(), cs.cols());
-                        s += &format!(" · bloque {} × {}", fmt_num(l1 - l0 + 1), fmt_num((c1 - c0) as u64));
+                        s += &tf!(" · bloque {fmt_num} × {fmt_num2}", fmt_num = fmt_num(l1 - l0 + 1), fmt_num2 = fmt_num((c1 - c0) as u64));
                     } else if let Some((a, b)) = t.selection() {
                         s += &if a.line == b.line {
-                            format!(" · {} seleccionados", fmt_num((b.col - a.col) as u64))
+                            tf!(" · {col_as_u64} seleccionados", col_as_u64 = fmt_num((b.col - a.col) as u64))
                         } else {
-                            format!(" · {} líneas seleccionadas", fmt_num(b.line - a.line + 1))
+                            tf!(" · {line_1} líneas seleccionadas", line_1 = fmt_num(b.line - a.line + 1))
                         };
                     }
-                    if ui.add(Button::new(RichText::new(s).small()).frame(false)).on_hover_text("Ir a línea (Ctrl+G)").clicked() {
+                    if ui.add(Button::new(RichText::new(s).small()).frame(false)).on_hover_text(t!("Ir a línea (Ctrl+G)")).clicked() {
                         self.goto_open = true;
                         self.focus_goto = true;
                     }
@@ -2850,15 +2857,15 @@ impl App {
                 ui.separator();
                 let lines = fmt_num(t.total());
                 if d.indexing_done() {
-                    ui.label(RichText::new(format!("{lines} líneas")).small());
+                    ui.label(RichText::new(tf!("{lines} líneas", lines = lines)).small());
                 } else {
                     let p = d.progress.load(Ordering::Relaxed) as f32 / d.len().max(1) as f32;
-                    ui.add(ProgressBar::new(p).desired_width(120.0).text(format!("indexando… {lines} líneas")));
+                    ui.add(ProgressBar::new(p).desired_width(120.0).text(tf!("indexando… {lines} líneas", lines = lines)));
                 }
                 ui.separator();
                 ui.label(RichText::new(human_size(d.len() as u64)).small());
                 ui.separator();
-                ui.label(RichText::new(encoding::label(d.src.encoding)).small()).on_hover_text(format!("Detectado por: {}", d.detect_reason));
+                ui.label(RichText::new(encoding::label(d.src.encoding)).small()).on_hover_text(tf!("Detectado por: {detect_reason}", detect_reason = d.detect_reason));
                 if self.syntax_on {
                     ui.separator();
                     let mut lang = t.lang;
@@ -2871,7 +2878,7 @@ impl App {
                         }
                     })
                     .response
-                    .on_hover_text("Lenguaje para colorear (se deduce de la extensión)");
+                    .on_hover_text(t!("Lenguaje para colorear (se deduce de la extensión)"));
                     if lang != t.lang {
                         set_lang = Some(lang);
                     }
@@ -2880,17 +2887,13 @@ impl App {
                     if b.is_dirty() {
                         ui.separator();
                         let (pieces, bytes) = b.memory();
-                        ui.label(RichText::new("● sin guardar").small().color(ui.visuals().warn_fg_color)).on_hover_text(format!(
-                            "{} piezas · {} de texto editado en RAM",
-                            fmt_num(pieces as u64),
-                            human_size(bytes as u64)
-                        ));
+                        ui.label(RichText::new(t!("● sin guardar")).small().color(ui.visuals().warn_fg_color)).on_hover_text(tf!("{fmt_num} piezas · {human_size} de texto editado en RAM", fmt_num = fmt_num(pieces as u64), human_size = human_size(bytes as u64)));
                     }
                 }
                 if let Some(job) = &t.save {
                     ui.separator();
                     let p = job.progress.load(Ordering::Relaxed) as f32 / job.total.max(1) as f32;
-                    ui.add(ProgressBar::new(p.min(1.0)).desired_width(140.0).text("guardando…"));
+                    ui.add(ProgressBar::new(p.min(1.0)).desired_width(140.0).text(t!("guardando…")));
                 }
                 // Los mensajes van antes de la ruta para que no se corten.
                 if let Some((m, when)) = &self.message {
@@ -2901,9 +2904,9 @@ impl App {
                 }
                 ui.separator();
                 if t.untitled {
-                    ui.label(RichText::new("sin guardar en disco · Ctrl+S para elegir dónde").small().weak());
+                    ui.label(RichText::new(t!("sin guardar en disco · Ctrl+S para elegir dónde")).small().weak());
                 } else {
-                    ui.label(RichText::new(d.path.display().to_string()).small().weak()).on_hover_text("Ruta del archivo");
+                    ui.label(RichText::new(d.path.display().to_string()).small().weak()).on_hover_text(t!("Ruta del archivo"));
                 }
             }
             if self.tabs.is_empty() {
@@ -2934,16 +2937,16 @@ impl App {
         let mut choice = None;
         Modal::new(Id::NULL.with("confirm")).show(ctx, |ui| {
             ui.set_max_width(420.0);
-            ui.heading("Cambios sin guardar");
+            ui.heading(t!("Cambios sin guardar"));
             ui.add_space(6.0);
-            ui.label(format!("Hay cambios sin guardar en: {}", names.join(", ")));
-            ui.label("Si continúas se perderán. Para conservarlos, cancela y pulsa Ctrl+S.");
+            ui.label(tf!("Hay cambios sin guardar en: {join}", join = names.join(", ")));
+            ui.label(t!("Si continúas se perderán. Para conservarlos, cancela y pulsa Ctrl+S."));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Descartar cambios").clicked() {
+                if ui.button(t!("Descartar cambios")).clicked() {
                     choice = Some(true);
                 }
-                if ui.button("Cancelar").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                if ui.button(t!("Cancelar")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
                     choice = Some(false);
                 }
             });
@@ -3182,7 +3185,7 @@ impl eframe::App for App {
                 // Se cierra de verdad: el relanzador espera a que este proceso termine.
                 self.save_session(true);
                 if let Err(e) = crate::update::relaunch_after_exit(&p) {
-                    self.msg(format!("No se pudo abrir la versión nueva: {e}"));
+                    self.msg(tf!("No se pudo abrir la versión nueva: {e}", e = e));
                 }
             }
         }
@@ -3212,9 +3215,9 @@ impl eframe::App for App {
             match res {
                 Ok(()) => {
                     self.open(p.clone());
-                    self.msg(format!("Duplicado: {}", p.display()));
+                    self.msg(tf!("Duplicado: {display}", display = p.display()));
                 }
-                Err(e) => self.msg(format!("No se pudo duplicar: {e}")),
+                Err(e) => self.msg(tf!("No se pudo duplicar: {e}", e = e)),
             }
         }
 
@@ -3307,7 +3310,7 @@ impl eframe::App for App {
                 (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors, syntax_on, wrap);
             } else {
                 ui.centered_and_justified(|ui| {
-                    ui.heading("Arrastra archivos aquí, o pulsa Ctrl+O");
+                    ui.heading(t!("Arrastra archivos aquí, o pulsa Ctrl+O"));
                 });
             }
         });
@@ -3590,7 +3593,7 @@ fn log_view(
     }
     resp.context_menu(|ui| {
         let has_sel = tab.selection().is_some();
-        if ui.button("Copiar (Ctrl+C)").clicked() {
+        if ui.button(t!("Copiar (Ctrl+C)")).clicked() {
             message = Some(match tab.block() {
                 Some(cs) => tab.copy_block(&ctx, cs),
                 None => tab.copy(&ctx),
@@ -3599,8 +3602,8 @@ fn log_view(
         }
         let has_any = tab.block().is_some() || tab.selection().is_some();
         if ui
-            .add_enabled(has_any, Button::new("📝 Nuevo archivo con la selección"))
-            .on_hover_text("Abre un archivo nuevo con el texto seleccionado (o el bloque), listo para guardar")
+            .add_enabled(has_any, Button::new(t!("📝 Nuevo archivo con la selección")))
+            .on_hover_text(t!("Abre un archivo nuevo con el texto seleccionado (o el bloque), listo para guardar"))
             .clicked()
         {
             let text = match (tab.block(), tab.selection()) {
@@ -3610,31 +3613,31 @@ fn log_view(
             };
             match text {
                 Some(t) => tab.export_request = Some(t),
-                None => message = Some(format!("Selección demasiado grande (> {})", human_size(MAX_COPY_BYTES as u64))),
+                None => message = Some(tf!("Selección demasiado grande (> {human_size})", human_size = human_size(MAX_COPY_BYTES as u64))),
             }
             ui.close();
         }
-        if ui.add_enabled(tab.editable, Button::new("Cortar (Ctrl+X)")).clicked() {
+        if ui.add_enabled(tab.editable, Button::new(t!("Cortar (Ctrl+X)"))).clicked() {
             message = Some(tab.cut(&ctx).unwrap_or_else(|e| e));
             ui.close();
         }
-        if ui.add_enabled(tab.editable, Button::new("Pegar (Ctrl+V)")).clicked() {
+        if ui.add_enabled(tab.editable, Button::new(t!("Pegar (Ctrl+V)"))).clicked() {
             resp.request_focus();
             ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
             ui.close();
         }
-        if ui.add_enabled(tab.editable && has_sel, Button::new("Borrar selección")).clicked() {
+        if ui.add_enabled(tab.editable && has_sel, Button::new(t!("Borrar selección"))).clicked() {
             if let Err(e) = tab.delete(false, false) {
                 message = Some(e);
             }
             ui.close();
         }
         ui.separator();
-        if ui.button("Seleccionar todo (Ctrl+A)").clicked() {
+        if ui.button(t!("Seleccionar todo (Ctrl+A)")).clicked() {
             tab.select(Pos::default(), tab.end_pos());
             ui.close();
         }
-        if ui.button("Ver línea completa").clicked() {
+        if ui.button(t!("Ver línea completa")).clicked() {
             *show_detail = true;
             ui.close();
         }
@@ -3807,9 +3810,9 @@ fn log_view(
     let content = if wrap == Wrap::Window { view_w } else { tab.content_width + 40.0 };
     hscrollbar(ui, hsb, id.with("hsb"), &mut tab.hscroll, content, view_w);
     let note = if !tab.doc.indexing_done() {
-        Some("indexando…")
+        Some(t!("indexando…"))
     } else if !tab.editable {
-        Some("solo lectura · Ctrl+E para editar")
+        Some(t!("solo lectura · Ctrl+E para editar"))
     } else {
         None
     };
@@ -3904,7 +3907,7 @@ fn line_job(
         i = j;
     }
     if truncated {
-        job.append("  …[línea truncada; ver Detalle]", 0.0, TextFormat { italics: true, ..normal });
+        job.append(t!("  …[línea truncada; ver Detalle]"), 0.0, TextFormat { italics: true, ..normal });
     }
     job
 }
@@ -4060,7 +4063,7 @@ fn describe_span(a: Pos, b: Pos, bytes: usize) -> String {
     if a.line == b.line {
         format!("{}", human_size(bytes as u64))
     } else {
-        format!("{} líneas ({})", fmt_num(b.line - a.line + 1), human_size(bytes as u64))
+        tf!("{line_1} líneas ({human_size})", line_1 = fmt_num(b.line - a.line + 1), human_size = human_size(bytes as u64))
     }
 }
 
@@ -4134,7 +4137,7 @@ impl AdvWin {
 
     fn title(&self) -> String {
         let name = self.file.as_ref().and_then(|p| p.file_name()).map(|n| format!(" — {}", n.to_string_lossy()));
-        format!("Búsqueda avanzada {}{}", self.id, name.unwrap_or_default())
+        tf!("Búsqueda avanzada {id}{unwrap_or_default}", id = self.id, unwrap_or_default = name.unwrap_or_default())
     }
 
     fn is_busy(&self) -> bool {
@@ -4253,6 +4256,7 @@ impl App {
         let (mut custom, mut bg, mut fg) = (self.custom_colors, self.text_bg, self.text_fg);
         let mut syn = self.syntax_on;
         let mut borders = self.borders;
+        let mut lang_change = None;
         let mut wrap = self.wrap;
         let mut wrap_cols = match self.wrap_last {
             Wrap::Columns(n) => n,
@@ -4260,7 +4264,7 @@ impl App {
         };
         let mut open_update = false;
         let mut reset = false;
-        let mut win = Window::new("Ajustes").id(settings_window_id()).pivot(Align2::CENTER_CENTER);
+        let mut win = Window::new(t!("Ajustes")).id(settings_window_id()).pivot(Align2::CENTER_CENTER);
         if just_opened {
             win = win.current_pos(ctx.content_rect().center());
         }
@@ -4273,73 +4277,84 @@ impl App {
                 ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
                 // Etiqueta a la izquierda, controles a la derecha.
                 Grid::new("ajustes_grid").num_columns(2).spacing([28.0, 16.0]).min_col_width(150.0).show(ui, |ui| {
-                    ui.strong("Tema");
+                    ui.strong(t!("Idioma")).on_hover_text("Idioma · Language · Langue");
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut theme, ThemePreference::System, "Sistema");
-                        ui.radio_value(&mut theme, ThemePreference::Light, "Claro");
-                        ui.radio_value(&mut theme, ThemePreference::Dark, "Oscuro");
-                    });
-                    ui.end_row();
-
-                    ui.strong("Bordes de paneles").on_hover_text("Separaciones entre paneles y bordes de las ventanas, en cualquier tema");
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut borders, 0, "Normales");
-                        ui.radio_value(&mut borders, 1, "Marcados");
-                        ui.radio_value(&mut borders, 2, "Muy marcados");
-                    });
-                    ui.end_row();
-
-                    ui.strong("Tipo de letra");
-                    ui.vertical(|ui| {
-                        ComboBox::from_id_salt("tipo_letra").selected_text(&family).width(240.0).show_ui(ui, |ui| {
-                            let av = crate::fonts::available();
-                            ui.weak("Monoespaciadas (alinean columnas)");
-                            for o in av.iter().filter(|o| o.mono) {
-                                ui.selectable_value(&mut family, o.name.to_string(), o.name);
+                        let cur = crate::i18n::get();
+                        for l in crate::i18n::Lang::ALL {
+                            if ui.radio(cur == l, l.name()).clicked() && cur != l {
+                                lang_change = Some(l);
                             }
-                            ui.separator();
-                            ui.weak("Proporcionales");
-                            for o in av.iter().filter(|o| !o.mono) {
-                                ui.selectable_value(&mut family, o.name.to_string(), o.name);
-                            }
-                        });
-                        if crate::fonts::find(&family).is_some_and(|o| !o.mono) {
-                            ui.weak("Con letra proporcional las columnas de los logs no quedan alineadas.");
                         }
                     });
                     ui.end_row();
 
-                    ui.strong("Tamaño de letra");
+                    ui.strong(t!("Tema"));
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut theme, ThemePreference::System, t!("Sistema"));
+                        ui.radio_value(&mut theme, ThemePreference::Light, t!("Claro"));
+                        ui.radio_value(&mut theme, ThemePreference::Dark, t!("Oscuro"));
+                    });
+                    ui.end_row();
+
+                    ui.strong(t!("Bordes de paneles")).on_hover_text(t!("Separaciones entre paneles y bordes de las ventanas, en cualquier tema"));
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut borders, 0, t!("Normales"));
+                        ui.radio_value(&mut borders, 1, t!("Marcados"));
+                        ui.radio_value(&mut borders, 2, t!("Muy marcados"));
+                    });
+                    ui.end_row();
+
+                    ui.strong(t!("Tipo de letra"));
+                    ui.vertical(|ui| {
+                        ComboBox::from_id_salt("tipo_letra").selected_text(crate::fonts::label(&family)).width(240.0).show_ui(ui, |ui| {
+                            let av = crate::fonts::available();
+                            ui.weak(t!("Monoespaciadas (alinean columnas)"));
+                            for o in av.iter().filter(|o| o.mono) {
+                                ui.selectable_value(&mut family, o.name.to_string(), crate::fonts::label(o.name));
+                            }
+                            ui.separator();
+                            ui.weak(t!("Proporcionales"));
+                            for o in av.iter().filter(|o| !o.mono) {
+                                ui.selectable_value(&mut family, o.name.to_string(), crate::fonts::label(o.name));
+                            }
+                        });
+                        if crate::fonts::find(&family).is_some_and(|o| !o.mono) {
+                            ui.weak(t!("Con letra proporcional las columnas de los logs no quedan alineadas."));
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.strong(t!("Tamaño de letra"));
                     ui.add(Slider::new(&mut font, 7.0..=40.0).step_by(1.0));
                     ui.end_row();
 
-                    ui.strong("Colores del texto");
+                    ui.strong(t!("Colores del texto"));
                     ui.vertical(|ui| {
-                        ui.checkbox(&mut custom, "Usar colores propios (tienen prioridad sobre el tema)");
+                        ui.checkbox(&mut custom, t!("Usar colores propios (tienen prioridad sobre el tema)"));
                         ui.add_enabled_ui(custom, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label("Fondo");
+                                ui.label(t!("Fondo"));
                                 ui.color_edit_button_srgba(&mut bg);
                                 ui.add_space(16.0);
-                                ui.label("Letra");
+                                ui.label(t!("Letra"));
                                 ui.color_edit_button_srgba(&mut fg);
                             });
                         });
                     });
                     ui.end_row();
 
-                    ui.strong("Ajuste de línea");
+                    ui.strong(t!("Ajuste de línea"));
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
-                            ui.radio_value(&mut wrap, Wrap::Off, "No");
-                            ui.radio_value(&mut wrap, Wrap::Window, "Al ancho de la ventana");
+                            ui.radio_value(&mut wrap, Wrap::Off, t!("No"));
+                            ui.radio_value(&mut wrap, Wrap::Window, t!("Al ancho de la ventana"));
                         });
                         ui.horizontal(|ui| {
                             let cols = match wrap {
                                 Wrap::Columns(n) => n,
                                 _ => wrap_cols,
                             };
-                            if ui.radio(matches!(wrap, Wrap::Columns(_)), "A").clicked() {
+                            if ui.radio(matches!(wrap, Wrap::Columns(_)), t!("A")).clicked() {
                                 wrap = Wrap::Columns(cols);
                             }
                             let mut c = cols;
@@ -4347,23 +4362,23 @@ impl App {
                                 wrap_cols = c;
                                 wrap = Wrap::Columns(c);
                             }
-                            ui.label("columnas");
+                            ui.label(t!("columnas"));
                         });
-                        ui.weak("Valor por defecto; cada archivo lo cambia con ↩ Ajuste.");
+                        ui.weak(t!("Valor por defecto; cada archivo lo cambia con ↩ Ajuste."));
                     });
                     ui.end_row();
 
-                    ui.strong("Resaltado");
-                    ui.add(Checkbox::new(&mut syn, "Colorear según el tipo de archivo (.java, .xml, .json, .py…) y los niveles de los logs"));
+                    ui.strong(t!("Resaltado"));
+                    ui.add(Checkbox::new(&mut syn, t!("Colorear según el tipo de archivo (.java, .xml, .json, .py…) y los niveles de los logs")));
                     ui.end_row();
                 });
 
                 ui.add_space(14.0);
-                ui.weak("Vista previa:");
+                ui.weak(t!("Vista previa:"));
                 let (pbg, pfg) = if custom { (bg, fg) } else { (ui.visuals().extreme_bg_color, ui.visuals().text_color()) };
                 Frame::NONE.fill(pbg).inner_margin(10.0).corner_radius(6.0).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    let sample = ["2026-11-10 12:00:01 [ERROR] año, acción: java.io.IOException", "0O 1lI {}[]() -> => != 日本"];
+                    let sample = [t!("2026-11-10 12:00:01 [ERROR] año, acción: java.io.IOException"), "0O 1lI {}[]() -> => != 日本"];
                     let lang = if syn { syntax::Lang::Log } else { syntax::Lang::Plain };
                     for line in sample {
                         let mut spans = Vec::new();
@@ -4376,23 +4391,23 @@ impl App {
                 ui.separator();
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label(format!("Versión {}", crate::update::version_label()));
+                    ui.label(tf!("Versión {crate_update_version_label}", crate_update_version_label = crate::update::version_label()));
                     if crate::update::SUPPORTED {
-                        if ui.button("⟳ Buscar actualizaciones…").on_hover_text("Descarga la última versión de GitHub, la compila y la instala").clicked() {
+                        if ui.button(t!("⟳ Buscar actualizaciones…")).on_hover_text(t!("Descarga la última versión de GitHub, la compila y la instala")).clicked() {
                             open_update = true;
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("↺ Restablecer").on_hover_text("Vuelve a los ajustes predeterminados: tema del sistema, Hack 13, sin colores propios, bordes normales").clicked() {
+                        if ui.button(t!("↺ Restablecer")).on_hover_text(t!("Vuelve a los ajustes predeterminados: tema del sistema, Hack 13, sin colores propios, bordes normales")).clicked() {
                             reset = true;
                         }
                     });
                 });
                 if !crate::update::SUPPORTED {
-                    ui.weak("En Windows, actualiza volviendo a ejecutar el instalador.");
+                    ui.weak(t!("En Windows, actualiza volviendo a ejecutar el instalador."));
                 }
                 ui.add_space(6.0);
-                ui.weak("Los ajustes se guardan automáticamente.");
+                ui.weak(t!("Los ajustes se guardan automáticamente."));
             });
         self.show_settings = open;
         if open_update {
@@ -4413,7 +4428,7 @@ impl App {
             self.borders = d.borders;
             apply_borders(ctx, d.borders);
             self.persist();
-            self.msg("Ajustes restablecidos");
+            self.msg(t!("Ajustes restablecidos"));
             return;
         }
         if wrap != self.wrap {
@@ -4442,6 +4457,16 @@ impl App {
             apply_borders(ctx, borders);
             self.persist();
         }
+        if let Some(l) = lang_change {
+            crate::i18n::set(l);
+            self.lang_chosen = Some(l);
+            self.persist();
+            // El menú nativo se crea con los textos: se vuelve a crear.
+            #[cfg(target_os = "macos")]
+            {
+                self.menu = crate::macmenu::MacMenu::new(ctx);
+            }
+        }
         if theme != self.theme {
             self.theme = theme;
             ctx.set_theme(theme);
@@ -4460,7 +4485,7 @@ impl App {
         let (defs, ok) = crate::fonts::build(&family, &self.fallback_fonts);
         ctx.set_fonts(defs);
         if !ok {
-            self.msg(format!("No se pudo cargar «{family}»; se usa {}", crate::fonts::DEFAULT));
+            self.msg(tf!("No se pudo cargar «{family}»; se usa {crate_fonts_DEFAULT}", family = family, crate_fonts_DEFAULT = crate::fonts::DEFAULT));
         }
         self.text_font = family;
         for t in &mut self.tabs {
@@ -4527,7 +4552,7 @@ impl App {
         let mut open = true;
         let (mut run, mut restart) = (false, false);
         let dirty = self.tabs.iter().any(|t| t.dirty() || t.save.is_some());
-        Window::new("Actualizar buscador")
+        Window::new(t!("Actualizar buscador"))
             .id(update_window_id())
             .open(&mut open)
             .collapsible(false)
@@ -4535,49 +4560,49 @@ impl App {
             .default_size([560.0, 360.0])
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label(format!("Versión instalada: {}", crate::update::version_label()));
+                ui.label(tf!("Versión instalada: {crate_update_version_label}", crate_update_version_label = crate::update::version_label()));
                 ui.add_space(6.0);
                 match &stage {
                     Stage::Checking => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Comprobando la última versión en GitHub…");
+                            ui.label(t!("Comprobando la última versión en GitHub…"));
                         });
                     }
                     Stage::UpToDate(h) => {
-                        ui.label(format!("✔ Ya tienes la última versión ({h})."));
-                        run = ui.button("Reinstalar de todos modos").clicked();
+                        ui.label(tf!("✔ Ya tienes la última versión ({h}).", h = h));
+                        run = ui.button(t!("Reinstalar de todos modos")).clicked();
                     }
                     Stage::Available(h) => {
-                        ui.strong(format!("Hay una versión nueva: {h}"));
-                        ui.label("Se descarga el código a una carpeta temporal, se compila (la primera vez tarda unos minutos) y se reemplaza la app instalada. Puedes seguir trabajando mientras tanto.");
-                        run = ui.button("⬇ Descargar, compilar e instalar").clicked();
+                        ui.strong(tf!("Hay una versión nueva: {h}", h = h));
+                        ui.label(t!("Se descarga el código a una carpeta temporal, se compila (la primera vez tarda unos minutos) y se reemplaza la app instalada. Puedes seguir trabajando mientras tanto."));
+                        run = ui.button(t!("⬇ Descargar, compilar e instalar")).clicked();
                     }
                     Stage::Running => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Descargando, compilando e instalando…");
+                            ui.label(t!("Descargando, compilando e instalando…"));
                         });
                     }
                     Stage::Done(p) => {
-                        ui.strong(format!("✔ Instalada en {}", p.display()));
+                        ui.strong(tf!("✔ Instalada en {display}", display = p.display()));
                         restart = ui
-                            .button("⟳ Reiniciar ahora")
-                            .on_hover_text("Cierra buscador y lo abre con la versión nueva (recupera los archivos abiertos)")
+                            .button(t!("⟳ Reiniciar ahora"))
+                            .on_hover_text(t!("Cierra buscador y lo abre con la versión nueva (recupera los archivos abiertos)"))
                             .clicked();
                         if dirty {
-                            ui.weak("Hay cambios sin guardar: al reiniciar se preguntará si descartarlos (o cancela y guárdalos).");
+                            ui.weak(t!("Hay cambios sin guardar: al reiniciar se preguntará si descartarlos (o cancela y guárdalos)."));
                         }
                     }
                     Stage::Failed(e) => {
-                        ui.colored_label(ui.visuals().error_fg_color, format!("No se pudo actualizar: {e}"));
-                        run = ui.button("Reintentar").clicked();
+                        ui.colored_label(ui.visuals().error_fg_color, tf!("No se pudo actualizar: {e}", e = e));
+                        run = ui.button(t!("Reintentar")).clicked();
                     }
                 }
                 let log = u.log.lock().unwrap();
                 if !log.is_empty() {
                     ui.add_space(6.0);
-                    ui.weak("Registro:");
+                    ui.weak(t!("Registro:"));
                     ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).max_height(220.0).show(ui, |ui| {
                         for l in log.iter() {
                             ui.label(RichText::new(l).monospace().small());
@@ -4600,7 +4625,7 @@ impl App {
         if !open && !running {
             self.updater = None;
         } else if !open && running {
-            self.msg("La actualización sigue en segundo plano; vuelve a abrirla desde Ajustes");
+            self.msg(t!("La actualización sigue en segundo plano; vuelve a abrirla desde Ajustes"));
         }
     }
 
@@ -4609,7 +4634,7 @@ impl App {
             return;
         }
         let mut open = true;
-        Window::new("Atajos de teclado")
+        Window::new(t!("Atajos de teclado"))
             .id(keys_window_id())
             .open(&mut open)
             .collapsible(false)
@@ -4656,7 +4681,7 @@ impl App {
         }
         let mut open = true;
         let mut out = crate::foldersearch::Out::default();
-        Window::new("Buscar en carpeta")
+        Window::new(t!("Buscar en carpeta"))
             .id(crate::foldersearch::window_id())
             .open(&mut open)
             .default_size([860.0, 560.0])
@@ -4725,7 +4750,7 @@ impl App {
                 }
             });
         } else {
-            Window::new("Mapa de disco")
+            Window::new(t!("Mapa de disco"))
                 .id(crate::diskmap::window_id())
                 .open(&mut open)
                 .default_size([1000.0, 680.0])
@@ -4745,7 +4770,7 @@ impl App {
         }
         if let Some(p) = out.reveal {
             if let Err(e) = reveal_in_file_manager(&p) {
-                self.msg(format!("No se pudo abrir la carpeta: {e}"));
+                self.msg(tf!("No se pudo abrir la carpeta: {e}", e = e));
             }
         }
         if let Some(t) = out.copy {
@@ -4777,7 +4802,7 @@ impl App {
             self.focus_view = true;
             // Desde la ventana aparte: traer la principal al frente.
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Focus);
-            self.msg(if n == 1 { "Archivo abierto desde el mapa".to_string() } else { format!("{n} archivos abiertos desde el mapa") });
+            self.msg(if n == 1 { t!("Archivo abierto desde el mapa").to_string() } else { tf!("{n} archivos abiertos desde el mapa", n = n) });
         }
     }
 
@@ -4844,7 +4869,7 @@ fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOu
     let mut out = AdvOut::default();
     // Archivo, ventana aparte, nueva ventana.
     ui.horizontal(|ui| {
-        ui.label("Archivo:");
+        ui.label(t!("Archivo:"));
         let cur_name = w
             .tab_index(tabs, active)
             .map(|i| tabs[i].doc.name.clone())
@@ -4866,14 +4891,14 @@ fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOu
             }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.button("+ Nueva").on_hover_text("Abrir otra ventana de búsqueda avanzada").clicked() {
+            if ui.button(t!("+ Nueva")).on_hover_text(t!("Abrir otra ventana de búsqueda avanzada")).clicked() {
                 out.new_window = true;
             }
-            let label = if w.detached { "Integrar" } else { "Ventana aparte" };
+            let label = if w.detached { t!("Integrar") } else { t!("Ventana aparte") };
             let hint = if w.detached {
-                "Volver a mostrarla dentro de la ventana principal"
+                t!("Volver a mostrarla dentro de la ventana principal")
             } else {
-                "Mostrarla en una ventana propia (puedes llevarla a otro monitor)"
+                t!("Mostrarla en una ventana propia (puedes llevarla a otro monitor)")
             };
             if ui.button(label).on_hover_text(hint).clicked() {
                 w.detached = !w.detached;
@@ -4881,7 +4906,7 @@ fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOu
         });
     });
     let Some(ti) = w.tab_index(tabs, active) else {
-        ui.weak("Abre un archivo primero (o el archivo elegido se cerró).");
+        ui.weak(t!("Abre un archivo primero (o el archivo elegido se cerró)."));
         return out;
     };
 
@@ -4901,48 +4926,48 @@ fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOu
         }
     };
     Grid::new(("adv_grid", w.id)).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Desde:");
+        ui.label(t!("Desde:"));
         ui.horizontal(|ui| {
-            let r = field(ui, &mut w.from, "inicio del bloque (texto o regex)", w.multiline);
+            let r = field(ui, &mut w.from, t!("inicio del bloque (texto o regex)"), w.multiline);
             if std::mem::take(&mut w.focus) {
                 r.request_focus();
             }
             run |= enter(ui, &r, w.multiline);
-            ui.toggle_value(&mut w.case_sensitive, "Aa").on_hover_text("Distinguir mayúsculas");
-            ui.toggle_value(&mut w.regex, ".*").on_hover_text("Expresión regular");
-            ui.toggle_value(&mut w.multiline, "Multilínea").on_hover_text(
-                "Cada patrón puede ocupar varias líneas (hasta 1 MB).\nTexto: escribe los saltos tal cual (sirve para LF y CRLF); busca con Ctrl+Enter.\nRegex: usa \\n o \\r?\\n; (?s) para que «.» cruce líneas.",
+            ui.toggle_value(&mut w.case_sensitive, "Aa").on_hover_text(t!("Distinguir mayúsculas"));
+            ui.toggle_value(&mut w.regex, ".*").on_hover_text(t!("Expresión regular"));
+            ui.toggle_value(&mut w.multiline, t!("Multilínea")).on_hover_text(
+                t!("Cada patrón puede ocupar varias líneas (hasta 1 MB).\nTexto: escribe los saltos tal cual (sirve para LF y CRLF); busca con Ctrl+Enter.\nRegex: usa \\n o \\r?\\n; (?s) para que «.» cruce líneas."),
             );
         });
         ui.end_row();
-        ui.label("Hasta:");
-        let r = field(ui, &mut w.to, "fin del bloque, puede estar en otra línea (opcional)", w.multiline);
+        ui.label(t!("Hasta:"));
+        let r = field(ui, &mut w.to, t!("fin del bloque, puede estar en otra línea (opcional)"), w.multiline);
         run |= enter(ui, &r, w.multiline);
         ui.end_row();
     });
     ui.horizontal(|ui| {
-        run |= ui.button("Buscar").clicked();
+        run |= ui.button(t!("Buscar")).clicked();
         if let Some(e) = &w.error {
             ui.colored_label(ui.visuals().error_fg_color, e);
         } else if let Some((s, edit_gen, _)) = &w.search {
             let n = s.count();
             let pos = w.cur.map(|i| format!("{}/", fmt_num(i as u64 + 1))).unwrap_or_default();
-            let mut t = format!("{pos}{} bloques", fmt_num(n as u64));
+            let mut t = tf!("{pos}{fmt_num} bloques", pos = pos, fmt_num = fmt_num(n as u64));
             if s.truncated.load(Ordering::Relaxed) {
-                t += &format!(" (límite {})", fmt_num(MAX_BLOCKS as u64));
+                t += &tf!(" (límite {fmt_num})", fmt_num = fmt_num(MAX_BLOCKS as u64));
             }
             if !s.is_done() {
                 let p = s.progress.load(Ordering::Relaxed) as f64 / s.total.max(1) as f64;
-                t += &format!(" · buscando {:.0}%", p * 100.0);
+                t += &tf!(" · buscando {v}%", v = format!("{:.0}", p * 100.0));
             } else {
                 t += &format!(" · {:.2}s", s.elapsed.lock().unwrap().as_secs_f32());
                 if s.unclosed.load(Ordering::Relaxed) > 0 {
-                    t += " · el último inicio no tiene fin";
+                    t += t!(" · el último inicio no tiene fin");
                 }
             }
             ui.label(t);
             if *edit_gen != tabs[ti].edit_gen {
-                ui.colored_label(ui.visuals().warn_fg_color, "desactualizada (Buscar para repetir)");
+                ui.colored_label(ui.visuals().warn_fg_color, t!("desactualizada (Buscar para repetir)"));
             }
         }
     });
@@ -4954,36 +4979,36 @@ fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOu
     // Opciones de copia.
     let has_end = !w.to.is_empty();
     ui.horizontal_wrapped(|ui| {
-        ui.label("Copiar:");
-        ui.radio_value(&mut w.mode, CopyMode::Full, if has_end { "desde… hasta (incluidos)" } else { "coincidencia" });
+        ui.label(t!("Copiar:"));
+        ui.radio_value(&mut w.mode, CopyMode::Full, if has_end { t!("desde… hasta (incluidos)") } else { "coincidencia" });
         ui.add_enabled_ui(has_end, |ui| {
-            ui.radio_value(&mut w.mode, CopyMode::Inner, "solo lo de en medio").on_hover_text("Sin los textos de «Desde» y «Hasta»");
+            ui.radio_value(&mut w.mode, CopyMode::Inner, t!("solo lo de en medio")).on_hover_text(t!("Sin los textos de «Desde» y «Hasta»"));
         });
-        ui.radio_value(&mut w.mode, CopyMode::Lines, "líneas completas");
+        ui.radio_value(&mut w.mode, CopyMode::Lines, t!("líneas completas"));
     });
     if !has_end && w.mode == CopyMode::Inner {
         w.mode = CopyMode::Full;
     }
     ui.horizontal_wrapped(|ui| {
-        ui.label("Separar bloques con:");
-        ui.radio_value(&mut w.sep, Sep::Newline, "salto de línea");
-        ui.radio_value(&mut w.sep, Sep::Blank, "línea en blanco");
-        ui.radio_value(&mut w.sep, Sep::Nothing, "nada");
+        ui.label(t!("Separar bloques con:"));
+        ui.radio_value(&mut w.sep, Sep::Newline, t!("salto de línea"));
+        ui.radio_value(&mut w.sep, Sep::Blank, t!("línea en blanco"));
+        ui.radio_value(&mut w.sep, Sep::Nothing, t!("nada"));
     });
     let count = w.count();
     let tab = &mut tabs[ti];
     let mut go = None;
     ui.horizontal_wrapped(|ui| {
-        if ui.add_enabled(count > 0, Button::new("◀")).on_hover_text("Bloque anterior").clicked() {
+        if ui.add_enabled(count > 0, Button::new("◀")).on_hover_text(t!("Bloque anterior")).clicked() {
             go = Some(w.cur.map_or(count - 1, |i| if i == 0 { count - 1 } else { i - 1 }));
         }
-        if ui.add_enabled(count > 0, Button::new("▶")).on_hover_text("Bloque siguiente").clicked() {
+        if ui.add_enabled(count > 0, Button::new("▶")).on_hover_text(t!("Bloque siguiente")).clicked() {
             go = Some(w.cur.map_or(0, |i| (i + 1) % count));
         }
         let cur = w.cur.filter(|&i| i < count);
         if ui
-            .add_enabled(cur.is_some(), Button::new("Seleccionar en el editor"))
-            .on_hover_text("Selecciona el bloque actual (según «Copiar») para copiarlo o editarlo")
+            .add_enabled(cur.is_some(), Button::new(t!("Seleccionar en el editor")))
+            .on_hover_text(t!("Selecciona el bloque actual (según «Copiar») para copiarlo o editarlo"))
             .clicked()
         {
             if let Some(b) = cur.and_then(|i| w.get(i)) {
@@ -4997,9 +5022,9 @@ fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOu
         }
         let ctx = ui.ctx().clone();
         let copy = |only: Option<usize>| -> String {
-            let Some((s, _, _)) = &w.search else { return "Busca algo primero".into() };
+            let Some((s, _, _)) = &w.search else { return t!("Busca algo primero").into() };
             if only.is_none() && !s.is_done() {
-                return "Espera a que termine la búsqueda".into();
+                return t!("Espera a que termine la búsqueda").into();
             }
             let all = s.blocks.lock().unwrap();
             let list = match only {
@@ -5008,27 +5033,27 @@ fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOu
             };
             match tab.blocks_text(list, w.mode, w.sep) {
                 Ok((t, n)) => {
-                    let m = format!("Copiados {} bloques ({})", fmt_num(n as u64), human_size(t.len() as u64));
+                    let m = tf!("Copiados {fmt_num} bloques ({len})", fmt_num = fmt_num(n as u64), len = human_size(t.len() as u64));
                     ctx.copy_text(t);
                     m
                 }
                 Err(e) => e,
             }
         };
-        if ui.add_enabled(cur.is_some(), Button::new("Copiar bloque")).clicked() {
+        if ui.add_enabled(cur.is_some(), Button::new(t!("Copiar bloque"))).clicked() {
             out.msg = Some(copy(cur));
         }
-        if ui.add_enabled(count > 0, Button::new(format!("Copiar todos ({})", fmt_num(count as u64)))).clicked() {
+        if ui.add_enabled(count > 0, Button::new(tf!("Copiar todos ({fmt_num})", fmt_num = fmt_num(count as u64)))).clicked() {
             out.msg = Some(copy(None));
         }
         if ui
-            .add_enabled(count > 0, Button::new("📝 A archivo nuevo"))
-            .on_hover_text("Abre un archivo nuevo con todos los bloques (según «Copiar» y el separador), listo para guardar")
+            .add_enabled(count > 0, Button::new(t!("📝 A archivo nuevo")))
+            .on_hover_text(t!("Abre un archivo nuevo con todos los bloques (según «Copiar» y el separador), listo para guardar"))
             .clicked()
         {
             if let Some((s, _, _)) = &w.search {
                 if !s.is_done() {
-                    out.msg = Some("Espera a que termine la búsqueda".into());
+                    out.msg = Some(t!("Espera a que termine la búsqueda").into());
                 } else {
                     let all = s.blocks.lock().unwrap();
                     match tab.blocks_text(&all, w.mode, w.sep) {
@@ -5159,7 +5184,7 @@ fn minimap(ui: &mut Ui, rect: Rect, resp: &Response, tab: &Tab, w: &mut AdvWin) 
     painter.rect_filled(view, 1.0, visuals.selection.bg_fill.gamma_multiply(0.25));
     painter.rect_stroke(view, 1.0, Stroke::new(1.0, visuals.selection.stroke.color), StrokeKind::Inside);
 
-    let r = resp.clone().on_hover_text("Verde: bloques encontrados (más intenso = más bloques) · recuadro: lo que se ve · clic: ir allí");
+    let r = resp.clone().on_hover_text(t!("Verde: bloques encontrados (más intenso = más bloques) · recuadro: lo que se ve · clic: ir allí"));
     if r.clicked() || r.dragged() {
         let p = r.interact_pointer_pos()?;
         let frac = ((p.y - inner.top()) / inner.height()).clamp(0.0, 1.0) as f64;
@@ -5198,9 +5223,9 @@ fn filter_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color3
         for (k, r) in tab.filter.rules.iter_mut().enumerate() {
             ui.horizontal(|ui| {
                 let (txt, hint) = if r.exclude {
-                    ("− Excluir", "Se ocultan las líneas que contienen esto (clic: cambiar a Incluir)")
+                    (t!("− Excluir"), t!("Se ocultan las líneas que contienen esto (clic: cambiar a Incluir)"))
                 } else {
-                    ("+ Incluir", "Se muestran las líneas que contienen esto (clic: cambiar a Excluir)")
+                    (t!("+ Incluir"), t!("Se muestran las líneas que contienen esto (clic: cambiar a Excluir)"))
                 };
                 let color = if r.exclude { Color32::from_rgb(220, 90, 80) } else { Color32::from_rgb(70, 170, 90) };
                 if ui.add(Button::new(RichText::new(txt).color(color).strong()).min_size(vec2(84.0, 0.0))).on_hover_text(hint).clicked() {
@@ -5210,13 +5235,13 @@ fn filter_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color3
                 let te = ui.add(
                     TextEdit::singleline(&mut r.text)
                         .desired_width(320.0)
-                        .hint_text(if r.regex { "expresión regular" } else { "texto" })
+                        .hint_text(if r.regex { t!("expresión regular") } else { "texto" })
                         .font(TextStyle::Monospace),
                 );
                 changed |= te.changed();
-                changed |= ui.toggle_value(&mut r.case, "Aa").on_hover_text("Distinguir mayúsculas").changed();
-                changed |= ui.toggle_value(&mut r.regex, ".*").on_hover_text("Expresión regular").changed();
-                if n > 1 && ui.small_button("×").on_hover_text("Quitar esta regla").clicked() {
+                changed |= ui.toggle_value(&mut r.case, "Aa").on_hover_text(t!("Distinguir mayúsculas")).changed();
+                changed |= ui.toggle_value(&mut r.regex, ".*").on_hover_text(t!("Expresión regular")).changed();
+                if n > 1 && ui.small_button("×").on_hover_text(t!("Quitar esta regla")).clicked() {
                     remove = Some(k);
                 }
             });
@@ -5229,42 +5254,42 @@ fn filter_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color3
             tab.filter.touch();
         }
         ui.horizontal(|ui| {
-            if ui.button("+ Regla").on_hover_text("Varias de Incluir: basta con que coincida una. Las de Excluir quitan líneas.").clicked() {
+            if ui.button(t!("+ Regla")).on_hover_text(t!("Varias de Incluir: basta con que coincida una. Las de Excluir quitan líneas.")).clicked() {
                 tab.filter.rules.push(Rule::default());
             }
             ui.separator();
             let total = tab.total();
             let f = &tab.filter;
             if let Some(e) = &f.error {
-                ui.colored_label(ui.visuals().error_fg_color, format!("Regla no válida: {e}"));
+                ui.colored_label(ui.visuals().error_fg_color, tf!("Regla no válida: {e}", e = e));
             } else if !f.ready {
                 ui.spinner();
-                ui.label(format!("Filtrando… {:.0}%", f.progress().unwrap_or(0.0) * 100.0));
+                ui.label(tf!("Filtrando… {v}%", v = format!("{:.0}", f.progress().unwrap_or(0.0) * 100.0)));
             } else {
                 let c = f.view.count(total);
-                ui.label(format!("{} de {} líneas", fmt_num(c), fmt_num(total)))
-                    .on_hover_text("Doble clic en una línea (o Enter): ir a ella en el archivo completo");
+                ui.label(tf!("{fmt_num} de {fmt_num2} líneas", fmt_num = fmt_num(c), fmt_num2 = fmt_num(total)))
+                    .on_hover_text(t!("Doble clic en una línea (o Enter): ir a ella en el archivo completo"));
                 if f.progress().is_some() {
                     ui.spinner();
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Ver todo").on_hover_text("Volver al archivo completo (las reglas se guardan)").clicked() {
+                if ui.button(t!("Ver todo")).on_hover_text(t!("Volver al archivo completo (las reglas se guardan)")).clicked() {
                     tab.filter.on = false;
                 }
                 let ready = tab.filter.ready && tab.filter.error.is_none();
-                if ui.add_enabled(ready, Button::new("Nuevo archivo con estas líneas")).clicked() {
+                if ui.add_enabled(ready, Button::new(t!("Nuevo archivo con estas líneas"))).clicked() {
                     match filtered_text(tab) {
                         Ok(t) => tab.export_request = Some(t),
                         Err(e) => message = Some(e),
                     }
                 }
-                if ui.add_enabled(ready, Button::new("Copiar")).on_hover_text("Copiar todas las líneas filtradas").clicked() {
+                if ui.add_enabled(ready, Button::new(t!("Copiar"))).on_hover_text(t!("Copiar todas las líneas filtradas")).clicked() {
                     message = Some(match filtered_text(tab) {
                         Ok(t) => {
                             let n = t.lines().count();
                             ui.ctx().copy_text(t);
-                            format!("Copiadas {} líneas", fmt_num(n as u64))
+                            tf!("Copiadas {fmt_num} líneas", fmt_num = fmt_num(n as u64))
                         }
                         Err(e) => e,
                     });
@@ -5373,7 +5398,7 @@ fn filter_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color3
         }
     }
     if count == 0 && tab.filter.ready && tab.filter.error.is_none() {
-        painter.text(list.center(), Align2::CENTER_CENTER, "Ninguna línea cumple las reglas", FontId::proportional(14.0), visuals.weak_text_color());
+        painter.text(list.center(), Align2::CENTER_CENTER, t!("Ninguna línea cumple las reglas"), FontId::proportional(14.0), visuals.weak_text_color());
     }
     vscrollbar(ui, vsb, id.with("vsb"), &mut top, count, visible);
     let f = &mut tab.filter;
@@ -5399,7 +5424,7 @@ fn filtered_text(tab: &Tab) -> Result<String, String> {
         out += &tab.line(l);
         out.push('\n');
         if out.len() > MAX_COPY_BYTES {
-            return Err(format!("Demasiado grande (máx. {})", human_size(MAX_COPY_BYTES as u64)));
+            return Err(tf!("Demasiado grande (máx. {human_size})", human_size = human_size(MAX_COPY_BYTES as u64)));
         }
     }
     Ok(out)
@@ -5483,7 +5508,7 @@ fn results_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color
 fn detail_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color32, Color32)>) {
     apply_text_colors(ui, colors);
     let Some(line) = tab.cursor.map(|c| c.line) else {
-        ui.weak("Selecciona una línea para verla completa aquí.");
+        ui.weak(t!("Selecciona una línea para verla completa aquí."));
         return;
     };
     let version = tab.version();
@@ -5491,7 +5516,7 @@ fn detail_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color3
         let text = match tab.rows(line, 1, MAX_DETAIL_BYTES).into_iter().next() {
             Some((_, mut t, tr)) => {
                 if tr {
-                    t += "\n…[truncado: la línea mide más de 1 MB]";
+                    t += t!("\n…[truncado: la línea mide más de 1 MB]");
                 }
                 t
             }
@@ -5500,7 +5525,7 @@ fn detail_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color3
         tab.detail_cache = Some((line, version, text));
     }
     let text = &tab.detail_cache.as_ref().unwrap().2;
-    ui.label(RichText::new(format!("Línea {}", fmt_num(line + 1))).small().weak());
+    ui.label(RichText::new(tf!("Línea {fmt_num}", fmt_num = fmt_num(line + 1))).small().weak());
     ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
         ui.add(TextEdit::multiline(&mut text.as_str()).font(font.clone()).desired_width(f32::INFINITY));
     });
@@ -5612,7 +5637,7 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
             ui.painter().hline(row_rect.x_range(), y, Stroke::new(2.0, v.selection.stroke.color));
         }
         let ink = if active || multi > 0 { v.selection.stroke.color } else { v.strong_text_color() };
-        if ui.small_button("×").on_hover_text("Cerrar (Ctrl+W)").clicked() {
+        if ui.small_button("×").on_hover_text(t!("Cerrar (Ctrl+W)")).clicked() {
             *action = Some(FileAction::Close(i));
         }
         let name = if t.dirty() { format!("● {}", t.doc.name) } else { t.doc.name.clone() };
@@ -5634,12 +5659,7 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
                 *action = Some(FileAction::MoveBefore(d.0, i));
             }
         }
-        let r = r.on_hover_text(format!(
-            "{}\nClic derecho: más opciones · Arrastrar: mover a un espacio\n{} + clic / Shift + clic: seleccionar varios\n{}",
-            if t.untitled { "Archivo nuevo sin guardar".to_string() } else { t.doc.path.display().to_string() },
-            if MAC { "Cmd" } else { "Ctrl" },
-            tab_details(t)
-        ));
+        let r = r.on_hover_text(tf!("{to_string}\nClic derecho: más opciones · Arrastrar: mover a un espacio\n{if_MAC_Cmd_else_Ctrl} + clic / Shift + clic: seleccionar varios\n{tab_details}", to_string = if t.untitled { t!("Archivo nuevo sin guardar").to_string() } else { t.doc.path.display().to_string() }, if_MAC_Cmd_else_Ctrl = if MAC { "Cmd" } else { "Ctrl" }, tab_details = tab_details(t)));
         if r.clicked() {
             *action = Some(FileAction::Click(i, ui.input(|i| i.modifiers)));
         }
@@ -5647,9 +5667,9 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
             let mut chosen = None;
             if multi > 0 {
                 // Menú para todos los seleccionados.
-                ui.weak(format!("{multi} archivos seleccionados"));
+                ui.weak(tf!("{multi} archivos seleccionados", multi = multi));
                 ui.separator();
-                ui.menu_button(format!("Mover los {multi} a un espacio"), |ui| {
+                ui.menu_button(tf!("Mover los {multi} a un espacio", multi = multi), |ui| {
                     for sp in spaces {
                         if ui.button(&sp.name).clicked() {
                             chosen = Some(FileAction::ToSpace(i, Some(sp.id)));
@@ -5658,18 +5678,18 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
                     if !spaces.is_empty() {
                         ui.separator();
                     }
-                    if ui.button("Nuevo espacio…").clicked() {
+                    if ui.button(t!("Nuevo espacio…")).clicked() {
                         chosen = Some(FileAction::NewSpace(Some(i)));
                     }
-                    if ui.button("Sacar de los espacios").clicked() {
+                    if ui.button(t!("Sacar de los espacios")).clicked() {
                         chosen = Some(FileAction::ToSpace(i, None));
                     }
                 });
                 ui.separator();
-                if ui.button(format!("Cerrar los {multi}")).clicked() {
+                if ui.button(tf!("Cerrar los {multi}", multi = multi)).clicked() {
                     chosen = Some(FileAction::CloseSel(i));
                 }
-                if ui.button("Quitar la selección").clicked() {
+                if ui.button(t!("Quitar la selección")).clicked() {
                     chosen = Some(FileAction::Unpick);
                 }
                 if chosen.is_some() {
@@ -5679,23 +5699,23 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
                 return;
             }
             let on_disk = !t.untitled;
-            let nw = ui.add_enabled(on_disk, Button::new("Abrir en una ventana nueva"));
-            let nw = if t.dirty() { nw.on_hover_text("La ventana nueva muestra la versión guardada en disco") } else { nw };
+            let nw = ui.add_enabled(on_disk, Button::new(t!("Abrir en una ventana nueva")));
+            let nw = if t.dirty() { nw.on_hover_text(t!("La ventana nueva muestra la versión guardada en disco")) } else { nw };
             if nw.clicked() {
                 chosen = Some(FileAction::NewWindow(i));
             }
             ui.separator();
-            if ui.add_enabled(on_disk, Button::new(REVEAL_LABEL)).clicked() {
+            if ui.add_enabled(on_disk, Button::new(reveal_label())).clicked() {
                 chosen = Some(FileAction::Reveal(i));
             }
-            if ui.add_enabled(on_disk, Button::new("Copiar ruta")).clicked() {
+            if ui.add_enabled(on_disk, Button::new(t!("Copiar ruta"))).clicked() {
                 chosen = Some(FileAction::CopyPath(i));
             }
-            if ui.button("Copiar nombre").clicked() {
+            if ui.button(t!("Copiar nombre")).clicked() {
                 chosen = Some(FileAction::CopyName(i));
             }
             ui.separator();
-            ui.menu_button("Mover a un espacio", |ui| {
+            ui.menu_button(t!("Mover a un espacio"), |ui| {
                 for sp in spaces {
                     if ui.add_enabled(t.space != Some(sp.id), Button::new(&sp.name)).clicked() {
                         chosen = Some(FileAction::ToSpace(i, Some(sp.id)));
@@ -5704,24 +5724,24 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
                 if !spaces.is_empty() {
                     ui.separator();
                 }
-                if ui.button("Nuevo espacio…").clicked() {
+                if ui.button(t!("Nuevo espacio…")).clicked() {
                     chosen = Some(FileAction::NewSpace(Some(i)));
                 }
-                if t.space.is_some() && ui.button("Sacar del espacio").clicked() {
+                if t.space.is_some() && ui.button(t!("Sacar del espacio")).clicked() {
                     chosen = Some(FileAction::ToSpace(i, None));
                 }
             });
             ui.separator();
-            let dup = ui.add_enabled(on_disk, Button::new("Duplicar"));
-            let dup = if t.dirty() { dup.on_hover_text("La copia incluye los cambios sin guardar; el original no se modifica") } else { dup };
+            let dup = ui.add_enabled(on_disk, Button::new(t!("Duplicar")));
+            let dup = if t.dirty() { dup.on_hover_text(t!("La copia incluye los cambios sin guardar; el original no se modifica")) } else { dup };
             if dup.clicked() {
                 chosen = Some(FileAction::Duplicate(i));
             }
             ui.separator();
-            if ui.button("Cerrar").clicked() {
+            if ui.button(t!("Cerrar")).clicked() {
                 chosen = Some(FileAction::Close(i));
             }
-            if ui.add_enabled(total > 1, Button::new("Cerrar los demás")).clicked() {
+            if ui.add_enabled(total > 1, Button::new(t!("Cerrar los demás"))).clicked() {
                 chosen = Some(FileAction::CloseOthers(i));
             }
             if chosen.is_some() {
@@ -5735,17 +5755,17 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
 
 fn tab_details(t: &Tab) -> String {
     let idx = if t.doc.indexing_done() {
-        format!("{} líneas", fmt_num(t.total()))
+        tf!("{total} líneas", total = fmt_num(t.total()))
     } else {
         let p = t.doc.progress.load(Ordering::Relaxed) as f64 / t.doc.len().max(1) as f64;
-        format!("indexando {:.0}%", p * 100.0)
+        tf!("indexando {v}%", v = format!("{:.0}", p * 100.0))
     };
     format!(
         "{} · {} · {}{}",
         human_size(t.doc.len() as u64),
         t.doc.src.encoding.name(),
         idx,
-        if t.editable { "" } else { " · solo lectura" }
+        if t.editable { "" } else { t!(" · solo lectura") }
     )
 }
 

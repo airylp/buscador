@@ -167,3 +167,8 @@ mod tests {
         assert!(defs.families.contains_key(&FontFamily::Name(TEXT_FAMILY.into())));
     }
 }
+
+/// Nombre para mostrar: «(incluida)» traducido (el nombre guardado no cambia).
+pub fn label(name: &str) -> String {
+    name.replace("(incluida)", &format!("({})", t!("incluida")))
+}

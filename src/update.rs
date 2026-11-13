@@ -27,7 +27,7 @@ pub fn current_commit() -> Option<&'static str> {
 pub fn version_label() -> String {
     match current_commit() {
         Some(c) => format!("{} ({c})", env!("CARGO_PKG_VERSION")),
-        None => format!("{} (compilación local)", env!("CARGO_PKG_VERSION")),
+        None => tf!("{v} (compilación local)", v = env!("CARGO_PKG_VERSION")),
     }
 }
 
@@ -109,11 +109,11 @@ impl Updater {
                             Stage::Available(short)
                         }
                     } else {
-                        Stage::Failed("respuesta inesperada de GitHub".into())
+                        Stage::Failed(t!("respuesta inesperada de GitHub").into())
                     }
                 }
-                Ok(o) => Stage::Failed(format!("no se pudo consultar GitHub: {}", String::from_utf8_lossy(&o.stderr).trim())),
-                Err(e) => Stage::Failed(format!("no se pudo ejecutar curl: {e}")),
+                Ok(o) => Stage::Failed(tf!("no se pudo consultar GitHub: {e}", e = String::from_utf8_lossy(&o.stderr).trim())),
+                Err(e) => Stage::Failed(tf!("no se pudo ejecutar curl: {e}", e = e)),
             };
             *stage.lock().unwrap() = new;
             ctx.request_repaint();
@@ -147,7 +147,7 @@ impl Updater {
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => {
-                    *stage.lock().unwrap() = Stage::Failed(format!("no se pudo iniciar: {e}"));
+                    *stage.lock().unwrap() = Stage::Failed(tf!("no se pudo iniciar: {e}", e = e));
                     ctx.request_repaint();
                     return;
                 }
@@ -184,8 +184,8 @@ impl Updater {
             let ok = child.wait().map(|s| s.success()).unwrap_or(false);
             *stage.lock().unwrap() = match (ok, installed) {
                 (true, Some(p)) => Stage::Done(p),
-                (true, None) => Stage::Failed("terminó sin instalar la app".into()),
-                (false, _) => Stage::Failed("falló (mira el registro)".into()),
+                (true, None) => Stage::Failed(t!("terminó sin instalar la app").into()),
+                (false, _) => Stage::Failed(t!("falló (mira el registro)").into()),
             };
             ctx.request_repaint();
         });

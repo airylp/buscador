@@ -76,7 +76,7 @@ impl BlockSearch {
         params: BlockParams,
     ) -> Result<Self, String> {
         if params.from.is_empty() {
-            return Err("Escribe qué buscar en «Desde»".into());
+            return Err(t!("Escribe qué buscar en «Desde»").into());
         }
         let re_from = params.build(&params.from)?;
         let re_to = if params.to.is_empty() { None } else { Some(params.build(&params.to)?) };

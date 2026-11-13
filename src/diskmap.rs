@@ -494,7 +494,7 @@ impl DiskMap {
     fn start_find(&mut self, ctx: &Context) -> Option<String> {
         let tree = self.tree.clone()?;
         if self.needle.is_empty() {
-            return Some("Escribe el texto a buscar".into());
+            return Some(t!("Escribe el texto a buscar").into());
         }
         if let Some(f) = &self.find {
             f.cancel.store(true, Ordering::Relaxed);
@@ -534,29 +534,20 @@ impl DiskMap {
     fn status_ui(&mut self, ui: &mut Ui, ctx: &Context) {
         if let Some(s) = &self.scan {
             ui.spinner();
-            ui.label(format!(
-                "Leyendo… {} archivos · {}",
-                crate::app::fmt_num(s.files.load(Ordering::Relaxed)),
-                crate::app::human_size(s.bytes.load(Ordering::Relaxed))
-            ));
-            if ui.button("Detener").clicked() {
+            ui.label(tf!("Leyendo… {load} archivos · {load2}", load = crate::app::fmt_num(s.files.load(Ordering::Relaxed)), load2 = crate::app::human_size(s.bytes.load(Ordering::Relaxed))));
+            if ui.button(t!("Detener")).clicked() {
                 s.cancel.store(true, Ordering::Relaxed);
             }
         } else if let Some(t) = &self.tree {
             let root = &t.nodes[0];
             ui.label(RichText::new(t.root.display().to_string()).strong());
-            ui.weak(format!(
-                "{} · {} archivos{}",
-                crate::app::human_size(root.size),
-                crate::app::fmt_num(root.files),
-                if t.partial { " · lectura detenida (incompleto)" } else { "" }
-            ));
-            if ui.small_button("⟳").on_hover_text("Volver a leer la carpeta").clicked() {
+            ui.weak(tf!("{size} · {files} archivos{partial_lectura_detenida}", size = crate::app::human_size(root.size), files = crate::app::fmt_num(root.files), partial_lectura_detenida = if t.partial { t!(" · lectura detenida (incompleto)") } else { "" }));
+            if ui.small_button("⟳").on_hover_text(t!("Volver a leer la carpeta")).clicked() {
                 let r = t.root.clone();
                 self.start_scan(r, ctx);
             }
         } else {
-            ui.weak("Elige una carpeta para ver qué ocupa cada carpeta y archivo.");
+            ui.weak(t!("Elige una carpeta para ver qué ocupa cada carpeta y archivo."));
         }
     }
 
@@ -567,7 +558,7 @@ impl DiskMap {
         {
             if let Some((t, errors)) = ready {
                 if errors > 0 {
-                    out.msg = Some(format!("Mapa: {errors} carpetas o archivos sin permiso de lectura"));
+                    out.msg = Some(tf!("Mapa: {errors} carpetas o archivos sin permiso de lectura", errors = errors));
                 }
                 self.tree = Some(Arc::new(t));
                 self.scan = None;
@@ -580,13 +571,13 @@ impl DiskMap {
 
         // --- Carpeta ---
         ui.horizontal(|ui| {
-            if ui.button("📁 Elegir carpeta…").clicked() {
+            if ui.button(t!("📁 Elegir carpeta…")).clicked() {
                 out.pick_folder = true;
             }
             let (label, hint) = if self.detached {
-                ("Integrar", "Volver a mostrarlo dentro de la ventana principal")
+                (t!("Integrar"), t!("Volver a mostrarlo dentro de la ventana principal"))
             } else {
-                ("Ventana aparte", "Mostrarlo en una ventana propia (puedes llevarla a otro monitor)")
+                (t!("Ventana aparte"), t!("Mostrarlo en una ventana propia (puedes llevarla a otro monitor)"))
             };
             // A la derecha de la fila, antes que la ruta (que puede ser larga).
             let w = ui.available_width();
@@ -594,7 +585,10 @@ impl DiskMap {
                 if ui.button(label).on_hover_text(hint).clicked() {
                     self.detached = !self.detached;
                 }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                // Solo el espacio que deja el botón (recortado: no lo tapa).
+                let rest = ui.available_rect_before_wrap();
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rest).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+                    ui.set_clip_rect(rest.intersect(ui.clip_rect()));
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                     self.status_ui(ui, &ctx);
                 });
@@ -602,16 +596,16 @@ impl DiskMap {
         });
         // --- Búsqueda ---
         ui.horizontal(|ui| {
-            ui.label("Extensiones:");
-            ui.add(TextEdit::singleline(&mut self.exts).desired_width(230.0).hint_text("vacío = todas"))
-                .on_hover_text("Solo se busca en archivos con estas extensiones (separadas por comas). Vacío = en todos.\nEl mapa siempre muestra todos los archivos.");
-            ui.label("Texto:");
-            let r = ui.add(TextEdit::singleline(&mut self.needle).desired_width(200.0).hint_text("texto a buscar").font(egui::TextStyle::Monospace));
-            ui.toggle_value(&mut self.case_sensitive, "Aa").on_hover_text("Distinguir mayúsculas");
+            ui.label(t!("Extensiones:"));
+            ui.add(TextEdit::singleline(&mut self.exts).desired_width(230.0).hint_text(t!("vacío = todas")))
+                .on_hover_text(t!("Solo se busca en archivos con estas extensiones (separadas por comas). Vacío = en todos.\nEl mapa siempre muestra todos los archivos."));
+            ui.label(t!("Texto:"));
+            let r = ui.add(TextEdit::singleline(&mut self.needle).desired_width(200.0).hint_text(t!("texto a buscar")).font(egui::TextStyle::Monospace));
+            ui.toggle_value(&mut self.case_sensitive, "Aa").on_hover_text(t!("Distinguir mayúsculas"));
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             let running = self.find.as_ref().is_some_and(|f| !f.is_done());
             if running {
-                if ui.button("Cancelar").clicked() {
+                if ui.button(t!("Cancelar")).clicked() {
                     if let Some(f) = &self.find {
                         f.cancel.store(true, Ordering::Relaxed);
                     }
@@ -620,19 +614,19 @@ impl DiskMap {
                 // Aún se está leyendo la carpeta: la búsqueda queda en espera y
                 // empieza sola al terminar el mapa.
                 let b = ui
-                    .add(Button::new(if self.search_when_ready { "⏳ En espera" } else { "🔍 Buscar" }).selected(self.search_when_ready))
-                    .on_hover_text("La búsqueda empieza sola cuando termine de leerse la carpeta (clic otra vez para no buscar)");
+                    .add(Button::new(if self.search_when_ready { t!("⏳ En espera") } else { t!("🔍 Buscar") }).selected(self.search_when_ready))
+                    .on_hover_text(t!("La búsqueda empieza sola cuando termine de leerse la carpeta (clic otra vez para no buscar)"));
                 if b.clicked() || enter {
                     if self.needle.is_empty() {
-                        out.msg = Some("Escribe el texto a buscar".into());
+                        out.msg = Some(t!("Escribe el texto a buscar").into());
                     } else {
                         self.search_when_ready = if enter { true } else { !self.search_when_ready };
                     }
                 }
-            } else if ui.add_enabled(self.tree.is_some(), Button::new("🔍 Buscar")).clicked() || (enter && self.tree.is_some()) {
+            } else if ui.add_enabled(self.tree.is_some(), Button::new(t!("🔍 Buscar"))).clicked() || (enter && self.tree.is_some()) {
                 out.msg = self.start_find(&ctx).or(out.msg.take());
             }
-            if self.find.is_some() && !running && ui.small_button("✖").on_hover_text("Quitar el resaltado").clicked() {
+            if self.find.is_some() && !running && ui.small_button("✖").on_hover_text(t!("Quitar el resaltado")).clicked() {
                 self.find = None;
                 self.marks.clear();
                 self.marks_seen = 0;
@@ -642,34 +636,21 @@ impl DiskMap {
         if self.search_when_ready && self.scan.is_some() {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(format!("Se buscará «{}» en cuanto termine de generarse el mapa", self.needle));
+                ui.label(tf!("Se buscará «{needle}» en cuanto termine de generarse el mapa", needle = self.needle));
             });
         } else if let Some(f) = &self.find {
             let n = f.found.lock().unwrap().len();
             let done = f.done_files.load(Ordering::Relaxed);
             let mut s = if f.is_done() {
                 let cancelled = f.cancel.load(Ordering::Relaxed) && done < f.total_files;
-                format!(
-                    "{} de {} archivos contienen «{}»{} · {:.1}s",
-                    crate::app::fmt_num(n as u64),
-                    crate::app::fmt_num(f.total_files),
-                    f.needle,
-                    if cancelled { " (cancelada)" } else { "" },
-                    *f.elapsed.lock().unwrap()
-                )
+                tf!("{crate_app_fmt_num} de {total_files} archivos contienen «{needle}»{if_cancelled} · {unwrap}s", crate_app_fmt_num = crate::app::fmt_num(n as u64), total_files = crate::app::fmt_num(f.total_files), needle = f.needle, if_cancelled = if cancelled { t!(" (cancelada)") } else { "" }, unwrap = format!("{:.1}", *f.elapsed.lock().unwrap()))
             } else {
                 let p = f.done_bytes.load(Ordering::Relaxed) as f64 / f.total_bytes.max(1) as f64;
-                format!(
-                    "Buscando… {} / {} archivos ({:.0}%) · {} encontrados",
-                    crate::app::fmt_num(done),
-                    crate::app::fmt_num(f.total_files),
-                    p * 100.0,
-                    crate::app::fmt_num(n as u64)
-                )
+                tf!("Buscando… {crate_app_fmt_num} / {total_files} archivos ({v}%) · {crate_app_fmt_num2} encontrados", crate_app_fmt_num = crate::app::fmt_num(done), total_files = crate::app::fmt_num(f.total_files), v = format!("{:.0}", p * 100.0), crate_app_fmt_num2 = crate::app::fmt_num(n as u64))
             };
             let e = f.errors.load(Ordering::Relaxed);
             if e > 0 {
-                s += &format!(" · {e} sin poder leer");
+                s += &tf!(" · {e} sin poder leer", e = e);
             }
             ui.horizontal(|ui| {
                 if !f.is_done() {
@@ -683,7 +664,7 @@ impl DiskMap {
 
         // --- Ruta del zoom ---
         ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(self.view != 0, Button::new("⬆").small()).on_hover_text("Subir un nivel").clicked() {
+            if ui.add_enabled(self.view != 0, Button::new("⬆").small()).on_hover_text(t!("Subir un nivel")).clicked() {
                 self.view = tree.nodes[self.view as usize].parent;
             }
             let mut chain = vec![self.view];
@@ -720,18 +701,18 @@ impl DiskMap {
 
     fn list_ui(&mut self, ui: &mut Ui, tree: &Tree, found: &[u32], out: &mut Out) {
         ui.horizontal(|ui| {
-            ui.strong(format!("Con el texto ({})", crate::app::fmt_num(found.len() as u64)));
+            ui.strong(tf!("Con el texto ({len})", len = crate::app::fmt_num(found.len() as u64)));
         });
         ui.horizontal(|ui| {
-            if ui.small_button("Todos").clicked() {
+            if ui.small_button(t!("Todos")).clicked() {
                 self.selected = found.iter().copied().collect();
             }
-            if ui.small_button("Ninguno").clicked() {
+            if ui.small_button(t!("Ninguno")).clicked() {
                 self.selected.clear();
             }
             let n = self.selected.len();
-            let b = ui.add_enabled(n > 0, Button::new(format!("📂 Abrir ({n})")));
-            if b.on_hover_text("Abrir en el editor los archivos marcados y buscar en ellos el texto").clicked() {
+            let b = ui.add_enabled(n > 0, Button::new(tf!("📂 Abrir ({n})", n = n)));
+            if b.on_hover_text(t!("Abrir en el editor los archivos marcados y buscar en ellos el texto")).clicked() {
                 out.open = self.selected.iter().map(|&i| tree.path(i)).collect();
             }
         });
@@ -752,7 +733,7 @@ impl DiskMap {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                     let r = ui
                         .selectable_label(self.focus == Some(i), format!("{}  {}", n.name, crate::app::human_size(n.len)))
-                        .on_hover_text(format!("{}\nClic: señalar en el mapa · Doble clic: abrir", tree.rel(i)));
+                        .on_hover_text(tf!("{rel}\nClic: señalar en el mapa · Doble clic: abrir", rel = tree.rel(i)));
                     if r.clicked() {
                         self.focus = Some(i);
                         // Que se vea: si está fuera del zoom, volver a la raíz.
@@ -849,18 +830,18 @@ impl DiskMap {
         if let Some(h) = hover {
             painter.rect_stroke(h.rect, CornerRadius::ZERO, Stroke::new(1.5, Color32::BLACK), StrokeKind::Inside);
             let n = &tree.nodes[h.node as usize];
-            let mut tip = format!("{}\n{} en disco", tree.rel(h.node), crate::app::human_size(n.size));
+            let mut tip = tf!("{node}\n{size} en disco", node = tree.rel(h.node), size = crate::app::human_size(n.size));
             if n.dir {
-                tip += &format!(" · {} archivos\nDoble clic: entrar", crate::app::fmt_num(n.files));
+                tip += &tf!(" · {files} archivos\nDoble clic: entrar", files = crate::app::fmt_num(n.files));
             } else {
-                tip += &format!(" · {} bytes", crate::app::fmt_num(n.len));
+                tip += &tf!(" · {len} bytes", len = crate::app::fmt_num(n.len));
                 if mark(h.node) == 1 {
-                    tip += "\n✔ Contiene el texto";
+                    tip += t!("\n✔ Contiene el texto");
                 }
-                tip += "\nClic: marcar (Cmd/Ctrl+clic: varios) · Doble clic: abrir";
+                tip += t!("\nClic: marcar (Cmd/Ctrl+clic: varios) · Doble clic: abrir");
             }
             if mark(h.node) == 2 {
-                tip += "\n✔ Tiene archivos con el texto";
+                tip += t!("\n✔ Tiene archivos con el texto");
             }
             resp.clone().on_hover_text_at_pointer(tip);
         }
@@ -905,24 +886,24 @@ impl DiskMap {
             {
                 let h = Cell { rect: Rect::NOTHING, node, depth: 0, header: false };
                 let n = n_of(&h);
-                if !n.dir && ui.button("Abrir en el editor").clicked() {
+                if !n.dir && ui.button(t!("Abrir en el editor")).clicked() {
                     out.open = vec![tree.path(h.node)];
                     ui.close();
                 }
-                if !self.selected.is_empty() && ui.button(format!("Abrir los marcados ({})", self.selected.len())).clicked() {
+                if !self.selected.is_empty() && ui.button(tf!("Abrir los marcados ({len})", len = self.selected.len())).clicked() {
                     out.open = self.selected.iter().map(|&i| tree.path(i)).collect();
                     ui.close();
                 }
-                if n.dir && h.node != self.view && ui.button("Entrar en la carpeta").clicked() {
+                if n.dir && h.node != self.view && ui.button(t!("Entrar en la carpeta")).clicked() {
                     self.view = h.node;
                     ui.close();
                 }
                 ui.separator();
-                if ui.button(crate::app::REVEAL_LABEL).clicked() {
+                if ui.button(crate::app::reveal_label()).clicked() {
                     out.reveal = Some(tree.path(h.node));
                     ui.close();
                 }
-                if ui.button("Copiar ruta").clicked() {
+                if ui.button(t!("Copiar ruta")).clicked() {
                     out.copy = Some(tree.path(h.node).display().to_string());
                     ui.close();
                 }

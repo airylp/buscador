@@ -225,6 +225,11 @@ pub struct FolderSearch {
     collapsed: HashSet<PathBuf>,
     pub focus_dir: bool,
     error: Option<String>,
+    /// Filas planas (archivo, línea) ya calculadas y para qué estado:
+    /// (nº de archivos con resultados, generación de plegados).
+    rows: Vec<(u32, u32)>,
+    rows_key: (usize, u64),
+    fold_gen: u64,
 }
 
 impl Default for FolderSearch {
@@ -240,6 +245,9 @@ impl Default for FolderSearch {
             collapsed: HashSet::new(),
             focus_dir: false,
             error: None,
+            rows: Vec::new(),
+            rows_key: (usize::MAX, 0),
+            fold_gen: 0,
         }
     }
 }
@@ -281,11 +289,11 @@ impl FolderSearch {
         let root = expand(&self.dir);
         self.error = None;
         if !root.is_dir() {
-            self.error = Some(format!("No existe la carpeta «{}»", root.display()));
+            self.error = Some(tf!("No existe la carpeta «{display}»", display = root.display()));
             return;
         }
         if self.query.is_empty() {
-            self.error = Some("Escribe el texto a buscar".into());
+            self.error = Some(t!("Escribe el texto a buscar").into());
             return;
         }
         self.stop();
@@ -293,9 +301,11 @@ impl FolderSearch {
         match Job::start(root, &self.query, self.regex, self.case, exts, ctx.clone()) {
             Ok(j) => {
                 self.collapsed.clear();
+                self.fold_gen += 1;
+                self.rows_key = (usize::MAX, 0);
                 self.job = Some(j);
             }
-            Err(e) => self.error = Some(format!("Expresión no válida: {e}")),
+            Err(e) => self.error = Some(tf!("Expresión no válida: {e}", e = e)),
         }
     }
 
@@ -304,10 +314,10 @@ impl FolderSearch {
         let ctx = ui.ctx().clone();
         let mut go = false;
         Grid::new("buscar_carpeta_campos").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-            ui.label("Ir a carpeta:");
+            ui.label(t!("Ir a carpeta:"));
             ui.horizontal(|ui| {
                 let w = (ui.available_width() - 130.0).max(200.0);
-                let r = ui.add(TextEdit::singleline(&mut self.dir).desired_width(w).hint_text("/ruta/a/la/carpeta  (también ~/…)").font(TextStyle::Monospace));
+                let r = ui.add(TextEdit::singleline(&mut self.dir).desired_width(w).hint_text(t!("/ruta/a/la/carpeta  (también ~/…)")).font(TextStyle::Monospace));
                 if std::mem::take(&mut self.focus_dir) {
                     r.request_focus();
                 }
@@ -315,34 +325,34 @@ impl FolderSearch {
                 let exists = !self.dir.trim().is_empty() && expand(&self.dir).is_dir();
                 if !self.dir.trim().is_empty() {
                     let (t, c) = if exists { ("✔", Color32::from_rgb(70, 170, 90)) } else { ("✖", ui.visuals().error_fg_color) };
-                    ui.colored_label(c, t).on_hover_text(if exists { "La carpeta existe" } else { "No se encuentra la carpeta" });
+                    ui.colored_label(c, t).on_hover_text(if exists { t!("La carpeta existe") } else { t!("No se encuentra la carpeta") });
                 }
-                if ui.button("📁 Elegir…").clicked() {
+                if ui.button(t!("📁 Elegir…")).clicked() {
                     out.pick_folder = true;
                 }
             });
             ui.end_row();
 
-            ui.label("Buscar:");
+            ui.label(t!("Buscar:"));
             ui.horizontal(|ui| {
                 let w = (ui.available_width() - 200.0).max(200.0);
-                let r = ui.add(TextEdit::singleline(&mut self.query).desired_width(w).hint_text(if self.regex { "expresión regular" } else { "texto" }).font(TextStyle::Monospace));
+                let r = ui.add(TextEdit::singleline(&mut self.query).desired_width(w).hint_text(if self.regex { t!("expresión regular") } else { "texto" }).font(TextStyle::Monospace));
                 go |= r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                ui.toggle_value(&mut self.case, "Aa").on_hover_text("Distinguir mayúsculas");
-                ui.toggle_value(&mut self.regex, ".*").on_hover_text("Expresión regular");
+                ui.toggle_value(&mut self.case, "Aa").on_hover_text(t!("Distinguir mayúsculas"));
+                ui.toggle_value(&mut self.regex, ".*").on_hover_text(t!("Expresión regular"));
                 if self.is_busy() {
-                    if ui.button("⏹ Detener").clicked() {
+                    if ui.button(t!("⏹ Detener")).clicked() {
                         self.stop();
                     }
-                } else if ui.add_enabled(!self.query.is_empty(), Button::new("🔍 Buscar")).clicked() {
+                } else if ui.add_enabled(!self.query.is_empty(), Button::new(t!("🔍 Buscar"))).clicked() {
                     go = true;
                 }
             });
             ui.end_row();
 
-            ui.label("Extensiones:");
-            ui.add(TextEdit::singleline(&mut self.exts).desired_width(260.0).hint_text("todas (texto); ej.: log, txt, xml"))
-                .on_hover_text("Solo los archivos con estas extensiones (separadas por comas). Vacío: todos los que no sean binarios.");
+            ui.label(t!("Extensiones:"));
+            ui.add(TextEdit::singleline(&mut self.exts).desired_width(260.0).hint_text(t!("todas (texto); ej.: log, txt, xml")))
+                .on_hover_text(t!("Solo los archivos con estas extensiones (separadas por comas). Vacío: todos los que no sean binarios."));
             ui.end_row();
         });
         if go {
@@ -359,56 +369,66 @@ impl FolderSearch {
                 if !j.is_done() {
                     ui.spinner();
                 }
-                let mut s = format!(
-                    "{} coincidencias en {} {} · {} de {} archivos revisados",
-                    crate::app::fmt_num(m),
-                    crate::app::fmt_num(nfiles as u64),
-                    if nfiles == 1 { "archivo" } else { "archivos" },
-                    crate::app::fmt_num(done),
-                    crate::app::fmt_num(seen)
-                );
+                let (m, n, done, seen) = (crate::app::fmt_num(m), crate::app::fmt_num(nfiles as u64), crate::app::fmt_num(done), crate::app::fmt_num(seen));
+                let mut s = if nfiles == 1 {
+                    tf!("{m} coincidencias en 1 archivo · {done} de {seen} archivos revisados", m = m, done = done, seen = seen)
+                } else {
+                    tf!("{m} coincidencias en {n} archivos · {done} de {seen} archivos revisados", m = m, n = n, done = done, seen = seen)
+                };
                 if j.is_done() {
                     s += &format!(" · {:.1} s", *j.elapsed.lock().unwrap());
                 }
                 let sk = j.skipped.load(Ordering::Relaxed);
                 if sk > 0 {
-                    s += &format!(" · {} binarios o ilegibles omitidos", crate::app::fmt_num(sk));
+                    s += &tf!(" · {crate_app_fmt_num} binarios o ilegibles omitidos", crate_app_fmt_num = crate::app::fmt_num(sk));
                 }
                 ui.label(s);
                 if j.truncated.load(Ordering::Relaxed) {
-                    ui.colored_label(ui.visuals().warn_fg_color, format!("(se paró en {} coincidencias)", crate::app::fmt_num(MAX_TOTAL)));
+                    ui.colored_label(ui.visuals().warn_fg_color, tf!("(se paró en {crate_app_fmt_num} coincidencias)", crate_app_fmt_num = crate::app::fmt_num(MAX_TOTAL)));
                 }
                 if nfiles > 0 {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.small_button("Expandir todo").clicked() {
+                        if ui.small_button(t!("Expandir todo")).clicked() {
                             self.collapsed.clear();
+                            self.fold_gen += 1;
                         }
-                        if ui.small_button("Plegar todo").clicked() {
+                        if ui.small_button(t!("Plegar todo")).clicked() {
                             self.collapsed = j.results.lock().unwrap().iter().map(|f| f.path.clone()).collect();
+                            self.fold_gen += 1;
                         }
                     });
                 }
             });
         } else {
-            ui.weak("Escribe o elige una carpeta y el texto, y pulsa Enter.");
+            ui.weak(t!("Escribe o elige una carpeta y el texto, y pulsa Enter."));
         }
         ui.separator();
         // Resultados: filas planas (archivo + sus líneas) para pintar solo las visibles.
         let Some(job) = self.job.clone() else { return out };
         let res = job.results.lock().unwrap();
-        let mut rows: Vec<(usize, Option<usize>)> = Vec::new();
-        for (fi, f) in res.iter().enumerate() {
-            rows.push((fi, None));
-            if !self.collapsed.contains(&f.path) {
-                rows.extend((0..f.hits.len()).map(|h| (fi, Some(h))));
+        // Solo se rehacen si llegaron archivos nuevos o cambió algún plegado
+        // (con 100 000 líneas no conviene hacerlo en cada fotograma).
+        // Fila = (archivo, línea + 1); línea 0 = la cabecera del archivo.
+        // Al terminar, los resultados se ordenan: también cuenta como cambio.
+        let key = (res.len() + job.is_done() as usize * (1 << 40), self.fold_gen);
+        if key != self.rows_key {
+            self.rows_key = key;
+            self.rows.clear();
+            for (fi, f) in res.iter().enumerate() {
+                self.rows.push((fi as u32, 0));
+                if !self.collapsed.contains(&f.path) {
+                    self.rows.extend((1..=f.hits.len() as u32).map(|h| (fi as u32, h)));
+                }
             }
         }
+        let rows = &self.rows;
         let font = TextStyle::Monospace.resolve(ui.style());
         let row_h = ui.text_style_height(&TextStyle::Monospace).max(ui.spacing().interact_size.y);
         let mut toggle = None;
         ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, range| {
             for &(fi, h) in &rows[range] {
-                let f = &res[fi];
+                let f = &res[fi as usize];
+                let h = h.checked_sub(1).map(|h| h as usize);
                 let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
                 let v = ui.visuals();
                 if r.hovered() {
@@ -422,7 +442,7 @@ impl FolderSearch {
                         let more = if f.more { "+" } else { "" };
                         let txt = format!("{} {name}  ({}{more})", if open { "▾" } else { "▸" }, f.hits.len());
                         ui.painter().text(rect.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, txt, FontId::proportional(13.0), v.strong_text_color());
-                        let r = r.on_hover_text(format!("{}\nClic: plegar/desplegar · Doble clic: abrir", f.path.display()));
+                        let r = r.on_hover_text(tf!("{display}\nClic: plegar/desplegar · Doble clic: abrir", display = f.path.display()));
                         if r.double_clicked() {
                             out.open = Some((f.path.clone(), f.hits.first().map_or(0, |h| h.line)));
                         } else if r.clicked() {
@@ -450,7 +470,7 @@ impl FolderSearch {
                         let galley = p.layout_job(job);
                         let clip = Rect::from_min_max(pos2(x, rect.top()), rect.max);
                         ui.painter_at(clip).galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, v.text_color());
-                        if r.on_hover_text("Clic: abrir el archivo en esta línea").clicked() {
+                        if r.on_hover_text(t!("Clic: abrir el archivo en esta línea")).clicked() {
                             out.open = Some((f.path.clone(), hit.line));
                         }
                     }
@@ -462,6 +482,7 @@ impl FolderSearch {
             if !self.collapsed.remove(&p) {
                 self.collapsed.insert(p);
             }
+            self.fold_gen += 1;
         }
         out
     }

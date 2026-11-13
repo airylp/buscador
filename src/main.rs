@@ -1,3 +1,6 @@
+// Primero: sus macros t!/tf! se usan en todos los demás módulos.
+#[macro_use]
+mod i18n;
 mod app;
 mod beautify;
 mod blocks;
