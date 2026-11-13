@@ -545,3 +545,9 @@ nada	nothing	rien
 Archivo anterior	Previous file	Fichier précédent
 Archivo siguiente / anterior	Next / previous file	Fichier suivant / précédent
 ● Hay archivos sin guardar en este espacio	● This space has unsaved files	● Cet espace contient des fichiers non enregistrés
+Ruta del archivo · clic: copiarla	File path · click to copy it	Chemin du fichier · clic : le copier
+Ruta copiada	Path copied	Chemin copié
+⏵ Hay archivos en vivo en este espacio	⏵ This space has live files	⏵ Cet espace contient des fichiers en direct
+\n⏵ En vivo: se muestra lo que se añade al archivo	\n⏵ Live: what is added to the file is shown	\n⏵ En direct : ce qui est ajouté au fichier s’affiche
+▤ Minimapa	▤ Minimap	▤ Minicarte
+Minimapa del texto a la derecha: vista en miniatura con las coincidencias; clic o arrastrar para moverse	Text minimap on the right: a thumbnail view with the matches; click or drag to move	Minicarte du texte à droite : vue miniature avec les occurrences ; cliquer ou glisser pour se déplacer

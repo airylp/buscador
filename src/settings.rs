@@ -20,11 +20,13 @@ pub struct Settings {
     pub borders: u8,
     /// Idioma de la interfaz («es», «en», «fr»); `None` = el del sistema.
     pub lang: Option<String>,
+    /// Minimapa del texto visible.
+    pub minimap: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0, lang: None }
+        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0, lang: None, minimap: false }
     }
 }
 
@@ -155,6 +157,7 @@ impl Settings {
                 ("ajuste", v) => s.wrap = v.to_string(),
                 ("bordes", v) => s.borders = v.parse::<u8>().unwrap_or(0).min(2),
                 ("idioma", v) if !v.is_empty() => s.lang = Some(v.to_string()),
+                ("minimapa", v) => s.minimap = v == "si",
                 ("fondo", v) => bg = parse_hex(v),
                 ("color_letra", v) => fg = parse_hex(v),
                 ("letra", v) => {
@@ -191,6 +194,9 @@ impl Settings {
         );
         if let Some((b, f)) = self.colors {
             text += &format!("fondo={}\ncolor_letra={}\n", hex(b), hex(f));
+        }
+        if self.minimap {
+            text += "minimapa=si\n";
         }
         if let Some(l) = &self.lang {
             text += &format!("idioma={l}\n");

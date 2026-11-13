@@ -111,6 +111,8 @@ pub struct Tab {
     follow_at: Instant,
     /// Vista filtrada (reglas de incluir/excluir).
     filter: crate::filter::Filter,
+    /// Minimapa ya dibujado y para qué estado (se rehace solo si cambia).
+    minimap_cache: Option<(MiniKey, Arc<epaint::Mesh>)>,
 }
 
 /// Cada cuánto se mira si el archivo creció en modo «En vivo».
@@ -160,6 +162,7 @@ impl Tab {
             follow: false,
             follow_at: Instant::now(),
             filter: Default::default(),
+            minimap_cache: None,
         }
     }
 
@@ -1392,6 +1395,8 @@ pub struct App {
     borders: u8,
     /// Idioma elegido en Ajustes (`None`: el del sistema).
     lang_chosen: Option<crate::i18n::Lang>,
+    /// Minimapa del texto a la derecha.
+    show_minimap: bool,
     /// Siguiente número para «Sin título N».
     next_untitled: u32,
     /// Espacios del panel de archivos (grupos que se abren y cierran como carpetas).
@@ -1481,6 +1486,7 @@ impl App {
             wrap: Wrap::parse(&settings.wrap),
             borders: settings.borders,
             lang_chosen: chosen,
+            show_minimap: settings.minimap,
             wrap_last: match Wrap::parse(&settings.wrap) {
                 Wrap::Off => Wrap::Window,
                 w => w,
@@ -1716,6 +1722,7 @@ impl App {
             wrap: self.wrap.as_str(),
             borders: self.borders,
             lang: self.lang_chosen.map(|l| l.code().to_string()),
+            minimap: self.show_minimap,
         };
         if let Err(e) = st.save() {
             self.msg(tf!("No se pudieron guardar los ajustes: {e}", e = e));
@@ -2617,7 +2624,8 @@ impl App {
                 let has_active = files.contains(&self.active);
                 let y0 = ui.cursor().top();
                 let dirty = files.iter().any(|&i| self.tabs[i].dirty());
-                self.space_header(ui, sp, files.len(), has_active, dirty, &mut action);
+                let live = files.iter().any(|&i| self.tabs[i].follow);
+                self.space_header(ui, sp, files.len(), has_active, (dirty, live), &mut action);
                 if sp.open {
                     for &i in &files {
                         order.push(i);
@@ -2666,7 +2674,7 @@ impl App {
     }
 
     /// Cabecera de un espacio: clic abre/cierra, doble clic o menú para renombrar.
-    fn space_header(&mut self, ui: &mut Ui, sp: &Space, count: usize, has_active: bool, dirty: bool, action: &mut Option<FileAction>) {
+    fn space_header(&mut self, ui: &mut Ui, sp: &Space, count: usize, has_active: bool, (dirty, live): (bool, bool), action: &mut Option<FileAction>) {
         let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
         let (rect, r) = ui.allocate_exact_size(row, Sense::click_and_drag());
         r.dnd_set_drag_payload(DragSpace(sp.id));
@@ -2715,7 +2723,10 @@ impl App {
             vec![c + vec2(-2.5, -4.0), c + vec2(3.0, 0.0), c + vec2(-2.5, 4.0)]
         };
         ui.painter().add(Shape::convex_polygon(tri, v.text_color(), Stroke::NONE));
-        let text_left = rect.left() + 20.0;
+        let mut text_left = rect.left() + 20.0;
+        if live && !self.renaming.as_ref().is_some_and(|(id, _)| *id == sp.id) {
+            text_left += live_icon(ui, pos2(text_left, rect.center().y));
+        }
         if self.renaming.as_ref().is_some_and(|(id, _)| *id == sp.id) {
             let edit_rect = Rect::from_min_max(pos2(text_left, rect.top() + 1.0), pos2(rect.right() - 4.0, rect.bottom() - 1.0));
             let (_, text) = self.renaming.as_mut().unwrap();
@@ -2743,7 +2754,16 @@ impl App {
         );
         ui.painter().galley(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, v.strong_text_color());
         let hint = t!("Clic: abrir/cerrar el espacio (los archivos siguen abiertos)\nDoble clic: renombrar · Clic derecho: más opciones\nArrastra archivos aquí para meterlos · arrastra la cabecera para cambiar el orden");
-        let r = if dirty { r.on_hover_text(format!("{}\n\n{hint}", t!("● Hay archivos sin guardar en este espacio"))) } else { r.on_hover_text(hint) };
+        let mut extra = String::new();
+        if dirty {
+            extra += t!("● Hay archivos sin guardar en este espacio");
+            extra.push('\n');
+        }
+        if live {
+            extra += t!("⏵ Hay archivos en vivo en este espacio");
+            extra.push('\n');
+        }
+        let r = if extra.is_empty() { r.on_hover_text(hint) } else { r.on_hover_text(format!("{extra}\n{hint}")) };
         if r.double_clicked() {
             *action = Some(FileAction::RenameSpace(sp.id));
         } else if r.clicked() {
@@ -2802,6 +2822,14 @@ impl App {
             if ui.selectable_label(self.cur_wrap() != Wrap::Off, RichText::new(t!("↩ Ajuste")).small()).on_hover_text(wrap_hint).clicked() {
                 self.toggle_wrap();
             }
+            if ui
+                .selectable_label(self.show_minimap, RichText::new(t!("▤ Minimapa")).small())
+                .on_hover_text(t!("Minimapa del texto a la derecha: vista en miniatura con las coincidencias; clic o arrastrar para moverse"))
+                .clicked()
+            {
+                self.show_minimap = !self.show_minimap;
+                self.persist();
+            }
             let can_reload = self.tabs.get(self.active).is_some_and(|t| !t.untitled);
             let rk = if MAC { "Cmd+R" } else { "Ctrl+R" };
             if ui
@@ -2847,6 +2875,7 @@ impl App {
             ui.set_clip_rect(left.intersect(ui.clip_rect()));
             let mut goto_line = None;
             let mut set_lang = None;
+            let mut copied = false;
             if let Some(t) = self.tabs.get(self.active) {
                 let d = &t.doc;
                 ui.label(RichText::new(if t.editable { t!("EDICIÓN") } else { t!("SOLO LECTURA") }).small().strong());
@@ -2940,7 +2969,15 @@ impl App {
                 if t.untitled {
                     ui.label(RichText::new(t!("sin guardar en disco · Ctrl+S para elegir dónde")).small().weak());
                 } else {
-                    ui.label(RichText::new(d.path.display().to_string()).small().weak()).on_hover_text(t!("Ruta del archivo"));
+                    let path = d.path.display().to_string();
+                    let r = ui.add(Label::new(RichText::new(&path).small().weak()).sense(Sense::click()).truncate());
+                    if r.hovered() {
+                        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                    }
+                    if r.on_hover_text(t!("Ruta del archivo · clic: copiarla")).clicked() {
+                        ui.ctx().copy_text(path);
+                        copied = true;
+                    }
                 }
             }
             if self.tabs.is_empty() {
@@ -2949,6 +2986,9 @@ impl App {
                         ui.label(RichText::new(m).small().color(ui.visuals().warn_fg_color));
                     }
                 }
+            }
+            if copied {
+                self.msg(t!("Ruta copiada"));
             }
             if let (Some(l), Some(t)) = (set_lang, self.tabs.get_mut(self.active)) {
                 t.lang = l;
@@ -3346,6 +3386,7 @@ impl eframe::App for App {
         for t in &mut self.tabs {
             t.col_mode = col_mode && t.wrap == Wrap::Off;
         }
+        let show_minimap = self.show_minimap;
         let show_detail = &mut self.show_detail;
         let focus_view = std::mem::take(&mut self.focus_view);
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
@@ -3353,7 +3394,17 @@ impl eframe::App for App {
                 message = filter_view(ui, t, &font, colors, syntax_on);
             } else if let Some(t) = self.tabs.get_mut(self.active) {
                 let wrap = t.wrap;
-                (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors, syntax_on, wrap);
+                if show_minimap {
+                    // Minimapa en una franja a la derecha; el texto en el resto.
+                    let full = ui.available_rect_before_wrap();
+                    let (text_r, map_r) = full.split_left_right_at_x(full.right() - MINIMAP_W);
+                    ui.scope_builder(UiBuilder::new().max_rect(text_r), |ui| {
+                        (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors, syntax_on, wrap);
+                    });
+                    ui.scope_builder(UiBuilder::new().max_rect(map_r), |ui| text_minimap(ui, t, syntax_on));
+                } else {
+                    (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors, syntax_on, wrap);
+                }
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.heading(t!("Arrastra archivos aquí, o pulsa Ctrl+O"));
@@ -5245,6 +5296,142 @@ fn minimap(ui: &mut Ui, rect: Rect, resp: &Response, tab: &Tab, w: &mut AdvWin) 
 }
 
 /// Lista virtual de líneas con coincidencias.
+/// Ancho de la franja del minimapa (1 px por columna) y alto de cada línea.
+const MINIMAP_W: f32 = 110.0;
+const MINIMAP_ROW: f32 = 2.0;
+
+/// Lo que determina el dibujo del minimapa (si no cambia, se reutiliza).
+#[derive(Clone, PartialEq)]
+struct MiniKey {
+    first: u64,
+    rows: usize,
+    version: u64,
+    edit_gen: u64,
+    lang: syntax::Lang,
+    syntax_on: bool,
+    dark: bool,
+    rect: [i32; 4],
+    len: usize,
+}
+
+/// Minimapa: cada línea es una tira de 2 px con un píxel por carácter
+/// (coloreado como el texto), las líneas con coincidencias marcadas y un
+/// recuadro con lo que se ve. Con más líneas de las que caben, muestra una
+/// ventana que se desplaza en proporción. Solo lee las líneas que dibuja.
+fn text_minimap(ui: &mut Ui, tab: &mut Tab, syntax_on: bool) {
+    let rect = ui.available_rect_before_wrap();
+    let resp = ui.allocate_rect(rect, Sense::click_and_drag());
+    let v = ui.visuals().clone();
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, v.extreme_bg_color);
+    painter.vline(rect.left(), rect.y_range(), v.widgets.noninteractive.bg_stroke);
+    let total = tab.total().max(1);
+    let n = ((rect.height() / MINIMAP_ROW).floor() as u64).max(1);
+    let visible = tab.visible_rows.max(1);
+    // Primera línea del minimapa: proporcional a la posición en el archivo.
+    let first = if total <= n {
+        0
+    } else {
+        let span = total.saturating_sub(visible).max(1) as f64;
+        ((tab.top.min(total) as f64 / span) * (total - n) as f64).round() as u64
+    };
+    let first = first.min(total.saturating_sub(n));
+    let key = MiniKey {
+        first,
+        rows: n as usize,
+        version: tab.version(),
+        edit_gen: tab.edit_gen,
+        lang: tab.lang,
+        syntax_on,
+        dark: v.dark_mode,
+        rect: [rect.min.x as i32, rect.min.y as i32, rect.max.x as i32, rect.max.y as i32],
+        len: tab.doc.len(),
+    };
+    let mesh = match &tab.minimap_cache {
+        Some((k, m)) if *k == key => m.clone(),
+        _ => {
+            let m = Arc::new(minimap_mesh(tab, rect, first, n as usize, syntax_on, &v));
+            tab.minimap_cache = Some((key, m.clone()));
+            m
+        }
+    };
+    // Coincidencias de la búsqueda: marca amarilla a la izquierda.
+    if let Some(s) = &tab.search {
+        let r = s.results.lock().unwrap();
+        let a = r.partition_point(|&l| l < first);
+        let b = r.partition_point(|&l| l < first + n);
+        let mark = Color32::from_rgba_unmultiplied(250, 200, 40, 90);
+        for &l in &r[a..b] {
+            let y = rect.top() + (l - first) as f32 * MINIMAP_ROW;
+            painter.rect_filled(Rect::from_min_size(pos2(rect.left() + 1.0, y), vec2(rect.width() - 1.0, MINIMAP_ROW)), 0.0, mark);
+        }
+    }
+    painter.add(Shape::mesh(mesh));
+    // Lo que se ve en el editor.
+    let y0 = rect.top() + tab.top.saturating_sub(first) as f32 * MINIMAP_ROW;
+    let y1 = (y0 + visible as f32 * MINIMAP_ROW).min(rect.bottom());
+    if tab.top + visible > first && tab.top < first + n {
+        let view = Rect::from_min_max(pos2(rect.left() + 1.0, y0.max(rect.top())), pos2(rect.right(), y1));
+        painter.rect_filled(view, 0.0, v.selection.bg_fill.gamma_multiply(0.25));
+        painter.rect_stroke(view, 0.0, Stroke::new(1.0, v.selection.bg_fill), StrokeKind::Inside);
+    }
+    // Clic o arrastrar: centrar esa línea.
+    if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on() || resp.clicked()) {
+        let line = first + ((p.y - rect.top()) / MINIMAP_ROW).max(0.0) as u64;
+        tab.top = line.saturating_sub(visible / 2).min(total.saturating_sub(visible));
+        ui.ctx().request_repaint();
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+}
+
+/// Las tiras de texto del minimapa (un rectángulo por tramo del mismo color).
+fn minimap_mesh(tab: &Tab, rect: Rect, first: u64, n: usize, syntax_on: bool, v: &Visuals) -> epaint::Mesh {
+    let cols = rect.width() as usize - 2;
+    let base = v.text_color().gamma_multiply(0.55);
+    let mut mesh = epaint::Mesh::default();
+    let mut spans = Vec::new();
+    for (k, (_, txt, _)) in tab.rows(first, n, cols * 4).into_iter().enumerate() {
+        spans.clear();
+        if syntax_on {
+            syntax::highlight(tab.lang, &txt, syntax::State::Normal, &mut spans);
+        }
+        let y = rect.top() + k as f32 * MINIMAP_ROW;
+        let color_at = |i: usize| {
+            spans.iter().find(|s| s.start <= i && i < s.end).map_or(base, |s| syntax::color(s.kind, v.dark_mode).gamma_multiply(0.8))
+        };
+        let (mut col, mut run): (usize, Option<(usize, Color32)>) = (0, None);
+        let mut flush = |run: &mut Option<(usize, Color32)>, end: usize| {
+            if let Some((c0, color)) = run.take() {
+                let x0 = rect.left() + 2.0 + c0 as f32;
+                let r = Rect::from_min_max(pos2(x0, y), pos2(rect.left() + 2.0 + end as f32, y + MINIMAP_ROW - 0.5));
+                mesh.add_colored_rect(r, color);
+            }
+        };
+        for (i, ch) in txt.char_indices() {
+            if col >= cols {
+                break;
+            }
+            let w = if ch == '\t' { 4 - col % 4 } else { 1 };
+            if ch.is_whitespace() {
+                flush(&mut run, col);
+            } else {
+                let c = color_at(i);
+                if run.is_some_and(|(_, rc)| rc != c) {
+                    flush(&mut run, col);
+                }
+                if run.is_none() {
+                    run = Some((col, c));
+                }
+            }
+            col += w;
+        }
+        flush(&mut run, col.min(cols));
+    }
+    mesh
+}
+
 /// Activa/desactiva la vista filtrada; al activarla sin reglas, usa lo que
 /// haya en «Buscar» como primera regla.
 fn toggle_filter(t: &mut Tab, query: &str, regex: bool, case: bool) {
@@ -5647,6 +5834,15 @@ fn os_pointer(ctx: &Context) -> Option<Pos2> {
     ctx.input(|i| i.pointer.latest_pos())
 }
 
+/// Pinta el ⏵ verde de «En vivo» con el borde izquierdo en `at`; devuelve
+/// el ancho que ocupa (con su separación).
+fn live_icon(ui: &Ui, at: Pos2) -> f32 {
+    let g = ui.painter().layout_no_wrap("⏵".into(), FontId::proportional(12.0), Color32::from_rgb(60, 185, 95));
+    let w = g.size().x;
+    ui.painter().galley(pos2(at.x, at.y - g.size().y / 2.0), g, Color32::from_rgb(60, 185, 95));
+    w + 4.0
+}
+
 /// Un espacio que se arrastra para cambiarlo de orden.
 struct DragSpace(u32);
 
@@ -5693,7 +5889,11 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
         }
         let name = if t.dirty() { format!("● {}", t.doc.name) } else { t.doc.name.clone() };
         let free = ui.available_rect_before_wrap();
-        let left = row_rect.left() + 6.0 + indent + if multi > 0 { 4.0 } else { 0.0 };
+        let mut left = row_rect.left() + 6.0 + indent + if multi > 0 { 4.0 } else { 0.0 };
+        // «En vivo»: ⏵ verde antes del nombre.
+        if t.follow {
+            left += live_icon(ui, pos2(left, row_rect.center().y));
+        }
         let galley = WidgetText::from(RichText::new(name).strong()).into_galley(
             ui,
             Some(TextWrapMode::Truncate),
@@ -5812,11 +6012,12 @@ fn tab_details(t: &Tab) -> String {
         tf!("indexando {v}%", v = format!("{:.0}", p * 100.0))
     };
     format!(
-        "{} · {} · {}{}",
+        "{} · {} · {}{}{}",
         human_size(t.doc.len() as u64),
         t.doc.src.encoding.name(),
         idx,
-        if t.editable { "" } else { t!(" · solo lectura") }
+        if t.editable { "" } else { t!(" · solo lectura") },
+        if t.follow { t!("\n⏵ En vivo: se muestra lo que se añade al archivo") } else { "" }
     )
 }
 
