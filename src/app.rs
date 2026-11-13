@@ -404,6 +404,48 @@ impl Tab {
         self.replace_range(a, b, text, kind)
     }
 
+    /// Sangra (un tabulador más) o quita sangría (un tabulador o hasta 4
+    /// espacios) a las líneas de la selección, o a la del cursor. Se deshace en
+    /// un solo paso y la selección sigue abarcando las mismas líneas.
+    fn indent(&mut self, outdent: bool) -> Result<(), String> {
+        let (a, b) = self.selection().unwrap_or_else(|| {
+            let c = self.cursor_or_top();
+            (c, c)
+        });
+        // Si la selección acaba al principio de una línea, esa no cuenta.
+        let last = if b.line > a.line && b.col == 0 { b.line - 1 } else { b.line };
+        if (last - a.line) as usize >= MAX_REPLACE_LINES {
+            return Err(format!("Demasiadas líneas para sangrar de una vez (máx. {})", fmt_num(MAX_REPLACE_LINES as u64)));
+        }
+        self.can_edit()?;
+        let lines: Vec<u64> = (a.line..=last).collect();
+        let cur = (self.anchor.unwrap_or_default(), self.cursor.unwrap_or_default());
+        let buf = self.buf.as_mut().unwrap();
+        let n = buf.replace_lines(&self.doc, &lines, cur, |t| {
+            if outdent {
+                let cut = if t.starts_with('\t') { 1 } else { t.bytes().take(4).take_while(|&c| c == b' ').count() };
+                (cut > 0).then(|| t[cut..].to_string())
+            } else if t.is_empty() {
+                None
+            } else {
+                Some(format!("\t{t}"))
+            }
+        })?;
+        if n == 0 {
+            return Ok(());
+        }
+        self.detail_cache = None;
+        self.edit_gen += 1;
+        let start = Pos::new(a.line, 0);
+        let end = Pos::new(last, self.line_len(last));
+        if self.cursor.is_some_and(|c| c < self.anchor.unwrap_or(c)) {
+            self.select(end, start);
+        } else {
+            self.select(start, end);
+        }
+        Ok(())
+    }
+
     fn delete(&mut self, forward: bool, word: bool) -> Result<(), String> {
         self.can_edit()?;
         if let Some((a, b)) = self.selection() {
@@ -869,6 +911,8 @@ impl Tab {
             Key::Z if m.command => return self.undo_redo(shift),
             Key::Y if m.command && !MAC => return self.undo_redo(true),
             Key::Enter if !m.command => return self.insert("\n", EditKind::Other),
+            // Con texto seleccionado, Tab desplaza todas sus líneas; Shift+Tab las devuelve.
+            Key::Tab if !m.command && !m.ctrl && (shift || self.selection().is_some()) => return self.indent(shift),
             Key::Tab if !m.command && !m.ctrl => return self.insert("\t", EditKind::Typing),
             Key::Backspace => return self.delete(false, word),
             Key::Delete => return self.delete(true, word),
@@ -5110,6 +5154,32 @@ mod tests {
         assert!(t.buf.is_none() && !t.dirty());
         assert_eq!(std::fs::read(&p).unwrap(), "¡Adiósmundo\r\nsegunda\r\n".as_bytes());
         assert!(t.start_save(p).is_err(), "sin cambios no se guarda");
+    }
+
+    #[test]
+    fn tab_indents_selected_lines() {
+        let (mut t, _p) = tab_with("sangria.txt", "uno\ndos\n\n    tres\ncuatro\n");
+        t.editable = true;
+        // Selección parcial de «no» a «tr»: Tab desplaza las líneas 0–3 (la vacía no).
+        t.select(Pos::new(0, 1), Pos::new(3, 6));
+        key(&mut t, Key::Tab, Modifiers::NONE);
+        assert_eq!([t.line(0), t.line(1), t.line(2), t.line(3), t.line(4)], ["\tuno", "\tdos", "", "\t    tres", "cuatro"]);
+        assert_eq!(t.selection(), Some((Pos::new(0, 0), Pos::new(3, 9))));
+        // Shift+Tab dos veces: quita el tabulador y luego 4 espacios.
+        key(&mut t, Key::Tab, Modifiers::SHIFT);
+        key(&mut t, Key::Tab, Modifiers::SHIFT);
+        assert_eq!([t.line(0), t.line(1), t.line(3)], ["uno", "dos", "tres"]);
+        // Un solo deshacer por paso.
+        key(&mut t, Key::Z, Modifiers::COMMAND);
+        assert_eq!(t.line(3), "    tres");
+        // Selección que acaba al inicio de una línea: esa línea no se toca.
+        t.select(Pos::new(3, 0), Pos::new(4, 0));
+        key(&mut t, Key::Tab, Modifiers::NONE);
+        assert_eq!([t.line(3), t.line(4)], ["\t    tres", "cuatro"]);
+        // Sin selección, Tab sigue insertando un tabulador en el cursor.
+        t.select(Pos::new(4, 3), Pos::new(4, 3));
+        key(&mut t, Key::Tab, Modifiers::NONE);
+        assert_eq!(t.line(4), "cua\ttro");
     }
 
     #[test]
