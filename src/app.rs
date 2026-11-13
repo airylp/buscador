@@ -1228,7 +1228,13 @@ enum FileAction {
     CopyPath(usize),
     CopyName(usize),
     Duplicate(usize),
-    Select(usize),
+    /// Clic en una fila: normal selecciona; Cmd/Ctrl añade/quita de la
+    /// selección múltiple; Shift selecciona el rango.
+    Click(usize, Modifiers),
+    /// Cerrar los archivos seleccionados (o solo este si no está entre ellos).
+    CloseSel(usize),
+    /// Quitar la selección múltiple.
+    Unpick,
     Close(usize),
     CloseOthers(usize),
     /// Mover el archivo a un espacio (`None` = fuera de los espacios).
@@ -1368,6 +1374,11 @@ pub struct App {
     next_space: u32,
     /// Espacio cuyo nombre se está editando y el texto.
     renaming: Option<(u32, String)>,
+    /// Selección múltiple en el panel de archivos (rutas) y desde dónde se
+    /// extiende con Shift; orden de las filas visibles del último fotograma.
+    picked: Vec<PathBuf>,
+    pick_anchor: Option<PathBuf>,
+    row_order: Vec<usize>,
     /// Guardar/recuperar la sesión (no en ventanas nuevas ni en pruebas).
     use_session: bool,
     /// Última sesión guardada y cuándo se miró por última vez.
@@ -1441,6 +1452,9 @@ impl App {
             spaces: Vec::new(),
             next_space: 1,
             renaming: None,
+            picked: Vec::new(),
+            pick_anchor: None,
+            row_order: Vec::new(),
             use_session: false,
             session_saved: Default::default(),
             session_checked: Instant::now(),
@@ -1725,6 +1739,57 @@ impl App {
         self.tabs.remove(i);
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len().saturating_sub(1);
+        }
+    }
+
+    /// Archivos a los que se aplica una acción sobre la fila `i`: todos los
+    /// seleccionados si `i` es uno de ellos, si no solo `i`.
+    fn targets(&self, i: usize) -> Vec<usize> {
+        let Some(t) = self.tabs.get(i) else { return Vec::new() };
+        if self.picked.len() > 1 && self.picked.contains(&t.doc.path) {
+            (0..self.tabs.len()).filter(|&j| self.picked.contains(&self.tabs[j].doc.path)).collect()
+        } else {
+            vec![i]
+        }
+    }
+
+    /// Clic en una fila del panel de archivos.
+    fn click_row(&mut self, i: usize, m: Modifiers) {
+        let Some(path) = self.tabs.get(i).map(|t| t.doc.path.clone()) else { return };
+        if m.shift {
+            // Rango (en el orden en que se ven) desde el ancla o el activo.
+            let anchor = self.pick_anchor.as_ref().and_then(|p| self.tabs.iter().position(|t| &t.doc.path == p)).unwrap_or(self.active);
+            let (a, b) = (self.row_order.iter().position(|&j| j == anchor), self.row_order.iter().position(|&j| j == i));
+            if let (Some(a), Some(b)) = (a, b) {
+                if !m.command {
+                    self.picked.clear();
+                }
+                for &j in &self.row_order[a.min(b)..=a.max(b)] {
+                    let p = self.tabs[j].doc.path.clone();
+                    if !self.picked.contains(&p) {
+                        self.picked.push(p);
+                    }
+                }
+            }
+            self.active = i;
+        } else if m.command {
+            // Añadir/quitar (al empezar, el activo también cuenta).
+            if self.picked.is_empty() {
+                if let Some(t) = self.tabs.get(self.active) {
+                    self.picked.push(t.doc.path.clone());
+                }
+            }
+            if let Some(k) = self.picked.iter().position(|p| *p == path) {
+                self.picked.remove(k);
+            } else {
+                self.picked.push(path.clone());
+                self.active = i;
+            }
+            self.pick_anchor = Some(path);
+        } else {
+            self.picked.clear();
+            self.pick_anchor = Some(path);
+            self.active = i;
         }
     }
 
@@ -2275,7 +2340,13 @@ impl App {
                 self.msg(m);
             }
             FileAction::Close(i) => self.close_tab(i, false),
-            FileAction::Select(i) => self.active = i,
+            FileAction::Click(i, m) => self.click_row(i, m),
+            FileAction::CloseSel(i) => {
+                let paths: Vec<PathBuf> = self.targets(i).iter().map(|&j| self.tabs[j].doc.path.clone()).collect();
+                self.close_many(|t| paths.contains(&t.doc.path));
+                self.picked.clear();
+            }
+            FileAction::Unpick => self.picked.clear(),
             FileAction::CloseOthers(i) => {
                 let keep = self.tabs[i].doc.path.clone();
                 self.active = i;
@@ -2283,21 +2354,28 @@ impl App {
             }
             FileAction::CloseSpace(id) => self.close_many(|t| t.space == Some(id)),
             FileAction::ToSpace(i, sp) => {
-                if let Some(t) = self.tabs.get_mut(i) {
-                    t.space = sp;
-                    if let Some(s) = self.spaces.iter_mut().find(|s| Some(s.id) == sp) {
-                        s.open = true;
-                    }
+                for j in self.targets(i) {
+                    self.tabs[j].space = sp;
+                }
+                if let Some(s) = self.spaces.iter_mut().find(|s| Some(s.id) == sp) {
+                    s.open = true;
                 }
             }
             FileAction::MoveBefore(from, to) => {
-                if from != to && from < self.tabs.len() && to < self.tabs.len() {
+                let moving = self.targets(from);
+                if to < self.tabs.len() && !moving.contains(&to) {
                     let sp = self.tabs[to].space;
+                    let target = self.tabs[to].doc.path.clone();
                     let active = self.tabs[self.active].doc.path.clone();
-                    let mut t = self.tabs.remove(from);
-                    t.space = sp;
-                    // Hacia abajo queda después del destino; hacia arriba, antes.
-                    self.tabs.insert(to.min(self.tabs.len()), t);
+                    let mut taken: Vec<Tab> = moving.iter().rev().map(|&j| self.tabs.remove(j)).collect();
+                    taken.reverse();
+                    for t in &mut taken {
+                        t.space = sp;
+                    }
+                    // Hacia abajo quedan después del destino; hacia arriba, antes.
+                    let p = self.tabs.iter().position(|t| t.doc.path == target).unwrap_or(self.tabs.len());
+                    let at = if from < to { p + 1 } else { p };
+                    self.tabs.splice(at..at, taken);
                     self.active = self.tabs.iter().position(|t| t.doc.path == active).unwrap_or(0);
                 }
             }
@@ -2307,8 +2385,8 @@ impl App {
                 let n = self.spaces.len() + 1;
                 let name = format!("Espacio {n}");
                 self.spaces.push(Space { id, name: name.clone(), open: true });
-                if let Some(t) = file.and_then(|i| self.tabs.get_mut(i)) {
-                    t.space = Some(id);
+                for j in file.map(|i| self.targets(i)).unwrap_or_default() {
+                    self.tabs[j].space = Some(id);
                 }
                 self.renaming = Some((id, name));
             }
@@ -2382,6 +2460,9 @@ impl App {
         ui.separator();
         let mut action = None;
         let spaces = self.spaces.clone();
+        let tabs = &self.tabs;
+        self.picked.retain(|p| tabs.iter().any(|t| &t.doc.path == p));
+        let mut order = Vec::new();
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             // Primero los espacios (como carpetas) y después los archivos sueltos.
             for sp in &spaces {
@@ -2390,7 +2471,8 @@ impl App {
                 self.space_header(ui, sp, files.len(), has_active, &mut action);
                 if sp.open {
                     for &i in &files {
-                        file_row(ui, i, &self.tabs[i], i == self.active, &spaces, 14.0, self.tabs.len(), &mut action);
+                        order.push(i);
+                        file_row(ui, i, &self.tabs[i], i == self.active, self.multi(i), &spaces, 14.0, self.tabs.len(), &mut action);
                     }
                 }
             }
@@ -2398,7 +2480,8 @@ impl App {
                 ui.add_space(4.0);
             }
             for i in (0..self.tabs.len()).filter(|&i| self.tabs[i].space.is_none()) {
-                file_row(ui, i, &self.tabs[i], i == self.active, &spaces, 0.0, self.tabs.len(), &mut action);
+                order.push(i);
+                file_row(ui, i, &self.tabs[i], i == self.active, self.multi(i), &spaces, 0.0, self.tabs.len(), &mut action);
             }
             if self.tabs.is_empty() {
                 ui.weak("Sin archivos.\nUsa «Abrir…» o arrastra archivos aquí.");
@@ -2406,18 +2489,28 @@ impl App {
             // El resto del panel: soltar aquí saca el archivo de su espacio.
             let rest = ui.available_rect_before_wrap();
             let rest = Rect::from_min_size(rest.min, vec2(rest.width(), rest.height().max(24.0)));
-            let r = ui.allocate_rect(rest, Sense::hover());
+            let r = ui.allocate_rect(rest, Sense::click());
             if r.dnd_hover_payload::<DragFile>().is_some() && !spaces.is_empty() {
                 ui.painter().rect_stroke(rest.shrink(2.0), 3.0, ui.visuals().selection.stroke, StrokeKind::Inside);
                 ui.painter().text(rest.center_top() + vec2(0.0, 12.0), Align2::CENTER_CENTER, "Soltar aquí: fuera de los espacios", FontId::proportional(11.0), ui.visuals().weak_text_color());
             }
             if let Some(d) = r.dnd_release_payload::<DragFile>() {
                 action = Some(FileAction::ToSpace(d.0, None));
+            } else if r.clicked() && !self.picked.is_empty() {
+                action = Some(FileAction::Unpick);
             }
         });
+        self.row_order = order;
         if let Some(a) = action {
             self.file_action(ui.ctx(), a);
         }
+    }
+
+    /// Para una fila: cuántos archivos hay en la selección múltiple si ella
+    /// está incluida (0 si no o si solo hay uno).
+    fn multi(&self, i: usize) -> usize {
+        let n = self.picked.len();
+        if n > 1 && self.picked.contains(&self.tabs[i].doc.path) { n } else { 0 }
     }
 
     /// Cabecera de un espacio: clic abre/cierra, doble clic o menú para renombrar.
@@ -2805,6 +2898,10 @@ impl App {
             self.debug_typed = true;
             // Pruebas: BUSCADOR_ESPACIOS='Logs=0,1;Config-=2' crea espacios con esos
             // archivos (índices); «-» al final del nombre = espacio cerrado.
+            // BUSCADOR_ELEGIR='0,2': selección múltiple en el panel (índices).
+            if let Ok(spec) = std::env::var("BUSCADOR_ELEGIR") {
+                self.picked = spec.split(',').filter_map(|n| self.tabs.get(n.trim().parse::<usize>().ok()?)).map(|t| t.doc.path.clone()).collect();
+            }
             if let Ok(spec) = std::env::var("BUSCADOR_ESPACIOS") {
                 for part in spec.split(';') {
                     let (name, files) = part.split_once('=').unwrap_or((part, ""));
@@ -4945,7 +5042,7 @@ struct DragFile(usize);
 /// Una fila del panel de archivos: toda la fila selecciona (salvo la ×), se
 /// puede arrastrar a un espacio o a otra posición, y tiene menú contextual.
 #[allow(clippy::too_many_arguments)]
-fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, spaces: &[Space], indent: f32, total: usize, action: &mut Option<FileAction>) {
+fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: &[Space], indent: f32, total: usize, action: &mut Option<FileAction>) {
     let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
     ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
         // Se registra antes que la ×, que queda encima y conserva su propio clic.
@@ -4956,6 +5053,8 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, spaces: &[Space], inde
         let dragged = r.dnd_hover_payload::<DragFile>().map(|d| d.0).filter(|&d| d != i);
         let fill = if active {
             Some(v.selection.bg_fill)
+        } else if multi > 0 {
+            Some(v.selection.bg_fill.gamma_multiply(0.5))
         } else if r.contains_pointer() {
             Some(v.widgets.hovered.weak_bg_fill)
         } else {
@@ -4964,18 +5063,23 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, spaces: &[Space], inde
         if let Some(f) = fill {
             ui.painter().rect_filled(row_rect, v.widgets.inactive.corner_radius, f);
         }
+        // Marca a la izquierda de los seleccionados (varios).
+        if multi > 0 {
+            let bar = Rect::from_min_size(row_rect.min + vec2(1.0, 3.0), vec2(3.0, row_rect.height() - 6.0));
+            ui.painter().rect_filled(bar, 1.5, v.selection.stroke.color);
+        }
         // Línea donde quedará: debajo si se arrastra hacia abajo, encima si hacia arriba.
         if let Some(d) = dragged {
             let y = if d < i { row_rect.bottom() } else { row_rect.top() };
             ui.painter().hline(row_rect.x_range(), y, Stroke::new(2.0, v.selection.stroke.color));
         }
-        let ink = if active { v.selection.stroke.color } else { v.strong_text_color() };
+        let ink = if active || multi > 0 { v.selection.stroke.color } else { v.strong_text_color() };
         if ui.small_button("×").on_hover_text("Cerrar (Ctrl+W)").clicked() {
             *action = Some(FileAction::Close(i));
         }
         let name = if t.dirty() { format!("● {}", t.doc.name) } else { t.doc.name.clone() };
         let free = ui.available_rect_before_wrap();
-        let left = row_rect.left() + 6.0 + indent;
+        let left = row_rect.left() + 6.0 + indent + if multi > 0 { 4.0 } else { 0.0 };
         let galley = WidgetText::from(RichText::new(name).strong()).into_galley(
             ui,
             Some(TextWrapMode::Truncate),
@@ -4993,15 +5097,49 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, spaces: &[Space], inde
             }
         }
         let r = r.on_hover_text(format!(
-            "{}\nClic derecho: más opciones · Arrastrar: mover a un espacio\n{}",
+            "{}\nClic derecho: más opciones · Arrastrar: mover a un espacio\n{} + clic / Shift + clic: seleccionar varios\n{}",
             if t.untitled { "Archivo nuevo sin guardar".to_string() } else { t.doc.path.display().to_string() },
+            if MAC { "Cmd" } else { "Ctrl" },
             tab_details(t)
         ));
         if r.clicked() {
-            *action = Some(FileAction::Select(i));
+            *action = Some(FileAction::Click(i, ui.input(|i| i.modifiers)));
         }
         r.context_menu(|ui| {
             let mut chosen = None;
+            if multi > 0 {
+                // Menú para todos los seleccionados.
+                ui.weak(format!("{multi} archivos seleccionados"));
+                ui.separator();
+                ui.menu_button(format!("Mover los {multi} a un espacio"), |ui| {
+                    for sp in spaces {
+                        if ui.button(&sp.name).clicked() {
+                            chosen = Some(FileAction::ToSpace(i, Some(sp.id)));
+                        }
+                    }
+                    if !spaces.is_empty() {
+                        ui.separator();
+                    }
+                    if ui.button("Nuevo espacio…").clicked() {
+                        chosen = Some(FileAction::NewSpace(Some(i)));
+                    }
+                    if ui.button("Sacar de los espacios").clicked() {
+                        chosen = Some(FileAction::ToSpace(i, None));
+                    }
+                });
+                ui.separator();
+                if ui.button(format!("Cerrar los {multi}")).clicked() {
+                    chosen = Some(FileAction::CloseSel(i));
+                }
+                if ui.button("Quitar la selección").clicked() {
+                    chosen = Some(FileAction::Unpick);
+                }
+                if chosen.is_some() {
+                    *action = chosen;
+                    ui.close();
+                }
+                return;
+            }
             let on_disk = !t.untitled;
             let nw = ui.add_enabled(on_disk, Button::new("Abrir en una ventana nueva"));
             let nw = if t.dirty() { nw.on_hover_text("La ventana nueva muestra la versión guardada en disco") } else { nw };
