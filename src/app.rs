@@ -4995,7 +4995,8 @@ impl App {
             self.show_settings = false;
         } else if target == crate::diskmap::window_id() {
             self.map.open = false;
-
+        } else if target == crate::foldersearch::window_id() {
+            self.folder.open = false;
         } else if let Some(w) = self.advs.iter_mut().find(|w| adv_window_id(w.id) == target) {
             w.open = false;
         }
