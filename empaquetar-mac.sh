@@ -13,7 +13,16 @@
 set -eu
 cd "$(dirname "$0")"
 
-[ "$(uname)" = "Darwin" ] || { echo "Esto solo funciona en macOS" >&2; exit 1; }
+# Idioma de los mensajes: el que pasa install.sh (IDIOMA), BUSCADOR_IDIOMA, el
+# guardado en los ajustes de la app o el de la terminal.
+IDIOMA="${IDIOMA:-${BUSCADOR_IDIOMA:-$(sed -n 's/^idioma=//p' "$HOME/Library/Application Support/buscador/ajustes.txt" 2>/dev/null | head -n 1)}}"
+if [ -z "$IDIOMA" ]; then
+    case "${LC_ALL:-${LANG:-}}" in en*) IDIOMA=en ;; fr*) IDIOMA=fr ;; *) IDIOMA=es ;; esac
+fi
+# m "español" "english" "français"
+m() { case "$IDIOMA" in en) printf '%s' "$2" ;; fr) printf '%s' "$3" ;; *) printf '%s' "$1" ;; esac; }
+
+[ "$(uname)" = "Darwin" ] || { echo "$(m 'Esto solo funciona en macOS' 'This only works on macOS' 'Ceci ne fonctionne que sous macOS')" >&2; exit 1; }
 # Al lanzarse desde la propia app (Finder) el PATH es mínimo: añadir cargo y Homebrew.
 PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 export PATH
@@ -40,16 +49,16 @@ while [ $# -gt 0 ]; do
         --si|-y) SI=1 ;;
         --no-cerrar) NO_CERRAR=1 ;;
         -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "Opción desconocida: $1 (usa --help)" >&2; exit 2 ;;
+        *) echo "$(m "Opción desconocida: $1 (usa --help)" "Unknown option: $1 (use --help)" "Option inconnue : $1 (utilisez --help)")" >&2; exit 2 ;;
     esac
     shift
 done
 
 pregunta() { # pregunta "texto" -> 0 si responde sí
     if [ "$SI" = 1 ]; then return 0; fi
-    printf "%s [s/N] " "$1"
+    printf "%s %s " "$1" "$(m '[s/N]' '[y/N]' '[o/N]')"
     read -r r || r=""
-    case "$r" in s|S|si|SI|sí|Sí|y|Y) return 0 ;; *) return 1 ;; esac
+    case "$r" in s|S|si|SI|sí|Sí|y|Y|yes|o|O|oui) return 0 ;; *) return 1 ;; esac
 }
 
 # Dónde está instalada (si lo está).
@@ -69,33 +78,35 @@ cerrar_si_abierta() {
     abierta || return 0
     resp=n
     if (: < /dev/tty) 2>/dev/null; then
-        printf "buscador está abierto. ¿Cerrarlo ahora y volver a abrirlo con la versión nueva? [S/n] " > /dev/tty
+        m "buscador está abierto. ¿Cerrarlo ahora y volver a abrirlo con la versión nueva? [S/n] " \
+          "buscador is open. Close it now and reopen it with the new version? [Y/n] " \
+          "buscador est ouvert. Le fermer maintenant et le rouvrir avec la nouvelle version ? [O/n] " > /dev/tty
         read -r resp < /dev/tty || resp=""
         [ -z "$resp" ] && resp=s
     fi
     case "$resp" in
-        s|S|si|sí|y|Y)
+        s|S|si|sí|y|Y|yes|o|O|oui)
             osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
             i=0
             while abierta && [ $i -lt 60 ]; do sleep 1; i=$((i + 1)); done
             if abierta; then
-                echo "buscador sigue abierto (¿cambios sin guardar?): se instala igual; reinícialo después."
+                echo "$(m 'buscador sigue abierto (¿cambios sin guardar?): se instala igual; reinícialo después.' 'buscador is still open (unsaved changes?): installing anyway; restart it afterwards.' 'buscador est toujours ouvert (modifications non enregistrées ?) : installation quand même ; relancez-le ensuite.')"
             else
                 REABRIR=1
             fi
             ;;
-        *) echo "Se instala igual; reinicia buscador para usar la versión nueva." ;;
+        *) echo "$(m 'Se instala igual; reinicia buscador para usar la versión nueva.' 'Installing anyway; restart buscador to use the new version.' 'Installation quand même ; relancez buscador pour utiliser la nouvelle version.')" ;;
     esac
 }
 
 crear() {
-    echo "==> Compilando…"
+    echo "==> $(m 'Compilando…' 'Building…' 'Compilation…')"
     # La versión (commit) queda grabada en el programa: la usa «Actualizar» de la interfaz.
     # (Si ya viene dada —install.sh desde un .tar.gz sin git— se respeta.)
     BUSCADOR_COMMIT="${BUSCADOR_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "")}"
     export BUSCADOR_COMMIT
     if ! cargo build --release; then
-        echo "La compilación falló: no se crea ni se instala nada." >&2
+        echo "$(m 'La compilación falló: no se crea ni se instala nada.' 'The build failed: nothing was created or installed.' 'La compilation a échoué : rien n’a été créé ni installé.')" >&2
         exit 1
     fi
     VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -124,6 +135,7 @@ crear() {
     <key>CFBundleVersion</key><string>$VERSION${BUSCADOR_COMMIT:+ ($BUSCADOR_COMMIT)}</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleDevelopmentRegion</key><string>es</string>
+    <key>CFBundleLocalizations</key><array><string>es</string><string>en</string><string>fr</string></array>
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
@@ -145,8 +157,8 @@ crear() {
 </plist>
 PLIST
     # Firma local (ad-hoc): suficiente para ejecutarla en este Mac.
-    codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "Aviso: no se pudo firmar (la app funciona igual en este Mac)"
-    echo "==> Creada: $APP${BUSCADOR_COMMIT:+ (versión $BUSCADOR_COMMIT)}"
+    codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "$(m 'Aviso: no se pudo firmar (la app funciona igual en este Mac)' 'Warning: could not sign it (the app still works on this Mac)' 'Attention : signature impossible (l’app fonctionne quand même sur ce Mac)')"
+    echo "==> $(m 'Creada' 'Created' 'Créée'): $APP${BUSCADOR_COMMIT:+ ($(m versión version version) $BUSCADOR_COMMIT)}"
 }
 
 copiar_a() { # copiar_a CARPETA
@@ -161,7 +173,7 @@ copiar_a() { # copiar_a CARPETA
             cp -R "$APP" "$dir/"
         fi
         "$LSREGISTER" -f "$dir/$APP_NAME" >/dev/null 2>&1 || true
-        echo "==> Instalada en $dir/$APP_NAME"
+        echo "==> $(m 'Instalada en' 'Installed in' 'Installée dans') $dir/$APP_NAME"
         INSTALADA="$dir/$APP_NAME"
         return 0
     fi
@@ -172,10 +184,10 @@ instalar() {
     crear
     cerrar_si_abierta
     if [ -n "$DESTINO" ]; then
-        copiar_a "$DESTINO" || { echo "Sin permiso para escribir en $DESTINO" >&2; exit 1; }
+        copiar_a "$DESTINO" || { echo "$(m 'Sin permiso para escribir en' 'No permission to write to' 'Pas la permission d’écrire dans') $DESTINO" >&2; exit 1; }
     else
         copiar_a /Applications || {
-            echo "Sin permiso en /Applications; se instala en ~/Applications"
+            echo "$(m 'Sin permiso en /Applications; se instala en ~/Applications' 'No permission for /Applications; installing in ~/Applications' 'Pas de permission pour /Applications ; installation dans ~/Applications')"
             copiar_a "$HOME/Applications"
         }
     fi
@@ -186,9 +198,9 @@ instalar() {
         rm -rf "$APP"
     fi
     if [ "$REABRIR" = 1 ]; then
-        open "$INSTALADA" && echo "==> buscador vuelto a abrir con la versión nueva"
+        open "$INSTALADA" && echo "==> $(m 'buscador vuelto a abrir con la versión nueva' 'buscador reopened with the new version' 'buscador rouvert avec la nouvelle version')"
     else
-        echo "Ábrela desde Launchpad o Spotlight (Cmd+Espacio, «buscador»)."
+        echo "$(m 'Ábrela desde Launchpad o Spotlight (Cmd+Espacio, «buscador»).' 'Open it from Launchpad or Spotlight (Cmd+Space, “buscador”).' 'Ouvrez-la depuis Launchpad ou Spotlight (Cmd+Espace, « buscador »).')"
     fi
 }
 
@@ -198,8 +210,8 @@ actualizar() {
     fi
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git remote get-url origin >/dev/null 2>&1; then
         if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-            echo "Hay cambios locales sin commit: se compila lo que hay, sin traer cambios."
-        elif pregunta "¿Traer los últimos cambios de GitHub (git pull)?"; then
+            echo "$(m 'Hay cambios locales sin commit: se compila lo que hay, sin traer cambios.' 'There are uncommitted local changes: building what is there, without pulling.' 'Il y a des modifications locales non validées : compilation de l’existant, sans récupérer.')"
+        elif pregunta "$(m '¿Traer los últimos cambios de GitHub (git pull)?' 'Pull the latest changes from GitHub (git pull)?' 'Récupérer les dernières modifications depuis GitHub (git pull) ?')"; then
             git pull --ff-only
         fi
     fi
@@ -211,37 +223,37 @@ desinstalar() {
     for d in "${DESTINO:-}" /Applications "$HOME/Applications"; do
         if [ -n "$d" ] && [ -d "$d/$APP_NAME" ]; then
             cerrar_si_abierta
-            if pregunta "¿Quitar $d/$APP_NAME?"; then
+            if pregunta "$(m "¿Quitar $d/$APP_NAME?" "Remove $d/$APP_NAME?" "Supprimer $d/$APP_NAME ?")"; then
                 "$LSREGISTER" -u "$d/$APP_NAME" >/dev/null 2>&1 || true
-                rm -rf "${d:?}/$APP_NAME" && echo "==> Quitada $d/$APP_NAME" && quitado=1
+                rm -rf "${d:?}/$APP_NAME" && echo "==> $(m 'Quitada' 'Removed' 'Supprimée'): $d/$APP_NAME" && quitado=1
             fi
         fi
     done
-    [ "$quitado" = 1 ] || echo "No había ninguna buscador.app instalada (o no se quitó)."
+    [ "$quitado" = 1 ] || echo "$(m 'No había ninguna buscador.app instalada (o no se quitó).' 'No buscador.app was installed (or it was not removed).' 'Aucune buscador.app n’était installée (ou elle n’a pas été supprimée).')"
     if [ -d "$CONFIG" ]; then
-        echo "Configuración: $CONFIG"
+        echo "$(m 'Configuración' 'Settings' 'Réglages'): $CONFIG"
         ls -1 "$CONFIG" | sed 's/^/    /'
         # La configuración se pregunta siempre, incluso con --si.
-        printf "¿Borrar también la configuración (tema, letra, colores…)? [s/N] "
+        m "¿Borrar también la configuración (tema, letra, colores…)? [s/N] " "Also delete the settings (theme, font, colours…)? [y/N] " "Supprimer aussi les réglages (thème, police, couleurs…) ? [o/N] "
         read -r r || r=""
-        case "$r" in s|S|si|sí|y|Y) rm -rf "$CONFIG" && echo "==> Configuración borrada" ;; *) echo "Configuración conservada." ;; esac
+        case "$r" in s|S|si|sí|y|Y|yes|o|O|oui) rm -rf "$CONFIG" && echo "==> $(m 'Configuración borrada' 'Settings deleted' 'Réglages supprimés')" ;; *) echo "$(m 'Configuración conservada.' 'Settings kept.' 'Réglages conservés.')" ;; esac
     fi
-    [ -d "$TEMPS" ] && rm -rf "$TEMPS" && echo "==> Temporales de «Nuevo» borrados"
+    [ -d "$TEMPS" ] && rm -rf "$TEMPS" && echo "==> $(m 'Temporales de «Nuevo» borrados' 'Temporary «New» files deleted' 'Fichiers temporaires de « Nouveau » supprimés')"
     [ -d "${TMPDIR:-/tmp}/buscador-actualizar" ] && rm -rf "${TMPDIR:-/tmp}/buscador-actualizar"
-    [ -d "$CACHE" ] && rm -rf "$CACHE" && echo "==> Caché de compilación borrada"
-    echo "Listo."
+    [ -d "$CACHE" ] && rm -rf "$CACHE" && echo "==> $(m 'Caché de compilación borrada' 'Build cache deleted' 'Cache de compilation supprimé')"
+    echo "$(m 'Listo.' 'Done.' 'Terminé.')"
 }
 
 if [ -z "$ACCION" ]; then
-    echo "buscador para macOS"
-    if actual=$(instalada); then echo "Instalada en: $actual"; else echo "No está instalada."; fi
+    echo "$(m 'buscador para macOS' 'buscador for macOS' 'buscador pour macOS')"
+    if actual=$(instalada); then echo "$(m 'Instalada en' 'Installed in' 'Installée dans'): $actual"; else echo "$(m 'No está instalada.' 'Not installed.' 'Non installée.')"; fi
     echo
-    echo "  1) Crear la app (target/release/buscador.app)"
-    echo "  2) Instalar en Aplicaciones"
-    echo "  3) Actualizar (traer cambios, recompilar y reemplazar)"
-    echo "  4) Desinstalar"
-    echo "  5) Salir"
-    printf "Elige [1-5]: "
+    echo "  1) $(m 'Crear la app' 'Build the app' 'Créer l’app') (target/release/buscador.app)"
+    echo "  2) $(m 'Instalar en Aplicaciones' 'Install in Applications' 'Installer dans Applications')"
+    echo "  3) $(m 'Actualizar (traer cambios, recompilar y reemplazar)' 'Update (pull, rebuild and replace)' 'Mettre à jour (récupérer, recompiler et remplacer)')"
+    echo "  4) $(m 'Desinstalar' 'Uninstall' 'Désinstaller')"
+    echo "  5) $(m 'Salir' 'Quit' 'Quitter')"
+    printf "%s" "$(m 'Elige [1-5]: ' 'Choose [1-5]: ' 'Choisissez [1-5] : ')"
     read -r op || op=5
     case "$op" in 1) ACCION=crear ;; 2) ACCION=instalar ;; 3) ACCION=actualizar ;; 4) ACCION=desinstalar ;; *) exit 0 ;; esac
 fi
