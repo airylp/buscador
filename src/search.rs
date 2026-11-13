@@ -52,6 +52,28 @@ impl Search {
     /// Busca en el archivo original o, si hay `edits` (piezas + índice del
     /// original), en el texto editado.
     pub fn start(src: Source, edits: Option<(Arc<Vec<Piece>>, Arc<RwLock<Index>>)>, params: Params) -> Result<Self, String> {
+        Self::start_inner(src, edits, params, None)
+    }
+
+    /// Para un archivo que creció: conserva los resultados anteriores a
+    /// `from_line` y busca solo desde ahí (`from_byte` = inicio de esa línea).
+    pub fn extend(&self, src: Source, from_line: u64, from_byte: usize) -> Result<Self, String> {
+        let mut kept = self.results.lock().unwrap().clone();
+        kept.retain(|&l| l < from_line);
+        Self::start_inner(src, None, self.params.clone(), Some((kept, from_line, from_byte)))
+    }
+
+    /// Busca solo desde `from_line` (que empieza en `from_byte`), sin resultados previos.
+    pub fn start_from(src: Source, params: Params, from_line: u64, from_byte: usize) -> Result<Self, String> {
+        Self::start_inner(src, None, params, Some((Vec::new(), from_line, from_byte)))
+    }
+
+    fn start_inner(
+        src: Source,
+        edits: Option<(Arc<Vec<Piece>>, Arc<RwLock<Index>>)>,
+        params: Params,
+        resume: Option<(Vec<u64>, u64, usize)>,
+    ) -> Result<Self, String> {
         let re = RegexBuilder::new(&params.pattern())
             .case_insensitive(!params.case_sensitive)
             .multi_line(true)
@@ -59,10 +81,11 @@ impl Search {
             .map_err(|e| e.to_string())?;
         let highlight = params.highlighter().map_err(|e| e.to_string())?;
 
+        let (kept, from_line, from_byte) = resume.unwrap_or((Vec::new(), 0, src.start));
         let s = Search {
             params,
             highlight,
-            results: Default::default(),
+            results: Arc::new(Mutex::new(kept)),
             progress: Default::default(),
             total: src.data.len() as u64,
             done: Default::default(),
@@ -82,10 +105,10 @@ impl Search {
             .name("search".into())
             .spawn(move || {
                 let t0 = Instant::now();
-                let mut sc = Scan { src: &src, re: &re, results: &results, progress: &progress, truncated: &truncated, cancel: &cancel, found: Vec::new(), done_bytes: 0 };
+                let mut sc = Scan { src: &src, re: &re, results: &results, progress: &progress, truncated: &truncated, cancel: &cancel, found: Vec::new(), done_bytes: from_byte as u64 };
                 match edits {
                     None => {
-                        sc.range(src.start, src.data.len(), 0, u64::MAX);
+                        sc.range(from_byte, src.data.len(), from_line, u64::MAX);
                     }
                     Some((pieces, index)) => {
                         let mut base = 0u64;

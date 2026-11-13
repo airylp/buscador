@@ -163,12 +163,39 @@ pub struct Document {
     /// Bytes ya indexados.
     pub progress: Arc<AtomicU64>,
     cancel: Arc<AtomicBool>,
+    /// Identidad del archivo abierto (dispositivo, inodo) para detectar rotaciones.
+    id: (u64, u64),
+}
+
+/// Qué pasó con el archivo en disco desde que se abrió (para «seguir en vivo»).
+#[derive(Debug, PartialEq)]
+pub enum Change {
+    Same,
+    /// Creció por el final: hay que revisar desde la línea `from_line`
+    /// (la última que había, que pudo quedar a medias), que empieza en `from_byte`.
+    Grew { from_line: u64, from_byte: usize },
+    /// Se truncó, se reemplazó o rotó: hay que volver a abrirlo.
+    Replaced,
+}
+
+fn file_id(m: &std::fs::Metadata) -> (u64, u64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        (m.dev(), m.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = m;
+        (0, 0)
+    }
 }
 
 impl Document {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let file = File::open(path)?;
-        let len = file.metadata()?.len();
+        let meta = file.metadata()?;
+        let len = meta.len();
         let data = if len == 0 {
             Bytes::Empty
         } else {
@@ -192,6 +219,7 @@ impl Document {
             index: Default::default(),
             progress: Default::default(),
             cancel: Default::default(),
+            id: file_id(&meta),
         };
         doc.set_encoding(enc);
         Ok(doc)
@@ -220,8 +248,65 @@ impl Document {
             (self.src.clone(), self.index.clone(), self.progress.clone(), self.cancel.clone());
         thread::Builder::new()
             .name("indexer".into())
-            .spawn(move || build_index(src, index, progress, cancel))
+            .spawn(move || build_index(src, index, progress, cancel, None))
             .expect("no se pudo crear el hilo indexador");
+    }
+
+    /// Mira el archivo en disco. Si solo creció, lo vuelve a mapear y sigue
+    /// indexando desde la última línea conocida (sin recorrer lo anterior).
+    pub fn check_growth(&mut self) -> std::io::Result<Change> {
+        let meta = std::fs::metadata(&self.path)?;
+        let len = meta.len() as usize;
+        let old = self.len();
+        if file_id(&meta) != self.id || len < old {
+            return Ok(Change::Replaced);
+        }
+        if len == old || !self.indexing_done() {
+            return Ok(Change::Same);
+        }
+        let file = File::open(&self.path)?;
+        if file_id(&file.metadata()?) != self.id {
+            return Ok(Change::Replaced);
+        }
+        // SAFETY: igual que en `open`.
+        let m = unsafe { Mmap::map(&file)? };
+        #[cfg(unix)]
+        let _ = m.advise(memmap2::Advice::Random);
+        if m.len() <= old {
+            return Ok(Change::Same);
+        }
+        // Se reanuda en la última línea (pudo no tener salto todavía).
+        let (from_line, from_byte, keep) = {
+            let idx = self.index.read().unwrap();
+            if idx.lines == 0 {
+                (0, self.src.start, Vec::new())
+            } else {
+                let last = idx.lines - 1;
+                let s = line_start(&self.src, &idx, last);
+                (last, s, idx.checkpoints[..=(last / STRIDE) as usize].to_vec())
+            }
+        };
+        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel = Arc::new(AtomicBool::new(false));
+        self.src.data = Arc::new(Bytes::Map(m));
+        let fresh = old == 0;
+        if fresh {
+            // Estaba vacío: se detecta el encoding con el contenido nuevo.
+            let (enc, reason) = encoding::detect(&self.src.data);
+            self.detect_reason = reason;
+            self.set_encoding(enc);
+            return Ok(Change::Grew { from_line: 0, from_byte: self.src.start });
+        }
+        let lines = from_line + 1;
+        self.index = Arc::new(RwLock::new(Index { checkpoints: keep, lines, done: false }));
+        self.progress = Arc::new(AtomicU64::new(from_byte as u64));
+        let (src, index, progress, cancel) =
+            (self.src.clone(), self.index.clone(), self.progress.clone(), self.cancel.clone());
+        thread::Builder::new()
+            .name("indexer".into())
+            .spawn(move || build_index(src, index, progress, cancel, Some((from_byte, lines))))
+            .expect("no se pudo crear el hilo indexador");
+        Ok(Change::Grew { from_line, from_byte })
     }
 
     pub fn line_count(&self) -> u64 {
@@ -301,7 +386,9 @@ impl Drop for Document {
     }
 }
 
-fn build_index(src: Source, index: Arc<RwLock<Index>>, progress: Arc<AtomicU64>, cancel: Arc<AtomicBool>) {
+/// `resume` = (offset de la última línea conocida, líneas conocidas): sigue
+/// un índice que ya tiene sus puntos de control hasta esa línea.
+fn build_index(src: Source, index: Arc<RwLock<Index>>, progress: Arc<AtomicU64>, cancel: Arc<AtomicBool>, resume: Option<(usize, u64)>) {
     let data = &src.data[..];
     let len = data.len();
     let start = src.start;
@@ -311,8 +398,10 @@ fn build_index(src: Source, index: Arc<RwLock<Index>>, progress: Arc<AtomicU64>,
         return;
     }
 
-    let mut pending: Vec<u64> = vec![start as u64];
-    let mut lines: u64 = 1;
+    let (mut pending, mut lines, start): (Vec<u64>, u64, usize) = match resume {
+        Some((at, lines)) => (Vec::new(), lines, at),
+        None => (vec![start as u64], 1, start),
+    };
 
     let flush = |pending: &mut Vec<u64>, lines: u64, pos: usize, done: bool| {
         let mut idx = index.write().unwrap();
@@ -436,6 +525,39 @@ mod tests {
         wait(&doc);
         assert_ne!(doc.src.encoding, encoding_rs::UTF_8);
         assert_eq!(all_lines(&doc)[1], "ñandú");
+    }
+
+    #[test]
+    fn grows_and_reindexes_only_the_tail() {
+        let mut s = String::new();
+        for i in 0..1000 {
+            s.push_str(&format!("line {i}\n"));
+        }
+        s.push_str("medio");
+        let p = write_tmp("crece.log", s.as_bytes());
+        let mut doc = Document::open(&p).unwrap();
+        wait(&doc);
+        assert_eq!(doc.check_growth().unwrap(), Change::Same);
+        assert_eq!(doc.line_count(), 1001);
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        write!(f, " completo\n").unwrap();
+        for i in 1001..1600 {
+            write!(f, "line {i}\n").unwrap();
+        }
+        drop(f);
+        match doc.check_growth().unwrap() {
+            Change::Grew { from_line, .. } => assert_eq!(from_line, 1000),
+            c => panic!("{c:?}"),
+        }
+        wait(&doc);
+        assert_eq!(doc.line_count(), 1600);
+        for n in [0u64, 255, 999, 1001, 1024, 1599] {
+            assert_eq!(doc.line_text(n), format!("line {n}"));
+        }
+        assert_eq!(doc.line_text(1000), "medio completo");
+        // Truncado: hay que reabrir.
+        std::fs::write(&p, "nuevo\n").unwrap();
+        assert_eq!(doc.check_growth().unwrap(), Change::Replaced);
     }
 
     #[test]

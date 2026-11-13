@@ -106,7 +106,15 @@ pub struct Tab {
     col_dragging: bool,
     /// Cuenta todas las modificaciones (no se reinicia al guardar).
     edit_gen: u64,
+    /// «En vivo»: mirar el archivo cada poco y mostrar lo que se le añade.
+    follow: bool,
+    follow_at: Instant,
+    /// Vista filtrada (reglas de incluir/excluir).
+    filter: crate::filter::Filter,
 }
+
+/// Cada cuánto se mira si el archivo creció en modo «En vivo».
+const FOLLOW_EVERY: Duration = Duration::from_millis(400);
 
 impl Tab {
     fn new(doc: Document) -> Self {
@@ -149,6 +157,9 @@ impl Tab {
             wrap: Wrap::Off,
             col_dragging: false,
             edit_gen: 0,
+            follow: false,
+            follow_at: Instant::now(),
+            filter: Default::default(),
         }
     }
 
@@ -1048,6 +1059,7 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
         (k("C+Shift+B"), "Embellecer JSON / XML (valida y sangra)"),
         (k("C+A+Z"), "Ajuste de línea (activar / desactivar)"),
         (k("C+R"), "Recargar el archivo del disco (cursor al final)"),
+        (k("C+Shift+L"), "Vista filtrada (solo las líneas que cumplen las reglas)"),
         (k("Retroceso / Supr"), "Borrar carácter"),
         (k("W+Retroceso / W+Supr"), "Borrar palabra"),
         (k("Enter"), "Nueva línea"),
@@ -1799,6 +1811,58 @@ impl App {
         }
     }
 
+    /// «En vivo»: mira los archivos que se siguen; si crecieron, muestra lo
+    /// nuevo (y busca/filtra solo eso); si se truncaron o rotaron, los reabre.
+    fn follow_files(&mut self, ctx: &Context) {
+        let mut reopen = Vec::new();
+        let mut any = false;
+        for (i, t) in self.tabs.iter_mut().enumerate() {
+            if !t.follow || t.untitled {
+                continue;
+            }
+            any = true;
+            // Con cambios sin guardar se pausa: el texto editado manda.
+            if t.follow_at.elapsed() < FOLLOW_EVERY || t.buf.is_some() || t.save.is_some() {
+                continue;
+            }
+            t.follow_at = Instant::now();
+            let old_total = t.total();
+            let stick = t.cursor.is_none_or(|c| c.line + 1 >= old_total);
+            match t.doc.check_growth() {
+                Ok(crate::document::Change::Grew { from_line, from_byte }) => {
+                    if let Some(s) = &t.search {
+                        let next = if s.is_done() {
+                            s.extend(t.doc.src.clone(), from_line, from_byte)
+                        } else {
+                            Search::start(t.doc.src.clone(), None, s.params.clone())
+                        };
+                        if let Ok(n) = next {
+                            t.search = Some(n);
+                        }
+                    }
+                    t.edit_gen += 1;
+                    t.filter.extend(&t.doc.src, from_line, from_byte, t.edit_gen);
+                    t.detail_cache = None;
+                    t.syntax_cache = None;
+                    if stick {
+                        t.goto_end = true;
+                    }
+                }
+                Ok(crate::document::Change::Replaced) => reopen.push(i),
+                // Puede no existir un momento mientras rota: se reintenta.
+                Ok(crate::document::Change::Same) | Err(_) => {}
+            }
+        }
+        for i in reopen {
+            let name = self.tabs[i].doc.name.clone();
+            self.reload(i, true);
+            self.msg(format!("{name} se truncó o se reemplazó: se volvió a abrir"));
+        }
+        if any {
+            ctx.request_repaint_after(FOLLOW_EVERY);
+        }
+    }
+
     /// Cierra los archivos que cumplen `pred` salvo los que tienen cambios sin
     /// guardar (o se están guardando); conserva el activo si sigue abierto.
     fn close_many(&mut self, pred: impl Fn(&Tab) -> bool) {
@@ -1849,6 +1913,9 @@ impl App {
         t.editable = old.editable;
         t.lang = old.lang;
         t.space = old.space;
+        t.follow = old.follow;
+        t.filter.rules = old.filter.rules.clone();
+        t.filter.on = old.filter.on;
         t.goto_end = true;
         // La búsqueda que hubiera se repite sobre el contenido nuevo (sin saltar a la primera).
         if let Some(params) = old.search.as_ref().map(|s| s.params.clone()) {
@@ -1963,6 +2030,12 @@ impl App {
         }
         if pressed(sc(Modifiers::COMMAND, Key::R)) {
             self.reload(self.active, false);
+        }
+        if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::L)) {
+            let (q, re, cs) = (self.query.clone(), self.use_regex, self.case_sensitive);
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                toggle_filter(t, &q, re, cs);
+            }
         }
         if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::B)) {
             self.beautify();
@@ -2617,7 +2690,7 @@ impl App {
         let full = ui.available_rect_before_wrap();
         let full = Rect::from_min_size(full.min, vec2(full.width(), h));
         ui.allocate_rect(full, Sense::hover());
-        let right_w = 300.0_f32.min(full.width() / 2.0);
+        let right_w = 470.0_f32.min(full.width() * 0.55);
         let right = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
         let left = Rect::from_min_max(full.min, pos2(right.left() - 6.0, full.bottom()));
 
@@ -2648,6 +2721,32 @@ impl App {
                 .clicked()
             {
                 self.reload(self.active, false);
+            }
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                let hint = if t.untitled {
+                    "Disponible para archivos guardados en disco".to_string()
+                } else if t.buf.is_some() && t.follow {
+                    "En vivo en pausa: hay cambios sin guardar (guárdalos o deshazlos)".to_string()
+                } else {
+                    "En vivo: muestra lo que se va añadiendo al archivo (como tail -f) y baja hasta el final.\nSi el archivo se trunca o rota, se vuelve a abrir.".to_string()
+                };
+                let paused = t.buf.is_some();
+                let label = if t.follow && paused { "⏸ En vivo" } else { "⏵ En vivo" };
+                let r = ui.add_enabled(!t.untitled, Button::selectable(t.follow, RichText::new(label).small()));
+                if r.on_hover_text(&hint).on_disabled_hover_text(&hint).clicked() {
+                    t.follow = !t.follow;
+                    if t.follow {
+                        t.follow_at = Instant::now() - FOLLOW_EVERY;
+                        t.goto_end = true;
+                        t.filter.at_bottom = true;
+                    }
+                }
+                let n = t.filter.rules.iter().filter(|r| !r.text.is_empty()).count();
+                let flabel = if n > 0 { format!("⚟ Filtro ({n})") } else { "⚟ Filtro".to_string() };
+                let r = ui.add(Button::selectable(t.filter.on, RichText::new(flabel).small()));
+                if r.on_hover_text("Vista filtrada: solo las líneas que cumplen las reglas (incluir / excluir), sin tocar el archivo (Ctrl+Shift+L)").clicked() {
+                    toggle_filter(t, &self.query, self.use_regex, self.case_sensitive);
+                }
             }
             ui.toggle_value(&mut self.show_detail, RichText::new("📄 Detalle").small())
                 .on_hover_text("Panel con la línea actual completa, seleccionable");
@@ -2830,7 +2929,10 @@ impl App {
     /// (ancho, alto u32 LE + RGBA) cuando todo está listo y sale.
     fn debug_screenshot(&mut self, ctx: &Context, busy: bool) {
         let Ok(path) = std::env::var("BUSCADOR_SCREENSHOT") else { return };
-        self.debug_frames += 1;
+        // Se detiene en 999: 1000 marca «captura pedida».
+        if self.debug_frames < 999 {
+            self.debug_frames += 1;
+        }
         if self.debug_frames == 2 {
             if let Ok(t) = std::env::var("BUSCADOR_THEME") {
                 ctx.set_theme(if t == "oscuro" { ThemePreference::Dark } else { ThemePreference::Light });
@@ -2909,6 +3011,20 @@ impl App {
             self.debug_typed = true;
             // Pruebas: BUSCADOR_ESPACIOS='Logs=0,1;Config-=2' crea espacios con esos
             // archivos (índices); «-» al final del nombre = espacio cerrado.
+            // BUSCADOR_FILTRO='+error;-timeout' abre la vista filtrada con esas reglas.
+            if let (Ok(spec), Some(t)) = (std::env::var("BUSCADOR_FILTRO"), self.tabs.get_mut(self.active)) {
+                t.filter.rules = spec
+                    .split(';')
+                    .map(|r| crate::filter::Rule { exclude: r.starts_with('-'), text: r.trim_start_matches(['+', '-']).into(), ..Default::default() })
+                    .collect();
+                t.filter.on = true;
+                t.filter.top = u64::MAX;
+            }
+            // BUSCADOR_VIVO=1 activa «En vivo» en el archivo activo.
+            if let (Ok(_), Some(t)) = (std::env::var("BUSCADOR_VIVO"), self.tabs.get_mut(self.active)) {
+                t.follow = true;
+                t.goto_end = true;
+            }
             // BUSCADOR_ELEGIR='0,2': selección múltiple en el panel (índices).
             if let Ok(spec) = std::env::var("BUSCADOR_ELEGIR") {
                 self.picked = spec.split(',').filter_map(|n| self.tabs.get(n.trim().parse::<usize>().ok()?)).map(|t| t.doc.path.clone()).collect();
@@ -2964,7 +3080,9 @@ impl App {
                 }
             }
         }
-        if self.debug_frames < 90 || busy || (std::env::var("BUSCADOR_TYPE").is_ok() && !self.debug_typed) {
+        // BUSCADOR_ESPERA=ms: retrasa la captura (p. ej. para ver «En vivo»).
+        let wait = std::env::var("BUSCADOR_ESPERA").ok().and_then(|v| v.parse::<f64>().ok()).is_some_and(|ms| ctx.input(|i| i.time) * 1000.0 < ms);
+        if self.debug_frames < 90 || busy || wait || (std::env::var("BUSCADOR_TYPE").is_ok() && !self.debug_typed) {
             ctx.request_repaint();
             return;
         }
@@ -3105,6 +3223,12 @@ impl eframe::App for App {
             });
         }
 
+        if let Some(t) = self.tabs.get_mut(self.active).filter(|t| t.filter.on) {
+            let (buf, doc) = (&t.buf, &t.doc);
+            if t.filter.poll(&doc.src, || buf.as_ref().map(|b| (b.snapshot(), doc.index.clone())), t.edit_gen) {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+        }
         let mut message = None;
         let mut view_focused = false;
         let colors = self.text_colors();
@@ -3116,7 +3240,9 @@ impl eframe::App for App {
         let show_detail = &mut self.show_detail;
         let focus_view = std::mem::take(&mut self.focus_view);
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
-            if let Some(t) = self.tabs.get_mut(self.active) {
+            if let Some(t) = self.tabs.get_mut(self.active).filter(|t| t.filter.on) {
+                message = filter_view(ui, t, &font, colors, syntax_on);
+            } else if let Some(t) = self.tabs.get_mut(self.active) {
                 let wrap = t.wrap;
                 (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors, syntax_on, wrap);
             } else {
@@ -3131,6 +3257,7 @@ impl eframe::App for App {
         for text in exports {
             self.new_untitled(Some(text));
         }
+        self.follow_files(&ctx);
         for t in &mut self.tabs {
             // Posición de la sesión anterior, en cuanto el índice llega hasta ella.
             if let Some((top, c)) = t.restore {
@@ -4912,6 +5039,242 @@ fn minimap(ui: &mut Ui, rect: Rect, resp: &Response, tab: &Tab, w: &mut AdvWin) 
 }
 
 /// Lista virtual de líneas con coincidencias.
+/// Activa/desactiva la vista filtrada; al activarla sin reglas, usa lo que
+/// haya en «Buscar» como primera regla.
+fn toggle_filter(t: &mut Tab, query: &str, regex: bool, case: bool) {
+    let f = &mut t.filter;
+    f.on = !f.on;
+    if f.on {
+        if !f.has_rules() && !query.is_empty() {
+            f.rules = vec![crate::filter::Rule { text: query.to_string(), exclude: false, regex, case }];
+        }
+        // Empezar donde está el cursor.
+        f.sel = t.cursor.map(|c| c.line);
+        f.at_bottom = t.follow;
+        f.top = u64::MAX; // se coloca al tener el resultado
+    }
+}
+
+/// Vista filtrada: reglas arriba y, debajo, solo las líneas que las cumplen
+/// (con su número original). Doble clic o Enter: ir a esa línea en el archivo.
+fn filter_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color32, Color32)>, syntax_on: bool) -> Option<String> {
+    use crate::filter::Rule;
+    let mut message = None;
+    // --- Reglas ---
+    Frame::NONE.inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
+        let mut remove = None;
+        let mut changed = false;
+        let n = tab.filter.rules.len();
+        for (k, r) in tab.filter.rules.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                let (txt, hint) = if r.exclude {
+                    ("− Excluir", "Se ocultan las líneas que contienen esto (clic: cambiar a Incluir)")
+                } else {
+                    ("+ Incluir", "Se muestran las líneas que contienen esto (clic: cambiar a Excluir)")
+                };
+                let color = if r.exclude { Color32::from_rgb(220, 90, 80) } else { Color32::from_rgb(70, 170, 90) };
+                if ui.add(Button::new(RichText::new(txt).color(color).strong()).min_size(vec2(84.0, 0.0))).on_hover_text(hint).clicked() {
+                    r.exclude = !r.exclude;
+                    changed = true;
+                }
+                let te = ui.add(
+                    TextEdit::singleline(&mut r.text)
+                        .desired_width(320.0)
+                        .hint_text(if r.regex { "expresión regular" } else { "texto" })
+                        .font(TextStyle::Monospace),
+                );
+                changed |= te.changed();
+                changed |= ui.toggle_value(&mut r.case, "Aa").on_hover_text("Distinguir mayúsculas").changed();
+                changed |= ui.toggle_value(&mut r.regex, ".*").on_hover_text("Expresión regular").changed();
+                if n > 1 && ui.small_button("×").on_hover_text("Quitar esta regla").clicked() {
+                    remove = Some(k);
+                }
+            });
+        }
+        if let Some(k) = remove {
+            tab.filter.rules.remove(k);
+            changed = true;
+        }
+        if changed {
+            tab.filter.touch();
+        }
+        ui.horizontal(|ui| {
+            if ui.button("+ Regla").on_hover_text("Varias de Incluir: basta con que coincida una. Las de Excluir quitan líneas.").clicked() {
+                tab.filter.rules.push(Rule::default());
+            }
+            ui.separator();
+            let total = tab.total();
+            let f = &tab.filter;
+            if let Some(e) = &f.error {
+                ui.colored_label(ui.visuals().error_fg_color, format!("Regla no válida: {e}"));
+            } else if !f.ready {
+                ui.spinner();
+                ui.label(format!("Filtrando… {:.0}%", f.progress().unwrap_or(0.0) * 100.0));
+            } else {
+                let c = f.view.count(total);
+                ui.label(format!("{} de {} líneas", fmt_num(c), fmt_num(total)))
+                    .on_hover_text("Doble clic en una línea (o Enter): ir a ella en el archivo completo");
+                if f.progress().is_some() {
+                    ui.spinner();
+                }
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Ver todo").on_hover_text("Volver al archivo completo (las reglas se guardan)").clicked() {
+                    tab.filter.on = false;
+                }
+                let ready = tab.filter.ready && tab.filter.error.is_none();
+                if ui.add_enabled(ready, Button::new("Nuevo archivo con estas líneas")).clicked() {
+                    match filtered_text(tab) {
+                        Ok(t) => tab.export_request = Some(t),
+                        Err(e) => message = Some(e),
+                    }
+                }
+                if ui.add_enabled(ready, Button::new("Copiar")).on_hover_text("Copiar todas las líneas filtradas").clicked() {
+                    message = Some(match filtered_text(tab) {
+                        Ok(t) => {
+                            let n = t.lines().count();
+                            ui.ctx().copy_text(t);
+                            format!("Copiadas {} líneas", fmt_num(n as u64))
+                        }
+                        Err(e) => e,
+                    });
+                }
+            });
+        });
+    });
+    ui.separator();
+
+    // --- Lista ---
+    apply_text_colors(ui, colors);
+    let ctx = ui.ctx().clone();
+    let row_h = ctx.fonts_mut(|f| f.row_height(font)).ceil();
+    let full = ui.available_rect_before_wrap();
+    ui.allocate_rect(full, Sense::hover());
+    let list = Rect::from_min_max(full.min, pos2(full.max.x - SCROLLBAR, full.max.y));
+    let vsb = Rect::from_min_max(pos2(list.max.x, full.min.y), full.max);
+    let id = ui.scope_id().with("filtrada");
+    let resp = ui.interact(list, id, Sense::click());
+    let visuals = ui.visuals().clone();
+    let painter = ui.painter_at(list);
+    painter.rect_filled(list, 0.0, visuals.extreme_bg_color);
+    let total = tab.total();
+    let f = &tab.filter;
+    let count = if f.error.is_some() { 0 } else { f.view.count(total) };
+    let visible = ((list.height() / row_h).floor() as u64).max(1);
+    let max_top = count.saturating_sub(visible);
+    let mut top = tab.filter.top;
+    let mut sel = tab.filter.sel;
+    if !tab.filter.ready && tab.filter.progress().is_some() && count == 0 {
+        // Aún sin resultado: no hay nada que pintar.
+    } else if top == u64::MAX {
+        // Recién activada: llevar a la vista la línea del cursor.
+        top = match sel {
+            Some(l) => tab.filter.view.row_of(l).saturating_sub(visible / 2),
+            None if tab.filter.at_bottom => max_top,
+            None => 0,
+        };
+    }
+    if tab.follow && tab.filter.at_bottom {
+        top = max_top;
+    }
+    // Teclado: ↑/↓/Re Pág/Av Pág mueven la línea elegida; Enter va a ella.
+    if resp.clicked() || resp.hovered() {
+        resp.request_focus();
+    }
+    let mut goto = None;
+    if resp.has_focus() && count > 0 {
+        let cur = sel.map(|l| tab.filter.view.row_of(l)).unwrap_or(top);
+        let step = ui.input(|i| {
+            let mut d = 0i64;
+            if i.key_pressed(Key::ArrowDown) { d += 1; }
+            if i.key_pressed(Key::ArrowUp) { d -= 1; }
+            if i.key_pressed(Key::PageDown) { d += visible as i64; }
+            if i.key_pressed(Key::PageUp) { d -= visible as i64; }
+            d
+        });
+        if step != 0 {
+            let row = add_signed(cur, step).min(count - 1);
+            sel = tab.filter.view.line_at(row);
+            if row < top {
+                top = row;
+            } else if row >= top + visible {
+                top = row + 1 - visible;
+            }
+        }
+        if ui.input(|i| i.key_pressed(Key::Enter)) {
+            goto = sel;
+        }
+    }
+    if resp.hovered() {
+        let d = ui.input(|i| i.smooth_scroll_delta.y);
+        if d != 0.0 {
+            top = add_signed(top.min(max_top), (-d / row_h * 3.0).round() as i64);
+        }
+    }
+    top = top.min(max_top);
+    let digits = fmt_num(total.max(1)).chars().count().max(4) as f32;
+    let num_w = ctx.fonts_mut(|f| f.glyph_width(font, '0')) * digits + 8.0;
+    let dark = is_dark(visuals.extreme_bg_color);
+    for k in 0..(visible + 1).min(count.saturating_sub(top)) {
+        let Some(line) = tab.filter.view.line_at(top + k) else { break };
+        let y = list.top() + k as f32 * row_h;
+        let row = Rect::from_min_size(pos2(list.left(), y), vec2(list.width(), row_h));
+        let r = ui.interact(row.intersect(list), id.with(("fila", k)), Sense::click());
+        if sel == Some(line) {
+            painter.rect_filled(row, 0.0, visuals.selection.bg_fill.gamma_multiply(0.6));
+        } else if r.hovered() {
+            painter.rect_filled(row, 0.0, visuals.widgets.hovered.weak_bg_fill);
+        }
+        if r.clicked() {
+            sel = Some(line);
+            resp.request_focus();
+        }
+        if r.double_clicked() {
+            goto = Some(line);
+        }
+        painter.text(pos2(list.left() + num_w, y), Align2::RIGHT_TOP, fmt_num(line + 1), font.clone(), visuals.weak_text_color());
+        if let Some((_, txt, tr)) = tab.rows(line, 1, 2048).into_iter().next() {
+            let mut spans = Vec::new();
+            if syntax_on {
+                syntax::highlight(tab.lang, &txt, syntax::State::Normal, &mut spans);
+            }
+            let job = line_job(&txt, tr, font, visuals.text_color(), tab.filter.highlight.as_ref(), &spans, dark);
+            painter.galley(pos2(list.left() + num_w + 12.0, y), painter.layout_job(job), visuals.text_color());
+        }
+    }
+    if count == 0 && tab.filter.ready && tab.filter.error.is_none() {
+        painter.text(list.center(), Align2::CENTER_CENTER, "Ninguna línea cumple las reglas", FontId::proportional(14.0), visuals.weak_text_color());
+    }
+    vscrollbar(ui, vsb, id.with("vsb"), &mut top, count, visible);
+    let f = &mut tab.filter;
+    f.top = top;
+    f.sel = sel;
+    if f.ready {
+        f.at_bottom = top >= max_top;
+    }
+    if let Some(l) = goto {
+        f.on = false;
+        tab.goto_line(l);
+    }
+    message
+}
+
+/// Texto de todas las líneas de la vista filtrada (con límite de tamaño).
+fn filtered_text(tab: &Tab) -> Result<String, String> {
+    let total = tab.total();
+    let count = tab.filter.view.count(total);
+    let mut out = String::new();
+    for k in 0..count {
+        let Some(l) = tab.filter.view.line_at(k) else { break };
+        out += &tab.line(l);
+        out.push('\n');
+        if out.len() > MAX_COPY_BYTES {
+            return Err(format!("Demasiado grande (máx. {})", human_size(MAX_COPY_BYTES as u64)));
+        }
+    }
+    Ok(out)
+}
+
 fn results_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color32, Color32)>, syntax_on: bool) {
     let Some(search) = &tab.search else { return };
     apply_text_colors(ui, colors);

@@ -4,6 +4,7 @@ mod blocks;
 mod buffer;
 mod diskmap;
 mod document;
+mod filter;
 mod encoding;
 mod fonts;
 mod icon;
