@@ -26,11 +26,13 @@ pub struct Settings {
     pub tab_width: usize,
     /// Ver espacios y tabuladores.
     pub show_ws: bool,
+    /// Pasos de deshacer.
+    pub undo_steps: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0, lang: None, minimap: false, tab_width: 4, show_ws: false }
+        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0, lang: None, minimap: false, tab_width: 4, show_ws: false, undo_steps: 100 }
     }
 }
 
@@ -65,6 +67,8 @@ pub struct SessionFile {
     pub encoding: String,
     /// Espacio del panel (índice en `Session::spaces`).
     pub space: Option<usize>,
+    /// Ajuste de línea propio del archivo (si no es el de por defecto).
+    pub wrap: Option<String>,
 }
 
 /// Archivos abiertos al cerrar y cuál estaba activo (`sesion.txt`).
@@ -95,6 +99,9 @@ impl Session {
             if let Some(n) = f.space {
                 t += &format!("espacio_archivo={n}\n");
             }
+            if let Some(w) = &f.wrap {
+                t += &format!("ajuste_archivo={w}\n");
+            }
         }
         t
     }
@@ -107,6 +114,10 @@ impl Session {
             } else if let Some(v) = line.strip_prefix("espacio=") {
                 let (open, name) = v.split_once('|').unwrap_or(("1", v));
                 s.spaces.push((name.to_string(), open != "0"));
+            } else if let Some(v) = line.strip_prefix("ajuste_archivo=") {
+                if let Some(f) = s.files.last_mut() {
+                    f.wrap = Some(v.trim().to_string());
+                }
             } else if let Some(v) = line.strip_prefix("espacio_archivo=") {
                 let n = v.trim().parse::<usize>().ok().filter(|&n| n < s.spaces.len());
                 if let Some(f) = s.files.last_mut() {
@@ -124,6 +135,7 @@ impl Session {
                     col: c.parse().unwrap_or(0),
                     encoding: enc.to_string(),
                     space: None,
+                    wrap: None,
                 });
             }
         }
@@ -163,6 +175,7 @@ impl Settings {
                 ("idioma", v) if !v.is_empty() => s.lang = Some(v.to_string()),
                 ("minimapa", v) => s.minimap = v == "si",
                 ("ver_espacios", v) => s.show_ws = v == "si",
+                ("deshacer", v) => s.undo_steps = v.parse::<usize>().unwrap_or(100).clamp(1, 10_000),
                 ("tabulador", v) => s.tab_width = v.parse::<usize>().unwrap_or(4).clamp(1, 16),
                 ("fondo", v) => bg = parse_hex(v),
                 ("color_letra", v) => fg = parse_hex(v),
@@ -204,6 +217,9 @@ impl Settings {
         if self.minimap {
             text += "minimapa=si\n";
         }
+        if self.undo_steps != 100 {
+            text += &format!("deshacer={}\n", self.undo_steps);
+        }
         if self.show_ws {
             text += "ver_espacios=si\n";
         }
@@ -239,8 +255,8 @@ mod tests {
             active: 1,
             spaces: vec![("Logs | prod".into(), true), ("Otro".into(), false)],
             files: vec![
-                SessionFile { path: "/a/b.log".into(), top: 10, line: 12, col: 3, encoding: "UTF-8".into(), space: Some(1) },
-                SessionFile { path: "/c/con|barra.txt".into(), top: 0, line: 0, col: 0, encoding: "windows-1252".into(), space: None },
+                SessionFile { path: "/a/b.log".into(), top: 10, line: 12, col: 3, encoding: "UTF-8".into(), space: Some(1), wrap: Some("ventana".into()) },
+                SessionFile { path: "/c/con|barra.txt".into(), top: 0, line: 0, col: 0, encoding: "windows-1252".into(), space: None, wrap: None },
             ],
         };
         assert_eq!(Session::from_text(&s.to_text()), s);

@@ -88,7 +88,16 @@ pub struct Buffer {
     pub version: u64,
 }
 
-const MAX_UNDO: usize = 10_000;
+/// Pasos de deshacer que se guardan (Ajustes → Deshacer; 100 por defecto).
+static MAX_UNDO: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(100);
+
+pub fn set_max_undo(n: usize) {
+    MAX_UNDO.store(n.clamp(1, 10_000), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn max_undo() -> usize {
+    MAX_UNDO.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 impl Buffer {
     /// Buffer sin cambios sobre un documento ya indexado.
@@ -113,6 +122,12 @@ impl Buffer {
 
     pub fn is_dirty(&self) -> bool {
         self.clean != Some(self.undo.len())
+    }
+
+    /// El estado actual es el que hay en disco (tras guardar). El historial
+    /// se conserva: deshacer después de guardar vuelve a marcarlo modificado.
+    pub fn mark_saved(&mut self) {
+        self.clean = Some(self.undo.len());
     }
 
     pub fn can_undo(&self) -> bool {
@@ -342,9 +357,10 @@ impl Buffer {
             }
         }
         self.undo.push(inv);
-        if self.undo.len() > MAX_UNDO {
-            self.undo.remove(0);
-            self.clean = self.clean.and_then(|c| c.checked_sub(1));
+        let excess = self.undo.len().saturating_sub(max_undo());
+        if excess > 0 {
+            self.undo.drain(..excess);
+            self.clean = self.clean.and_then(|c| c.checked_sub(excess));
         }
     }
 

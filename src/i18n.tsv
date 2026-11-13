@@ -565,3 +565,5 @@ No había espacios ni tabs al final	There were no trailing spaces or tabs	Il n�
 Quitados espacios y tabs al final en {n} líneas (Ctrl+Z para deshacer)	Removed trailing spaces and tabs in {n} lines (Ctrl+Z to undo)	Espaces et tabulations de fin supprimés dans {n} lignes (Ctrl+Z pour annuler)
 Quitar espacios y tabs al final	Remove trailing spaces and tabs	Supprimer les espaces et tabulations de fin
 En cada línea seleccionada, borra los espacios y tabuladores que haya al final	On each selected line, deletes any spaces and tabs at the end	Sur chaque ligne sélectionnée, supprime les espaces et tabulations en fin de ligne
+pasos (se conservan también al guardar)	steps (also kept after saving)	étapes (conservées aussi après l’enregistrement)
+Guardado {name} ({len}) · el deshacer se reinició	Saved {name} ({len}) · undo history was reset	{name} enregistré ({len}) · l’historique d’annulation a été réinitialisé

@@ -252,6 +252,18 @@ impl Document {
             .expect("no se pudo crear el hilo indexador");
     }
 
+    /// Tras guardar (escribir otro archivo y renombrarlo encima, o «Guardar
+    /// como»): el documento pasa a llamarse como `path` y a vigilar ese
+    /// archivo, pero sigue leyendo el contenido mapeado de antes (el sistema lo
+    /// mantiene mientras esté mapeado), al que se refieren las ediciones.
+    pub fn rebind(&mut self, path: &Path) {
+        self.path = path.to_path_buf();
+        self.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+        if let Ok(m) = std::fs::metadata(path) {
+            self.id = file_id(&m);
+        }
+    }
+
     /// Mira el archivo en disco. Si solo creció, lo vuelve a mapear y sigue
     /// indexando desde la última línea conocida (sin recorrer lo anterior).
     pub fn check_growth(&mut self) -> std::io::Result<Change> {

@@ -698,42 +698,59 @@ impl Tab {
         Ok(())
     }
 
-    /// Si terminó un guardado, reabre el archivo nuevo (libera la RAM de las
-    /// ediciones; el historial de deshacer se reinicia).
+    /// Si terminó un guardado: normalmente se conserva lo editado (y con ello
+    /// el historial de deshacer) y solo se marca como guardado. Se reabre el
+    /// archivo, liberando RAM y perdiendo el deshacer, si hay muchas líneas
+    /// editadas en memoria (> 64 MB) o el archivo está «En vivo».
     fn poll_save(&mut self) -> Option<String> {
         let job = self.save.as_ref()?;
         let r = job.result.lock().unwrap().take()?;
         let target = job.target.clone();
         self.save = None;
-        Some(match r {
-            Ok(lossy) => {
-                let enc = self.doc.src.encoding;
-                match Document::open(&target) {
-                    Ok(mut doc) => {
-                        if doc.src.encoding != enc {
-                            doc.set_encoding(enc);
-                        }
-                        let old = std::mem::replace(&mut self.doc, doc);
-                        if std::mem::take(&mut self.untitled) {
-                            let _ = std::fs::remove_file(&old.path);
-                            let _ = std::fs::remove_dir(untitled_dir()); // solo si quedó vacía
-                        }
-                        if old.name != self.doc.name {
-                            self.lang = syntax::detect(&self.doc.name);
-                        }
-                        self.buf = None;
-                        self.detail_cache = None;
-                        let mut m = tf!("Guardado {name} ({len})", name = self.doc.name, len = human_size(self.doc.len() as u64));
-                        if lossy > 0 {
-                            m += &tf!(" · {lossy} caracteres no representables se guardaron como «?»", lossy = lossy);
-                        }
-                        m
-                    }
-                    Err(e) => tf!("Guardado, pero no se pudo reabrir: {e}", e = e),
-                }
+        let lossy = match r {
+            Ok(l) => l,
+            Err(e) => return Some(tf!("Error al guardar: {e}", e = e)),
+        };
+        let size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+        let ram = self.buf.as_ref().map_or(0, |b| b.memory().1);
+        let keep = !self.follow && ram < (64 << 20) && self.buf.is_some();
+        let old_name = self.doc.name.clone();
+        let mut m = if keep {
+            let old_path = self.doc.path.clone();
+            self.doc.rebind(&target);
+            if std::mem::take(&mut self.untitled) {
+                let _ = std::fs::remove_file(&old_path);
+                let _ = std::fs::remove_dir(untitled_dir()); // solo si quedó vacía
             }
-            Err(e) => tf!("Error al guardar: {e}", e = e),
-        })
+            self.buf.as_mut().unwrap().mark_saved();
+            tf!("Guardado {name} ({len})", name = self.doc.name, len = human_size(size))
+        } else {
+            let enc = self.doc.src.encoding;
+            match Document::open(&target) {
+                Ok(mut doc) => {
+                    if doc.src.encoding != enc {
+                        doc.set_encoding(enc);
+                    }
+                    let old = std::mem::replace(&mut self.doc, doc);
+                    if std::mem::take(&mut self.untitled) {
+                        let _ = std::fs::remove_file(&old.path);
+                        let _ = std::fs::remove_dir(untitled_dir());
+                    }
+                    self.buf = None;
+                    self.minimap_cache = None;
+                    tf!("Guardado {name} ({len}) · el deshacer se reinició", name = self.doc.name, len = human_size(size))
+                }
+                Err(e) => return Some(tf!("Guardado, pero no se pudo reabrir: {e}", e = e)),
+            }
+        };
+        if old_name != self.doc.name {
+            self.lang = syntax::detect(&self.doc.name);
+        }
+        self.detail_cache = None;
+        if lossy > 0 {
+            m += &tf!(" · {lossy} caracteres no representables se guardaron como «?»", lossy = lossy);
+        }
+        Some(m)
     }
 
     // ---- Selección en bloque (columnas) ----
@@ -832,6 +849,85 @@ impl Tab {
         self.colsel = None;
         let t = self.line(l0);
         let p = Pos::new(l0, col_from_disp(&t, c0));
+        self.select(p, p);
+        Ok(())
+    }
+
+    /// Tab / Mayús+Tab con un bloque: mueve todo su texto a la siguiente (o
+    /// anterior) parada de tabulador en cada línea, y el bloque lo acompaña
+    /// (se puede repetir). A la derecha se inserta un tab delante del bloque; a
+    /// la izquierda se quitan los espacios/tabs que haya justo delante.
+    fn block_indent(&mut self, cs: ColSel, outdent: bool) -> Result<(), String> {
+        let (l0, l1) = cs.lines();
+        let (c0, c1) = cs.cols();
+        let tw = tab_width();
+        // Nueva columna de inicio del bloque.
+        let to = if outdent { c0.saturating_sub(1) / tw * tw } else { c0 + tab_stop(c0) };
+        if outdent && c0 == 0 {
+            return Ok(());
+        }
+        if (l1 - l0) as usize >= MAX_REPLACE_LINES {
+            return Err(tf!("Demasiadas líneas para cambiar de una vez (máx. {n})", n = fmt_num(MAX_REPLACE_LINES as u64)));
+        }
+        self.can_edit()?;
+        let lines: Vec<u64> = (l0..=l1).collect();
+        let cur = (self.anchor.unwrap_or_default(), self.cursor.unwrap_or_default());
+        let buf = self.buf.as_mut().unwrap();
+        // Columna donde queda el bloque (la de la primera línea que cambia).
+        let mut new_c0: Option<usize> = None;
+        buf.replace_lines(&self.doc, &lines, cur, |t| {
+            // Byte donde empieza la columna c0 (None si la línea es más corta).
+            let mut d = 0;
+            let mut at = None;
+            let mut starts = Vec::new(); // (byte, columna) de cada carácter
+            for (i, ch) in t.char_indices() {
+                if d >= c0 && at.is_none() {
+                    at = Some(i);
+                }
+                starts.push((i, d));
+                d += char_disp_width(ch, d);
+            }
+            if at.is_none() && d >= c0 {
+                at = Some(t.len());
+            }
+            let at = at?;
+            if !outdent {
+                // Si la línea no llega al bloque, no se toca.
+                if at == t.len() && d < c0 {
+                    return None;
+                }
+                let mut out = String::with_capacity(t.len() + 1);
+                out.push_str(&t[..at]);
+                out.push('\t');
+                out.push_str(&t[at..]);
+                new_c0.get_or_insert(to);
+                return Some(out);
+            }
+            // Quitar espacios/tabs justo antes de c0, como mucho hasta la columna `to`.
+            let mut cut = (at, c0);
+            for &(i, col) in starts.iter().rev().filter(|&&(i, _)| i < at) {
+                let ch = t[i..].chars().next().unwrap();
+                if col < to || !(ch == ' ' || ch == '\t') {
+                    break;
+                }
+                cut = (i, col);
+            }
+            if cut.0 == at {
+                return None;
+            }
+            new_c0.get_or_insert(cut.1);
+            Some(format!("{}{}", &t[..cut.0], &t[at..]))
+        })?;
+        self.detail_cache = None;
+        self.edit_gen += 1;
+        self.search_stale |= self.search.is_some();
+        let Some(nc0) = new_c0 else { return Ok(()) };
+        let shift = |c: usize| c + nc0 - c0;
+        let new = ColSel { a: (cs.a.0, shift(cs.a.1)), b: (cs.b.0, shift(cs.b.1)) };
+        self.colsel = Some(new);
+        let _ = c1;
+        let t = self.line(new.b.0);
+        let p = Pos::new(new.b.0, col_from_disp(&t, new.b.1));
         self.select(p, p);
         Ok(())
     }
@@ -1022,6 +1118,11 @@ impl Tab {
             Key::Z if m.command => return self.undo_redo(shift),
             Key::Y if m.command && !MAC => return self.undo_redo(true),
             Key::Enter if !m.command => return self.insert("\n", EditKind::Other),
+            // Con un bloque, Tab mueve su texto (ver `block_indent`).
+            Key::Tab if !m.command && !m.ctrl && self.colsel.is_some_and(|c| !c.is_empty() || c.lines().0 != c.lines().1) => {
+                let cs = self.colsel.unwrap();
+                return self.block_indent(cs, shift);
+            }
             // Con texto seleccionado, Tab desplaza todas sus líneas; Shift+Tab las devuelve.
             Key::Tab if !m.command && !m.ctrl && (shift || self.selection().is_some()) => return self.indent(shift),
             Key::Tab if !m.command && !m.ctrl => return self.insert("\t", EditKind::Typing),
@@ -1101,6 +1202,14 @@ impl Tab {
                             Ok(())
                         }
                     }
+                }
+                // Tab / Mayús+Tab con un bloque (o un cursor de columna en varias
+                // líneas): mueve el texto del bloque.
+                Event::Key { key: Key::Tab, pressed: true, modifiers, .. }
+                    if !modifiers.ctrl && !modifiers.command && self.colsel.is_some_and(|c| !c.is_empty() || c.lines().0 != c.lines().1) =>
+                {
+                    let cs = self.colsel.unwrap();
+                    self.block_indent(cs, modifiers.shift)
                 }
                 // Suprimir / Retroceso con un bloque: lo borra.
                 Event::Key { key: Key::Delete | Key::Backspace, pressed: true, .. } if self.block().is_some() => {
@@ -1549,6 +1658,7 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         let settings = Settings::load();
         TAB_WIDTH.store(settings.tab_width, Ordering::Relaxed);
+        buffer::set_max_undo(settings.undo_steps);
         SHOW_WS.store(settings.show_ws || std::env::var("BUSCADOR_ESPACIOS_VER").is_ok(), Ordering::Relaxed);
         // Idioma: el elegido (ajustes o instalador), si no el del sistema, si no español.
         let chosen = settings.lang.as_deref().and_then(crate::i18n::Lang::from_code);
@@ -1666,6 +1776,9 @@ impl App {
                 }
                 t.restore = Some((f.top, Pos::new(f.line, f.col)));
                 t.space = f.space.map(|n| n as u32 + 1);
+                if let Some(w) = &f.wrap {
+                    t.wrap = Wrap::parse(w);
+                }
             }
         }
         // Ids de espacio = índice + 1 (los archivos ya se asignaron así).
@@ -1695,6 +1808,7 @@ impl App {
                     col: c.col,
                     encoding: t.doc.src.encoding.name().to_string(),
                     space: t.space.and_then(|id| self.spaces.iter().position(|s| s.id == id)),
+                    wrap: Some(t.wrap.as_str()),
                 }
             })
             .collect();
@@ -1824,6 +1938,7 @@ impl App {
             minimap: self.show_minimap,
             tab_width: tab_width(),
             show_ws: show_whitespace(),
+            undo_steps: buffer::max_undo(),
         };
         if let Err(e) = st.save() {
             self.msg(tf!("No se pudieron guardar los ajustes: {e}", e = e));
@@ -1952,14 +2067,20 @@ impl App {
     /// nuevo (y busca/filtra solo eso); si se truncaron o rotaron, los reabre.
     fn follow_files(&mut self, ctx: &Context) {
         let mut reopen = Vec::new();
+        let mut quiet = Vec::new();
         let mut any = false;
         for (i, t) in self.tabs.iter_mut().enumerate() {
             if !t.follow || t.untitled {
                 continue;
             }
             any = true;
-            // Con cambios sin guardar se pausa: el texto editado manda.
-            if t.follow_at.elapsed() < FOLLOW_EVERY || t.buf.is_some() || t.save.is_some() {
+            // Con cambios sin guardar se pausa: el texto editado manda. Si ya se
+            // guardaron, se reabre el archivo para seguir leyendo de él.
+            if t.follow_at.elapsed() < FOLLOW_EVERY || t.dirty() || t.save.is_some() {
+                continue;
+            }
+            if t.buf.is_some() {
+                quiet.push(i);
                 continue;
             }
             t.follow_at = Instant::now();
@@ -1989,6 +2110,9 @@ impl App {
                 // Puede no existir un momento mientras rota: se reintenta.
                 Ok(crate::document::Change::Same) | Err(_) => {}
             }
+        }
+        for i in quiet {
+            self.reload(i, true);
         }
         for i in reopen {
             let name = self.tabs[i].doc.name.clone();
@@ -2951,12 +3075,12 @@ impl App {
             if let Some(t) = self.tabs.get_mut(self.active) {
                 let hint = if t.untitled {
                     t!("Disponible para archivos guardados en disco").to_string()
-                } else if t.buf.is_some() && t.follow {
+                } else if t.dirty() && t.follow {
                     t!("En vivo en pausa: hay cambios sin guardar (guárdalos o deshazlos)").to_string()
                 } else {
                     t!("En vivo: muestra lo que se va añadiendo al archivo (como tail -f) y baja hasta el final.\nSi el archivo se trunca o rota, se vuelve a abrir.").to_string()
                 };
-                let paused = t.buf.is_some();
+                let paused = t.dirty();
                 let label = if t.follow && paused { t!("⏸ En vivo") } else { t!("⏵ En vivo") };
                 let r = ui.add_enabled(!t.untitled, Button::selectable(t.follow, RichText::new(label).small()));
                 if r.on_hover_text(&hint).on_disabled_hover_text(&hint).clicked() {
@@ -4552,6 +4676,7 @@ impl App {
         let mut borders = self.borders;
         let mut tabw = tab_width();
         let mut show_ws = show_whitespace();
+        let mut undo_steps = buffer::max_undo();
         let mut lang_change = None;
         let mut wrap = self.wrap;
         let mut wrap_cols = match self.wrap_last {
@@ -4630,6 +4755,13 @@ impl App {
                             ui.radio_value(&mut tabw, w, tf!("{w} espacios", w = w));
                         }
                         ui.add(DragValue::new(&mut tabw).range(1..=16).suffix(t!(" col."))).on_hover_text(t!("Columnas entre paradas de tabulador (1–16)"));
+                    });
+                    ui.end_row();
+
+                    ui.strong(t!("Deshacer"));
+                    ui.horizontal(|ui| {
+                        ui.add(DragValue::new(&mut undo_steps).range(1..=10_000).speed(1.0));
+                        ui.label(t!("pasos (se conservan también al guardar)"));
                     });
                     ui.end_row();
 
@@ -4737,6 +4869,7 @@ impl App {
             self.borders = d.borders;
             apply_borders(ctx, d.borders);
             TAB_WIDTH.store(d.tab_width, Ordering::Relaxed);
+            buffer::set_max_undo(d.undo_steps);
             for t in &mut self.tabs {
                 t.content_width = 0.0;
                 t.minimap_cache = None;
@@ -4769,6 +4902,10 @@ impl App {
         if borders != self.borders {
             self.borders = borders;
             apply_borders(ctx, borders);
+            self.persist();
+        }
+        if undo_steps != buffer::max_undo() {
+            buffer::set_max_undo(undo_steps);
             self.persist();
         }
         if show_ws != show_whitespace() {
@@ -6324,9 +6461,22 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         };
         assert!(msg.starts_with("Guardado"), "{msg}");
-        assert!(t.buf.is_none() && !t.dirty());
+        assert!(!t.dirty());
         assert_eq!(std::fs::read(&p).unwrap(), "¡Adiósmundo\r\nsegunda\r\n".as_bytes());
-        assert!(t.start_save(p).is_err(), "sin cambios no se guarda");
+        assert!(t.start_save(p.clone()).is_err(), "sin cambios no se guarda");
+        // Deshacer después de guardar: vuelve el texto anterior y queda modificado;
+        // guardar otra vez escribe ese texto (leído del contenido de antes).
+        key(&mut t, Key::Z, Modifiers::COMMAND);
+        assert_eq!(t.line(1), "\tsegunda");
+        assert!(t.dirty());
+        t.start_save(p.clone()).unwrap();
+        while t.poll_save().is_none() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(std::fs::read(&p).unwrap(), "¡Adiósmundo\r\n\tsegunda\r\n".as_bytes());
+        key(&mut t, Key::Z, Modifiers::SHIFT | Modifiers::COMMAND);
+        assert_eq!(t.line(1), "segunda");
+        assert!(t.dirty());
     }
 
     #[test]
@@ -6365,6 +6515,30 @@ mod tests {
         assert_eq!([t.line(0), t.line(1), t.line(2), t.line(3)], ["uno", "dos", "tres", "cuatro "]);
         t.undo_redo(false).unwrap();
         assert_eq!(t.line(1), "dos\t \t");
+    }
+
+    #[test]
+    fn tab_moves_block() {
+        let (mut t, _p) = tab_with("bloque_tab.txt", "ab cd\nef gh\nij\n");
+        t.editable = true;
+        t.col_mode = true;
+        // Bloque sobre «cd»/«gh» (columnas 3–5) en las líneas 0–1.
+        t.colsel = Some(ColSel { a: (0, 3), b: (1, 5) });
+        key(&mut t, Key::Tab, Modifiers::NONE);
+        assert_eq!([t.line(0), t.line(1), t.line(2)], ["ab \tcd", "ef \tgh", "ij"]);
+        assert_eq!(t.colsel, Some(ColSel { a: (0, 4), b: (1, 6) }));
+        assert_eq!(t.column_text(t.colsel.unwrap(), usize::MAX).unwrap(), "cd\ngh");
+        // Otra vez: a la columna 8.
+        key(&mut t, Key::Tab, Modifiers::NONE);
+        assert_eq!(t.colsel, Some(ColSel { a: (0, 8), b: (1, 10) }));
+        assert_eq!(t.column_text(t.colsel.unwrap(), usize::MAX).unwrap(), "cd\ngh");
+        // Mayús+Tab: vuelve a la 4 y luego a la 3… no: a la 0 quitando el espacio.
+        key(&mut t, Key::Tab, Modifiers::SHIFT);
+        assert_eq!(t.colsel, Some(ColSel { a: (0, 4), b: (1, 6) }));
+        assert_eq!(t.line(0), "ab \tcd");
+        key(&mut t, Key::Tab, Modifiers::SHIFT);
+        assert_eq!(t.line(0), "abcd");
+        assert_eq!(t.column_text(t.colsel.unwrap(), usize::MAX).unwrap(), "cd\ngh");
     }
 
     #[test]
