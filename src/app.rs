@@ -1897,7 +1897,9 @@ impl App {
         let full = ui.available_rect_before_wrap();
         let full = Rect::from_min_size(full.min, vec2(full.width(), h));
         ui.allocate_rect(full, Sense::hover());
-        let right_w = if full.width() < 1150.0 { 140.0 } else { 200.0 };
+        let narrow = full.width() < 1150.0;
+        let right_w = if narrow { 235.0 } else { 400.0 };
+        let enc_w = if narrow { 60.0 } else { 150.0 };
         let right = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
         let left = Rect::from_min_max(full.min, pos2(right.left() - 8.0, full.bottom()));
         // --- A la derecha (se reserva primero): encoding y ajustes ---
@@ -1914,7 +1916,7 @@ impl App {
                 let mut enc = t.doc.src.encoding;
                 ComboBox::from_id_salt("encoding")
                     .selected_text(encoding::label(enc))
-                    .width(right_w - 50.0)
+                    .width(enc_w)
                     .truncate()
                     .show_ui(ui, |ui| {
                         for e in encoding::available() {
@@ -1938,6 +1940,43 @@ impl App {
             }
             if let Some(m) = msg {
                 self.msg(m);
+            }
+            // Tamaño y tipo de letra del texto.
+            ui.separator();
+            let mut size = self.font_size;
+            if !narrow && ui.small_button("A+").on_hover_text("Letra más grande (Ctrl++)").clicked() {
+                size += 1.0;
+            }
+            ui.add(DragValue::new(&mut size).range(7.0..=40.0).speed(0.2).max_decimals(0))
+                .on_hover_text("Tamaño de letra del texto (arrastra o escribe)");
+            if !narrow && ui.small_button("A−").on_hover_text("Letra más pequeña (Ctrl+-)").clicked() {
+                size -= 1.0;
+            }
+            let size = size.round().clamp(7.0, 40.0);
+            if size != self.font_size {
+                self.set_font(size);
+            }
+            let mut family = self.text_font.clone();
+            ComboBox::from_id_salt("tipo_letra_barra")
+                .selected_text(&family)
+                .width(if narrow { 56.0 } else { 90.0 })
+                .truncate()
+                .show_ui(ui, |ui| {
+                    let av = crate::fonts::available();
+                    ui.weak("Monoespaciadas (alinean columnas)");
+                    for o in av.iter().filter(|o| o.mono) {
+                        ui.selectable_value(&mut family, o.name.to_string(), o.name);
+                    }
+                    ui.separator();
+                    ui.weak("Proporcionales");
+                    for o in av.iter().filter(|o| !o.mono) {
+                        ui.selectable_value(&mut family, o.name.to_string(), o.name);
+                    }
+                })
+                .response
+                .on_hover_text(format!("Tipo de letra del texto: {family}"));
+            if family != self.text_font {
+                self.set_text_font(ui.ctx(), family);
             }
         });
         // Con poco espacio, los botones muestran solo el ícono (el texto queda en el tooltip).
@@ -1994,7 +2033,7 @@ impl App {
                 "La selección en bloque necesita una letra monoespaciada (⚙ Ajustes)"
             };
             if ui
-                .add_enabled(mono && has_tab, Button::selectable(self.column_mode && mono, lb("▦", "Bloque")))
+                .add_enabled(mono && has_tab, Button::selectable(self.column_mode && mono, "▦".to_string()))
                 .on_hover_text(block_hint)
                 .on_disabled_hover_text(block_hint)
                 .clicked()
@@ -2013,7 +2052,7 @@ impl App {
                 None => "Embellecer: disponible para JSON y XML/HTML".to_string(),
             };
             if ui
-                .add_enabled(beaut.is_some(), Button::new(lb("✨", "Embellecer")))
+                .add_enabled(beaut.is_some(), Button::new("✨"))
                 .on_hover_text(&bhint)
                 .on_disabled_hover_text(&bhint)
                 .clicked()
@@ -2024,7 +2063,7 @@ impl App {
 
             // --- Búsqueda ---
             // Lo que va detrás del buscador ocupa ~400 px; el buscador se adapta.
-            let search_w = (ui.available_width() - if compact { 370.0 } else { 520.0 }).clamp(100.0, 320.0);
+            let search_w = (ui.available_width() - 340.0).clamp(70.0, 320.0);
             let r = ui.add(
                 TextEdit::singleline(&mut self.query)
                     .desired_width(search_w)
@@ -2091,17 +2130,17 @@ impl App {
 
             // --- Reemplazar y avanzada ---
             let rk = if MAC { "Cmd+Opción+F" } else { "Ctrl+H" };
-            ui.toggle_value(&mut self.show_replace, lb("🔁", "Reemplazar")).on_hover_text(format!("Reemplazar ({rk})"));
+            ui.toggle_value(&mut self.show_replace, "🔁").on_hover_text(format!("Reemplazar ({rk})"));
             let n_adv = self.advs.len();
-            let adv_label = if n_adv > 0 { format!("{} ({n_adv})", lb("🔎", "Avanzada")) } else { lb("🔎", "Avanzada") };
+            let adv_label = if n_adv > 0 { format!("🔎 {n_adv}") } else { "🔎".to_string() };
             if ui
                 .selectable_label(n_adv > 0, adv_label)
-                .on_hover_text("Nueva ventana de búsqueda por bloques (desde… hasta…, multilínea), con minimapa y copia en varias líneas (Ctrl+Shift+F). Puedes abrir varias.")
+                .on_hover_text("Búsqueda avanzada: nueva ventana de búsqueda por bloques (desde… hasta…, multilínea), con minimapa y copia en varias líneas (Ctrl+Shift+F). Puedes abrir varias.")
                 .clicked()
             {
                 self.new_adv_window();
             }
-            ui.toggle_value(&mut self.map.open, lb("🗺", "Mapa")).on_hover_text(
+            ui.toggle_value(&mut self.map.open, "🗺").on_hover_text(
                 "Mapa de disco: qué ocupa cada carpeta y archivo de una carpeta, y búsqueda de texto en sus archivos (se resaltan en verde)",
             );
 
@@ -4049,17 +4088,22 @@ impl App {
             self.set_font(font);
         }
         if family != self.text_font {
-            let (defs, ok) = crate::fonts::build(&family, &self.fallback_fonts);
-            ctx.set_fonts(defs);
-            if !ok {
-                self.msg(format!("No se pudo cargar «{family}»; se usa {}", crate::fonts::DEFAULT));
-            }
-            self.text_font = family;
-            for t in &mut self.tabs {
-                t.content_width = 0.0;
-            }
-            self.persist();
+            self.set_text_font(ctx, family);
         }
+    }
+
+    /// Cambia el tipo de letra del texto (y lo guarda en los ajustes).
+    fn set_text_font(&mut self, ctx: &Context, family: String) {
+        let (defs, ok) = crate::fonts::build(&family, &self.fallback_fonts);
+        ctx.set_fonts(defs);
+        if !ok {
+            self.msg(format!("No se pudo cargar «{family}»; se usa {}", crate::fonts::DEFAULT));
+        }
+        self.text_font = family;
+        for t in &mut self.tabs {
+            t.content_width = 0.0;
+        }
+        self.persist();
     }
 
     /// Escape cierra la ventana emergente que está delante (si el foco no
