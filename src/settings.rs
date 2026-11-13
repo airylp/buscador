@@ -22,11 +22,15 @@ pub struct Settings {
     pub lang: Option<String>,
     /// Minimapa del texto visible.
     pub minimap: bool,
+    /// Columnas entre paradas de tabulador.
+    pub tab_width: usize,
+    /// Ver espacios y tabuladores.
+    pub show_ws: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0, lang: None, minimap: false }
+        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0, lang: None, minimap: false, tab_width: 4, show_ws: false }
     }
 }
 
@@ -158,6 +162,8 @@ impl Settings {
                 ("bordes", v) => s.borders = v.parse::<u8>().unwrap_or(0).min(2),
                 ("idioma", v) if !v.is_empty() => s.lang = Some(v.to_string()),
                 ("minimapa", v) => s.minimap = v == "si",
+                ("ver_espacios", v) => s.show_ws = v == "si",
+                ("tabulador", v) => s.tab_width = v.parse::<usize>().unwrap_or(4).clamp(1, 16),
                 ("fondo", v) => bg = parse_hex(v),
                 ("color_letra", v) => fg = parse_hex(v),
                 ("letra", v) => {
@@ -197,6 +203,12 @@ impl Settings {
         }
         if self.minimap {
             text += "minimapa=si\n";
+        }
+        if self.show_ws {
+            text += "ver_espacios=si\n";
+        }
+        if self.tab_width != 4 {
+            text += &format!("tabulador={}\n", self.tab_width);
         }
         if let Some(l) = &self.lang {
             text += &format!("idioma={l}\n");

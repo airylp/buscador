@@ -32,8 +32,9 @@ pub struct MacMenu {
     pub sidebar: CheckMenuItem,
     pub results: CheckMenuItem,
     pub detail: CheckMenuItem,
+    pub ws: CheckMenuItem,
     /// Último estado aplicado (guardar, edición, panel, resultados, detalle).
-    state: std::cell::Cell<Option<[bool; 5]>>,
+    state: std::cell::Cell<Option<[bool; 6]>>,
 }
 
 impl MacMenu {
@@ -136,6 +137,8 @@ impl MacMenu {
         let detail = CheckMenuItem::new(t!("Detalle de la línea"), true, false, None);
         items.borrow_mut().push((detail.id().clone(), Cmd::ToggleDetail));
         let wrap = item(t!("Ajuste de línea"), "Cmd+Alt+Z", Cmd::Key(Modifiers::COMMAND | Modifiers::ALT, Key::Z));
+        let ws = CheckMenuItem::new(t!("Mostrar espacios y tabuladores"), true, false, accel("Cmd+Alt+I"));
+        items.borrow_mut().push((ws.id().clone(), Cmd::Key(Modifiers::COMMAND | Modifiers::ALT, Key::I)));
         let bigger = item(t!("Letra más grande"), "Cmd+=", cmd(Key::Equals));
         let smaller = item(t!("Letra más pequeña"), "Cmd+-", cmd(Key::Minus));
         let view = Submenu::with_items(
@@ -146,6 +149,7 @@ impl MacMenu {
                 &results,
                 &detail,
                 &wrap,
+                &ws,
                 &sep(),
                 &bigger,
                 &smaller,
@@ -176,11 +180,11 @@ impl MacMenu {
         window.set_as_windows_menu_for_nsapp();
         help.set_as_help_menu_for_nsapp();
 
-        MacMenu { _menu: menu, rx, items: items.into_inner(), save, edit, sidebar, results, detail, state: Default::default() }
+        MacMenu { _menu: menu, rx, items: items.into_inner(), save, edit, sidebar, results, detail, ws, state: Default::default() }
     }
 
     /// Refleja en el menú el estado de la aplicación (sólo si cambió).
-    pub fn sync(&self, st: [bool; 5]) {
+    pub fn sync(&self, st: [bool; 6]) {
         if self.state.get() == Some(st) {
             return;
         }
@@ -190,6 +194,7 @@ impl MacMenu {
         self.sidebar.set_checked(st[2]);
         self.results.set_checked(st[3]);
         self.detail.set_checked(st[4]);
+        self.ws.set_checked(st[5]);
     }
 
     /// Opciones elegidas desde el último fotograma.

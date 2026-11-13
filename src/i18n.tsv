@@ -551,3 +551,12 @@ Ruta copiada	Path copied	Chemin copié
 \n⏵ En vivo: se muestra lo que se añade al archivo	\n⏵ Live: what is added to the file is shown	\n⏵ En direct : ce qui est ajouté au fichier s’affiche
 ▤ Minimapa	▤ Minimap	▤ Minicarte
 Minimapa del texto a la derecha: vista en miniatura con las coincidencias; clic o arrastrar para moverse	Text minimap on the right: a thumbnail view with the matches; click or drag to move	Minicarte du texte à droite : vue miniature avec les occurrences ; cliquer ou glisser pour se déplacer
+Tabulador	Tab size	Tabulation
+{w} espacios	{w} spaces	{w} espaces
+ col.	 col.	 col.
+Columnas entre paradas de tabulador (1–16)	Columns between tab stops (1–16)	Colonnes entre les taquets de tabulation (1–16)
+Demasiadas líneas para borrar de una vez (máx. {n})	Too many lines to delete at once (max. {n})	Trop de lignes à supprimer d’un coup (max. {n})
+{m} (solo lectura: no se borró)	{m} (read-only: not deleted)	{m} (lecture seule : non supprimé)
+Mostrar espacios y tabuladores	Show spaces and tabs	Afficher les espaces et tabulations
+Mostrar espacios y tabuladores (· y →)	Show spaces and tabs (· and →)	Afficher les espaces et tabulations (· et →)
+Espacios	Whitespace	Espaces

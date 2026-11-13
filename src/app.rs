@@ -29,7 +29,19 @@ const EDIT_BY_DEFAULT_MAX: usize = 64 << 20;
 const MAX_REPLACE_LINES: usize = 2_000_000;
 /// Tras una edición, se recomprueban como mucho estas líneas para la búsqueda.
 const MAX_RECHECK_LINES: u64 = 10_000;
-const TAB_WIDTH: usize = 4;
+/// Columnas entre paradas de tabulador (Ajustes → Tabulador); 4 por defecto.
+static TAB_WIDTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(4);
+
+/// Ver → «Mostrar espacios y tabuladores»: se pintan como · y →.
+static SHOW_WS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn show_whitespace() -> bool {
+    SHOW_WS.load(Ordering::Relaxed)
+}
+
+fn tab_width() -> usize {
+    TAB_WIDTH.load(Ordering::Relaxed).clamp(1, 16)
+}
 /// Líneas anteriores a lo visible que se miran para saber si se está dentro
 /// de un comentario o cadena de varias líneas.
 const SYNTAX_LOOKBACK: u64 = 300;
@@ -437,7 +449,7 @@ impl Tab {
         let buf = self.buf.as_mut().unwrap();
         let n = buf.replace_lines(&self.doc, &lines, cur, |t| {
             if outdent {
-                let cut = if t.starts_with('\t') { 1 } else { t.bytes().take(4).take_while(|&c| c == b' ').count() };
+                let cut = if t.starts_with('\t') { 1 } else { t.bytes().take(tab_width()).take_while(|&c| c == b' ').count() };
                 (cut > 0).then(|| t[cut..].to_string())
             } else if t.is_empty() {
                 None
@@ -716,7 +728,7 @@ impl Tab {
                     if d >= c0 {
                         out.push(ch);
                     }
-                    d += char_disp_width(ch);
+                    d += char_disp_width(ch, d);
                 }
                 if out.len() > max {
                     return None;
@@ -725,6 +737,15 @@ impl Tab {
             }
         }
         Some(out)
+    }
+
+    /// Cortar en bloque: copia y borra (si se puede editar; si no, solo copia).
+    fn cut_block(&mut self, ctx: &Context, cs: ColSel) -> Result<String, String> {
+        let m = self.copy_block(ctx, cs);
+        if !self.editable {
+            return Ok(tf!("{m} (solo lectura: no se borró)", m = m));
+        }
+        self.delete_block(cs).map(|_| m)
     }
 
     fn copy_block(&self, ctx: &Context, cs: ColSel) -> String {
@@ -737,6 +758,42 @@ impl Tab {
             }
             None => tf!("Bloque demasiado grande para copiar (> {human_size})", human_size = human_size(MAX_COPY_BYTES as u64)),
         }
+    }
+
+    /// Borra el texto del bloque en cada una de sus líneas (un solo paso de
+    /// deshacer); el cursor queda en la esquina de arriba a la izquierda.
+    fn delete_block(&mut self, cs: ColSel) -> Result<(), String> {
+        let (l0, l1) = cs.lines();
+        let (c0, c1) = cs.cols();
+        if (l1 - l0) as usize >= MAX_REPLACE_LINES {
+            return Err(tf!("Demasiadas líneas para borrar de una vez (máx. {n})", n = fmt_num(MAX_REPLACE_LINES as u64)));
+        }
+        self.can_edit()?;
+        let lines: Vec<u64> = (l0..=l1).collect();
+        let cur = (self.anchor.unwrap_or_default(), self.cursor.unwrap_or_default());
+        let buf = self.buf.as_mut().unwrap();
+        buf.replace_lines(&self.doc, &lines, cur, |t| {
+            let mut out = String::with_capacity(t.len());
+            let mut d = 0;
+            let mut changed = false;
+            for ch in t.chars() {
+                if d >= c0 && d < c1 {
+                    changed = true;
+                } else {
+                    out.push(ch);
+                }
+                d += char_disp_width(ch, d);
+            }
+            changed.then_some(out)
+        })?;
+        self.detail_cache = None;
+        self.edit_gen += 1;
+        self.search_stale |= self.search.is_some();
+        self.colsel = None;
+        let t = self.line(l0);
+        let p = Pos::new(l0, col_from_disp(&t, c0));
+        self.select(p, p);
+        Ok(())
     }
 
     /// Mayús+flechas en modo bloque: amplía el bloque desde el cursor.
@@ -975,10 +1032,7 @@ impl Tab {
                     Ok(())
                 }
                 Event::Cut => match self.block() {
-                    Some(cs) => {
-                        msg = Some(tf!("{copy_block} (en un bloque, Cortar solo copia)", copy_block = self.copy_block(ctx, cs)));
-                        Ok(())
-                    }
+                    Some(cs) => self.cut_block(ctx, cs).map(|m| msg = Some(m)),
                     None => self.cut(ctx).map(|m| msg = Some(m)),
                 },
                 Event::Key { key, pressed: true, modifiers, .. }
@@ -999,10 +1053,7 @@ impl Tab {
                             Ok(())
                         }
                         Key::X => match self.block() {
-                            Some(cs) => {
-                                msg = Some(tf!("{copy_block} (en un bloque, Cortar solo copia)", copy_block = self.copy_block(ctx, cs)));
-                                Ok(())
-                            }
+                            Some(cs) => self.cut_block(ctx, cs).map(|m| msg = Some(m)),
                             None => self.cut(ctx).map(|m| msg = Some(m)),
                         },
                         _ => {
@@ -1010,6 +1061,11 @@ impl Tab {
                             Ok(())
                         }
                     }
+                }
+                // Suprimir / Retroceso con un bloque: lo borra.
+                Event::Key { key: Key::Delete | Key::Backspace, pressed: true, .. } if self.block().is_some() => {
+                    let cs = self.block().unwrap();
+                    self.delete_block(cs)
                 }
                 Event::Key { key, pressed: true, modifiers, .. } => {
                     // Cualquier otra tecla (salvo atajos) deja la selección en bloque.
@@ -1064,6 +1120,7 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
         (k("C+R"), t!("Recargar el archivo del disco (cursor al final)")),
         (k("C+Shift+L"), t!("Vista filtrada (solo las líneas que cumplen las reglas)")),
         (k("C+Shift+O"), t!("Buscar en carpeta (todos sus archivos)")),
+        (k("C+A+I"), t!("Mostrar espacios y tabuladores (· y →)")),
         (k(t!("Retroceso / Supr")), t!("Borrar carácter")),
         (k(t!("W+Retroceso / W+Supr")), t!("Borrar palabra")),
         (k("Enter"), t!("Nueva línea")),
@@ -1451,6 +1508,8 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         let settings = Settings::load();
+        TAB_WIDTH.store(settings.tab_width, Ordering::Relaxed);
+        SHOW_WS.store(settings.show_ws || std::env::var("BUSCADOR_ESPACIOS_VER").is_ok(), Ordering::Relaxed);
         // Idioma: el elegido (ajustes o instalador), si no el del sistema, si no español.
         let chosen = settings.lang.as_deref().and_then(crate::i18n::Lang::from_code);
         crate::i18n::set(chosen.or_else(crate::i18n::system).unwrap_or(crate::i18n::Lang::Es));
@@ -1723,6 +1782,8 @@ impl App {
             borders: self.borders,
             lang: self.lang_chosen.map(|l| l.code().to_string()),
             minimap: self.show_minimap,
+            tab_width: tab_width(),
+            show_ws: show_whitespace(),
         };
         if let Err(e) = st.save() {
             self.msg(tf!("No se pudieron guardar los ajustes: {e}", e = e));
@@ -2081,6 +2142,13 @@ impl App {
         }
         if pressed(sc(Modifiers::COMMAND, Key::R)) {
             self.reload(self.active, false);
+        }
+        if pressed(sc(Modifiers::COMMAND | Modifiers::ALT, Key::I)) {
+            SHOW_WS.store(!show_whitespace(), Ordering::Relaxed);
+            for t in &mut self.tabs {
+                t.syntax_cache = None;
+            }
+            self.persist();
         }
         if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::O)) {
             self.show_folder_search();
@@ -2452,6 +2520,7 @@ impl App {
             self.show_sidebar,
             self.show_results,
             self.show_detail,
+            show_whitespace(),
         ]);
     }
 
@@ -3715,7 +3784,10 @@ fn log_view(
             ui.close();
         }
         if ui.add_enabled(tab.editable, Button::new(t!("Cortar (Ctrl+X)"))).clicked() {
-            message = Some(tab.cut(&ctx).unwrap_or_else(|e| e));
+            message = Some(match tab.block() {
+                Some(cs) => tab.cut_block(&ctx, cs).unwrap_or_else(|e| e),
+                None => tab.cut(&ctx).unwrap_or_else(|e| e),
+            });
             ui.close();
         }
         if ui.add_enabled(tab.editable, Button::new(t!("Pegar (Ctrl+V)"))).clicked() {
@@ -3723,8 +3795,12 @@ fn log_view(
             ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
             ui.close();
         }
-        if ui.add_enabled(tab.editable && has_sel, Button::new(t!("Borrar selección"))).clicked() {
-            if let Err(e) = tab.delete(false, false) {
+        if ui.add_enabled(tab.editable && (has_sel || tab.block().is_some()), Button::new(t!("Borrar selección"))).clicked() {
+            let r = match tab.block() {
+                Some(cs) => tab.delete_block(cs),
+                None => tab.delete(false, false),
+            };
+            if let Err(e) = r {
                 message = Some(e);
             }
             ui.close();
@@ -3989,6 +4065,7 @@ fn line_job(
         }
     }
     let mut i = 0;
+    let mut col = 0;
     while i < n {
         let (k, m) = (kind[i], mark[i]);
         let mut j = i + 1;
@@ -4005,7 +4082,26 @@ fn line_job(
         } else {
             normal.clone()
         };
-        job.append(&sanitize(&txt[i..j]), 0.0, fmt);
+        if show_whitespace() && !m && txt[i..j].contains([' ', '\t']) {
+            // Los · y → en tenue, el resto con su color.
+            let ws_fmt = TextFormat { color: color.gamma_multiply(0.35), ..fmt.clone() };
+            let seg = &txt[i..j];
+            let mut a = 0;
+            for (k, ch) in seg.char_indices() {
+                if ch == ' ' || ch == '\t' {
+                    if k > a {
+                        job.append(&sanitize_at(&seg[a..k], &mut col), 0.0, fmt.clone());
+                    }
+                    job.append(&sanitize_at(&seg[k..k + 1], &mut col), 0.0, ws_fmt.clone());
+                    a = k + 1;
+                }
+            }
+            if a < seg.len() {
+                job.append(&sanitize_at(&seg[a..], &mut col), 0.0, fmt);
+            }
+        } else {
+            job.append(&sanitize_at(&txt[i..j], &mut col), 0.0, fmt);
+        }
         i = j;
     }
     if truncated {
@@ -4051,24 +4147,49 @@ fn is_dark(bg: Color32) -> bool {
 /// Tabs a espacios y caracteres de control visibles (una sola fila por línea).
 /// Cada carácter produce exactamente uno, salvo el tab (`TAB_WIDTH`): ver `disp_col`.
 fn sanitize(s: &str) -> String {
+    sanitize_at(s, &mut 0)
+}
+
+/// Como `sanitize`, sabiendo en qué columna empieza `s` (para que el tab
+/// llegue a la siguiente parada fija, múltiplo de `TAB_WIDTH`); avanza `col`.
+fn sanitize_at(s: &str, col: &mut usize) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
-            '\t' => out.push_str(&" ".repeat(TAB_WIDTH)),
+            '\t' => {
+                let w = tab_stop(*col);
+                if show_whitespace() {
+                    out.push('→');
+                    out.extend(std::iter::repeat_n(' ', w - 1));
+                } else {
+                    out.extend(std::iter::repeat_n(' ', w));
+                }
+                *col += w;
+                continue;
+            }
+            ' ' if show_whitespace() => out.push('·'),
             c if c.is_control() => out.push('·'),
             c => out.push(c),
         }
+        *col += 1;
     }
     out
 }
 
-fn char_disp_width(c: char) -> usize {
-    if c == '\t' { TAB_WIDTH } else { 1 }
+/// Ancho de un tab que empieza en la columna `col` (hasta la siguiente parada).
+fn tab_stop(col: usize) -> usize {
+    let w = tab_width();
+    w - col % w
+}
+
+/// Ancho en columnas de `c` si empieza en la columna `col`.
+fn char_disp_width(c: char, col: usize) -> usize {
+    if c == '\t' { tab_stop(col) } else { 1 }
 }
 
 /// Índice de carácter mostrado correspondiente al byte `col` de `s`.
 fn disp_col(s: &str, col: usize) -> usize {
-    s[..buffer::floor_char(s, col)].chars().map(char_disp_width).sum()
+    s[..buffer::floor_char(s, col)].chars().fold(0, |acc, c| acc + char_disp_width(c, acc))
 }
 
 /// Byte de `s` correspondiente al carácter mostrado `d` (redondeando dentro de un tab).
@@ -4078,7 +4199,7 @@ fn col_from_disp(s: &str, d: usize) -> usize {
         if acc >= d {
             return i;
         }
-        let w = char_disp_width(c);
+        let w = char_disp_width(c, acc);
         if acc + w > d {
             return if d - acc <= w / 2 { i } else { i + c.len_utf8() };
         }
@@ -4358,6 +4479,8 @@ impl App {
         let (mut custom, mut bg, mut fg) = (self.custom_colors, self.text_bg, self.text_fg);
         let mut syn = self.syntax_on;
         let mut borders = self.borders;
+        let mut tabw = tab_width();
+        let mut show_ws = show_whitespace();
         let mut lang_change = None;
         let mut wrap = self.wrap;
         let mut wrap_cols = match self.wrap_last {
@@ -4428,6 +4551,19 @@ impl App {
 
                     ui.strong(t!("Tamaño de letra"));
                     ui.add(Slider::new(&mut font, 7.0..=40.0).step_by(1.0));
+                    ui.end_row();
+
+                    ui.strong(t!("Tabulador"));
+                    ui.horizontal(|ui| {
+                        for w in [2, 4, 8] {
+                            ui.radio_value(&mut tabw, w, tf!("{w} espacios", w = w));
+                        }
+                        ui.add(DragValue::new(&mut tabw).range(1..=16).suffix(t!(" col."))).on_hover_text(t!("Columnas entre paradas de tabulador (1–16)"));
+                    });
+                    ui.end_row();
+
+                    ui.strong(t!("Espacios"));
+                    ui.checkbox(&mut show_ws, t!("Mostrar espacios y tabuladores (· y →)"));
                     ui.end_row();
 
                     ui.strong(t!("Colores del texto"));
@@ -4529,6 +4665,11 @@ impl App {
             self.text_fg = DEFAULT_FG;
             self.borders = d.borders;
             apply_borders(ctx, d.borders);
+            TAB_WIDTH.store(d.tab_width, Ordering::Relaxed);
+            for t in &mut self.tabs {
+                t.content_width = 0.0;
+                t.minimap_cache = None;
+            }
             self.persist();
             self.msg(t!("Ajustes restablecidos"));
             return;
@@ -4557,6 +4698,18 @@ impl App {
         if borders != self.borders {
             self.borders = borders;
             apply_borders(ctx, borders);
+            self.persist();
+        }
+        if show_ws != show_whitespace() {
+            SHOW_WS.store(show_ws, Ordering::Relaxed);
+            self.persist();
+        }
+        if tabw != tab_width() {
+            TAB_WIDTH.store(tabw.clamp(1, 16), Ordering::Relaxed);
+            for t in &mut self.tabs {
+                t.content_width = 0.0;
+                t.minimap_cache = None;
+            }
             self.persist();
         }
         if let Some(l) = lang_change {
@@ -5413,7 +5566,7 @@ fn minimap_mesh(tab: &Tab, rect: Rect, first: u64, n: usize, syntax_on: bool, v:
             if col >= cols {
                 break;
             }
-            let w = if ch == '\t' { 4 - col % 4 } else { 1 };
+            let w = char_disp_width(ch, col);
             if ch.is_whitespace() {
                 flush(&mut run, col);
             } else {
@@ -6048,7 +6201,7 @@ pub(crate) fn human_size(b: u64) -> String {
 mod tests {
     use super::*;
 
-    fn tab_with(name: &str, text: &str) -> (Tab, PathBuf) {
+    pub(super) fn tab_with(name: &str, text: &str) -> (Tab, PathBuf) {
         let dir = std::env::temp_dir().join("buscador-tests");
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
@@ -6236,6 +6389,11 @@ mod tests {
     #[test]
     fn display_columns() {
         assert_eq!(disp_col("\tab", 1), 4);
+        // Paradas fijas: el tab llega a la siguiente columna múltiplo del ancho.
+        assert_eq!(disp_col("ab\tc", 3), 4);
+        assert_eq!(disp_col("abcd\tx", 5), 8);
+        assert_eq!(col_from_disp("ab\tc", 4), 3);
+        assert_eq!(sanitize("ab\tc"), "ab  c");
         assert_eq!(col_from_disp("\tab", 4), 1);
         assert_eq!(col_from_disp("\tab", 1), 0);
         assert_eq!(col_from_disp("ñx", 1), 2);
@@ -6306,6 +6464,69 @@ mod copy_keeps_selection {
             });
         }
         t
+    }
+
+    /// Arrastre del ratón de `from` a `to` (en puntos), como fotogramas.
+    fn drag_frames(from: Pos2, to: Pos2) -> Vec<Vec<Event>> {
+        let mid = from + (to - from) * 0.5;
+        vec![
+            vec![Event::PointerMoved(from)],
+            vec![Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }],
+            vec![Event::PointerMoved(from + vec2(8.0, 1.0))],
+            vec![Event::PointerMoved(mid)],
+            vec![Event::PointerMoved(to)],
+            vec![Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }],
+            vec![],
+        ]
+    }
+
+    fn run_frames(t: &mut Tab, ctx: &Context, frames: Vec<Vec<Event>>, t0: &mut f64) {
+        let font = FontId::monospace(13.0);
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let mut show = false;
+        for events in frames {
+            *t0 += 0.05;
+            let input = RawInput { screen_rect: Some(screen), events, time: Some(*t0), ..Default::default() };
+            let _ = ctx.run_ui(input, |ui| {
+                log_view(ui, t, &font, &mut show, false, None, true, Wrap::Off);
+            });
+        }
+    }
+
+    #[test]
+    fn block_twice_copy_and_delete() {
+        let mut text = String::new();
+        for i in 0..20 {
+            text += &format!("{i:02}-abcdefghijklmnopqrstuvwxyz\n");
+        }
+        let (mut t, _p) = super::tests::tab_with("bloque2.txt", &text);
+        t.editable = true;
+        t.col_mode = true;
+        let ctx = Context::default();
+        let mut time = 0.0;
+        // Primer bloque.
+        run_frames(&mut t, &ctx, drag_frames(pos2(120.0, 10.0), pos2(200.0, 60.0)), &mut time);
+        let first = t.block().expect("primer bloque");
+        // Segundo bloque, en otro sitio.
+        run_frames(&mut t, &ctx, drag_frames(pos2(150.0, 120.0), pos2(260.0, 200.0)), &mut time);
+        let second = t.block().expect("segundo bloque");
+        assert_ne!(first, second);
+        let (l0, l1) = second.lines();
+        assert!(l0 > first.lines().1, "el segundo bloque empieza donde se pulsó: {second:?}");
+        let copied = t.column_text(second, usize::MAX).unwrap();
+        assert_eq!(copied.lines().count() as u64, l1 - l0 + 1);
+        let width = second.cols().1 - second.cols().0;
+        assert!(copied.lines().all(|l| l.chars().count() == width), "{copied:?}");
+        // Suprimir borra el bloque (en un paso que se deshace).
+        let before: Vec<String> = (l0..=l1).map(|n| t.line(n)).collect();
+        run_frames(&mut t, &ctx, vec![vec![key(Key::Delete, Modifiers::NONE, true)], vec![]], &mut time);
+        for (k, n) in (l0..=l1).enumerate() {
+            let line = t.line(n);
+            assert_eq!(line.chars().count(), before[k].chars().count() - width, "línea {n}: {line}");
+        }
+        assert!(t.block().is_none());
+        run_frames(&mut t, &ctx, vec![vec![key(Key::Z, Modifiers::COMMAND, true)], vec![]], &mut time);
+        assert_eq!(t.line(l0), before[0]);
     }
 
     #[test]
