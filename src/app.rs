@@ -1256,6 +1256,8 @@ enum FileAction {
     /// Crear un espacio (con este archivo dentro, si hay).
     NewSpace(Option<usize>),
     ToggleSpace(u32),
+    /// Arrastrar un espacio: pasa al lugar del otro (antes o después según la dirección).
+    MoveSpace(u32, u32),
     RenameSpace(u32),
     /// Quitar el espacio; sus archivos siguen abiertos, fuera de espacios.
     DeleteSpace(u32),
@@ -2469,6 +2471,14 @@ impl App {
                 }
                 self.renaming = Some((id, name));
             }
+            FileAction::MoveSpace(from, to) => {
+                // Insertar en la posición del destino deja el espacio después de él
+                // si se arrastró hacia abajo y antes si fue hacia arriba.
+                if let (Some(a), Some(b)) = (self.spaces.iter().position(|s| s.id == from), self.spaces.iter().position(|s| s.id == to)) {
+                    let sp = self.spaces.remove(a);
+                    self.spaces.insert(b, sp);
+                }
+            }
             FileAction::ToggleSpace(id) => {
                 if let Some(s) = self.spaces.iter_mut().find(|s| s.id == id) {
                     s.open = !s.open;
@@ -2600,9 +2610,24 @@ impl App {
     /// Cabecera de un espacio: clic abre/cierra, doble clic o menú para renombrar.
     fn space_header(&mut self, ui: &mut Ui, sp: &Space, count: usize, has_active: bool, action: &mut Option<FileAction>) {
         let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
-        let (rect, r) = ui.allocate_exact_size(row, Sense::click());
+        let (rect, r) = ui.allocate_exact_size(row, Sense::click_and_drag());
+        r.dnd_set_drag_payload(DragSpace(sp.id));
+        if r.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        }
         let v = ui.visuals().clone();
         let dropping = r.dnd_hover_payload::<DragFile>().is_some() || self.os_drop_space == Some(sp.id);
+        // Otro espacio arrastrado encima: línea donde quedará.
+        if let Some(d) = r.dnd_hover_payload::<DragSpace>().filter(|d| d.0 != sp.id) {
+            let pos = |id: u32| self.spaces.iter().position(|s| s.id == id).unwrap_or(0);
+            let y = if pos(d.0) < pos(sp.id) { rect.bottom() } else { rect.top() };
+            ui.painter().hline(rect.x_range(), y, Stroke::new(2.0, v.selection.stroke.color));
+        }
+        if let Some(d) = r.dnd_release_payload::<DragSpace>() {
+            if d.0 != sp.id {
+                *action = Some(FileAction::MoveSpace(d.0, sp.id));
+            }
+        }
         let fill = if dropping || r.hovered() {
             Some(v.widgets.hovered.weak_bg_fill)
         } else if has_active && !sp.open {
@@ -2651,7 +2676,7 @@ impl App {
             TextStyle::Button,
         );
         ui.painter().galley(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, v.strong_text_color());
-        let r = r.on_hover_text("Clic: abrir/cerrar el espacio (los archivos siguen abiertos)\nDoble clic: renombrar · Clic derecho: más opciones\nArrastra archivos aquí para meterlos");
+        let r = r.on_hover_text("Clic: abrir/cerrar el espacio (los archivos siguen abiertos)\nDoble clic: renombrar · Clic derecho: más opciones\nArrastra archivos aquí para meterlos · arrastra la cabecera para cambiar el orden");
         if r.double_clicked() {
             *action = Some(FileAction::RenameSpace(sp.id));
         } else if r.clicked() {
@@ -5440,6 +5465,9 @@ fn os_pointer(ctx: &Context) -> Option<Pos2> {
     }
     ctx.input(|i| i.pointer.latest_pos())
 }
+
+/// Un espacio que se arrastra para cambiarlo de orden.
+struct DragSpace(u32);
 
 /// Lo que se arrastra en el panel de archivos: el índice del archivo.
 struct DragFile(usize);
