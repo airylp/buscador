@@ -1051,7 +1051,8 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
         (k("Retroceso / Supr"), "Borrar carácter"),
         (k("W+Retroceso / W+Supr"), "Borrar palabra"),
         (k("Enter"), "Nueva línea"),
-        (k("Tab"), "Insertar tabulador"),
+        (k("Tab"), "Insertar tabulador · con texto seleccionado: desplazar sus líneas"),
+        (k("Shift+Tab"), "Quitar sangría a las líneas seleccionadas (o a la del cursor)"),
     ];
     if !MAC {
         edit.insert(2, (k("C+Y"), "Rehacer"));
