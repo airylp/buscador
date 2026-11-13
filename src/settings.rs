@@ -55,6 +55,8 @@ pub struct SessionFile {
     pub col: usize,
     /// Encoding elegido (nombre de encoding_rs).
     pub encoding: String,
+    /// Espacio del panel (índice en `Session::spaces`).
+    pub space: Option<usize>,
 }
 
 /// Archivos abiertos al cerrar y cuál estaba activo (`sesion.txt`).
@@ -62,6 +64,8 @@ pub struct SessionFile {
 pub struct Session {
     pub files: Vec<SessionFile>,
     pub active: usize,
+    /// Espacios del panel de archivos: (nombre, abierto).
+    pub spaces: Vec<(String, bool)>,
 }
 
 impl Session {
@@ -71,10 +75,18 @@ impl Session {
 
     /// Formato: `activo=N` y una línea por archivo
     /// `archivo=arriba|línea|columna|encoding|ruta` (la ruta va al final: puede tener «|»).
+    /// Espacios: `espacio=abierto(1/0)|nombre`; un archivo dentro de uno lleva
+    /// detrás `espacio_archivo=N` (las versiones antiguas lo ignoran).
     pub fn to_text(&self) -> String {
         let mut t = format!("activo={}\n", self.active);
+        for (name, open) in &self.spaces {
+            t += &format!("espacio={}|{}\n", *open as u8, name.replace('\n', " "));
+        }
         for f in &self.files {
             t += &format!("archivo={}|{}|{}|{}|{}\n", f.top, f.line, f.col, f.encoding, f.path.display());
+            if let Some(n) = f.space {
+                t += &format!("espacio_archivo={n}\n");
+            }
         }
         t
     }
@@ -84,6 +96,14 @@ impl Session {
         for line in text.lines() {
             if let Some(v) = line.strip_prefix("activo=") {
                 s.active = v.trim().parse().unwrap_or(0);
+            } else if let Some(v) = line.strip_prefix("espacio=") {
+                let (open, name) = v.split_once('|').unwrap_or(("1", v));
+                s.spaces.push((name.to_string(), open != "0"));
+            } else if let Some(v) = line.strip_prefix("espacio_archivo=") {
+                let n = v.trim().parse::<usize>().ok().filter(|&n| n < s.spaces.len());
+                if let Some(f) = s.files.last_mut() {
+                    f.space = n;
+                }
             } else if let Some(v) = line.strip_prefix("archivo=") {
                 let mut it = v.splitn(5, '|');
                 let (Some(top), Some(l), Some(c), Some(enc), Some(path)) = (it.next(), it.next(), it.next(), it.next(), it.next()) else {
@@ -95,6 +115,7 @@ impl Session {
                     line: l.parse().unwrap_or(0),
                     col: c.parse().unwrap_or(0),
                     encoding: enc.to_string(),
+                    space: None,
                 });
             }
         }
@@ -192,9 +213,10 @@ mod tests {
         use super::{Session, SessionFile};
         let s = Session {
             active: 1,
+            spaces: vec![("Logs | prod".into(), true), ("Otro".into(), false)],
             files: vec![
-                SessionFile { path: "/a/b.log".into(), top: 10, line: 12, col: 3, encoding: "UTF-8".into() },
-                SessionFile { path: "/c/con|barra.txt".into(), top: 0, line: 0, col: 0, encoding: "windows-1252".into() },
+                SessionFile { path: "/a/b.log".into(), top: 10, line: 12, col: 3, encoding: "UTF-8".into(), space: Some(1) },
+                SessionFile { path: "/c/con|barra.txt".into(), top: 0, line: 0, col: 0, encoding: "windows-1252".into(), space: None },
             ],
         };
         assert_eq!(Session::from_text(&s.to_text()), s);

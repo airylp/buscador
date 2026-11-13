@@ -83,6 +83,8 @@ pub struct Tab {
     restore: Option<(u64, Pos)>,
     /// Llevar el cursor al final en cuanto el índice esté listo («Recargar»).
     goto_end: bool,
+    /// Espacio (grupo del panel de archivos) al que pertenece: `Space::id`.
+    space: Option<u32>,
     /// Petición del menú contextual: crear un archivo nuevo con este texto.
     export_request: Option<String>,
     /// Lenguaje para el resaltado (por la extensión; se puede cambiar).
@@ -138,6 +140,7 @@ impl Tab {
             pending_text: None,
             restore: None,
             goto_end: false,
+            space: None,
             export_request: None,
             colsel: None,
             layout_map: Vec::new(),
@@ -1180,8 +1183,29 @@ enum FileAction {
     CopyPath(usize),
     CopyName(usize),
     Duplicate(usize),
+    Select(usize),
     Close(usize),
     CloseOthers(usize),
+    /// Mover el archivo a un espacio (`None` = fuera de los espacios).
+    ToSpace(usize, Option<u32>),
+    /// Arrastrar: el archivo pasa al espacio y a la posición del archivo destino.
+    MoveBefore(usize, usize),
+    /// Crear un espacio (con este archivo dentro, si hay).
+    NewSpace(Option<usize>),
+    ToggleSpace(u32),
+    RenameSpace(u32),
+    /// Quitar el espacio; sus archivos siguen abiertos, fuera de espacios.
+    DeleteSpace(u32),
+    /// Cerrar los archivos del espacio (los que tienen cambios se quedan).
+    CloseSpace(u32),
+}
+
+/// Grupo de archivos del panel lateral.
+#[derive(Clone)]
+struct Space {
+    id: u32,
+    name: String,
+    open: bool,
 }
 
 pub(crate) const REVEAL_LABEL: &str = if MAC {
@@ -1294,6 +1318,11 @@ pub struct App {
     borders: u8,
     /// Siguiente número para «Sin título N».
     next_untitled: u32,
+    /// Espacios del panel de archivos (grupos que se abren y cierran como carpetas).
+    spaces: Vec<Space>,
+    next_space: u32,
+    /// Espacio cuyo nombre se está editando y el texto.
+    renaming: Option<(u32, String)>,
     /// Guardar/recuperar la sesión (no en ventanas nuevas ni en pruebas).
     use_session: bool,
     /// Última sesión guardada y cuándo se miró por última vez.
@@ -1364,6 +1393,9 @@ impl App {
                 w => w,
             },
             next_untitled: 1,
+            spaces: Vec::new(),
+            next_space: 1,
+            renaming: None,
             use_session: false,
             session_saved: Default::default(),
             session_checked: Instant::now(),
@@ -1429,8 +1461,12 @@ impl App {
                     }
                 }
                 t.restore = Some((f.top, Pos::new(f.line, f.col)));
+                t.space = f.space.map(|n| n as u32 + 1);
             }
         }
+        // Ids de espacio = índice + 1 (los archivos ya se asignaron así).
+        self.spaces = s.spaces.iter().enumerate().map(|(n, (name, open))| Space { id: n as u32 + 1, name: name.clone(), open: *open }).collect();
+        self.next_space = self.spaces.len() as u32 + 1;
         if !self.tabs.is_empty() {
             self.active = s.active.min(self.tabs.len() - 1);
         }
@@ -1454,11 +1490,13 @@ impl App {
                     line: c.line,
                     col: c.col,
                     encoding: t.doc.src.encoding.name().to_string(),
+                    space: t.space.and_then(|id| self.spaces.iter().position(|s| s.id == id)),
                 }
             })
             .collect();
         let active = self.tabs.iter().take(self.active).filter(|t| !t.untitled).count();
-        crate::settings::Session { active: active.min(files.len().saturating_sub(1)), files }
+        let spaces = self.spaces.iter().map(|s| (s.name.clone(), s.open)).collect();
+        crate::settings::Session { active: active.min(files.len().saturating_sub(1)), files, spaces }
     }
 
     /// Guarda la sesión si cambió (como mucho cada 2 s, o ya si `now`).
@@ -1645,6 +1683,23 @@ impl App {
         }
     }
 
+    /// Cierra los archivos que cumplen `pred` salvo los que tienen cambios sin
+    /// guardar (o se están guardando); conserva el activo si sigue abierto.
+    fn close_many(&mut self, pred: impl Fn(&Tab) -> bool) {
+        let active = self.tabs.get(self.active).map(|t| t.doc.path.clone());
+        let mut kept = false;
+        self.tabs.retain(|t| {
+            let close = pred(t);
+            let busy = t.dirty() || t.save.is_some();
+            kept |= close && busy;
+            !close || busy
+        });
+        self.active = self.tabs.iter().position(|t| Some(&t.doc.path) == active.as_ref()).unwrap_or(0);
+        if kept {
+            self.msg("Los archivos con cambios sin guardar no se cerraron");
+        }
+    }
+
     /// Vuelve a leer del disco el archivo `i` (con el mismo encoding, ajuste
     /// y modo de edición) y deja el cursor al final. Con cambios sin guardar
     /// pregunta antes, salvo `force`.
@@ -1677,6 +1732,7 @@ impl App {
         t.wrap = old.wrap;
         t.editable = old.editable;
         t.lang = old.lang;
+        t.space = old.space;
         t.goto_end = true;
         // La búsqueda que hubiera se repite sobre el contenido nuevo (sin saltar a la primera).
         if let Some(params) = old.search.as_ref().map(|s| s.params.clone()) {
@@ -2135,17 +2191,57 @@ impl App {
                 self.msg(m);
             }
             FileAction::Close(i) => self.close_tab(i, false),
+            FileAction::Select(i) => self.active = i,
             FileAction::CloseOthers(i) => {
-                // Del final al principio para no desplazar índices; las que
-                // tienen cambios piden confirmación y se quedan.
-                for j in (0..self.tabs.len()).rev() {
-                    if j != i && !self.tabs[j].dirty() && self.tabs[j].save.is_none() {
-                        self.tabs.remove(j);
+                let keep = self.tabs[i].doc.path.clone();
+                self.active = i;
+                self.close_many(|t| t.doc.path != keep);
+            }
+            FileAction::CloseSpace(id) => self.close_many(|t| t.space == Some(id)),
+            FileAction::ToSpace(i, sp) => {
+                if let Some(t) = self.tabs.get_mut(i) {
+                    t.space = sp;
+                    if let Some(s) = self.spaces.iter_mut().find(|s| Some(s.id) == sp) {
+                        s.open = true;
                     }
                 }
-                self.active = self.tabs.iter().position(|t| t.doc.path == self.tabs[i.min(self.tabs.len() - 1)].doc.path).unwrap_or(0);
-                if self.tabs.len() > 1 {
-                    self.msg("Las pestañas con cambios sin guardar no se cerraron");
+            }
+            FileAction::MoveBefore(from, to) => {
+                if from != to && from < self.tabs.len() && to < self.tabs.len() {
+                    let sp = self.tabs[to].space;
+                    let active = self.tabs[self.active].doc.path.clone();
+                    let mut t = self.tabs.remove(from);
+                    t.space = sp;
+                    // Hacia abajo queda después del destino; hacia arriba, antes.
+                    self.tabs.insert(to.min(self.tabs.len()), t);
+                    self.active = self.tabs.iter().position(|t| t.doc.path == active).unwrap_or(0);
+                }
+            }
+            FileAction::NewSpace(file) => {
+                let id = self.next_space;
+                self.next_space += 1;
+                let n = self.spaces.len() + 1;
+                let name = format!("Espacio {n}");
+                self.spaces.push(Space { id, name: name.clone(), open: true });
+                if let Some(t) = file.and_then(|i| self.tabs.get_mut(i)) {
+                    t.space = Some(id);
+                }
+                self.renaming = Some((id, name));
+            }
+            FileAction::ToggleSpace(id) => {
+                if let Some(s) = self.spaces.iter_mut().find(|s| s.id == id) {
+                    s.open = !s.open;
+                }
+            }
+            FileAction::RenameSpace(id) => {
+                if let Some(s) = self.spaces.iter().find(|s| s.id == id) {
+                    self.renaming = Some((id, s.name.clone()));
+                }
+            }
+            FileAction::DeleteSpace(id) => {
+                self.spaces.retain(|s| s.id != id);
+                for t in self.tabs.iter_mut().filter(|t| t.space == Some(id)) {
+                    t.space = None;
                 }
             }
         }
@@ -2184,10 +2280,13 @@ impl App {
     fn sidebar(&mut self, ui: &mut Ui) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.strong("Archivos abiertos");
+            ui.strong("Archivos").on_hover_text("Archivos abiertos");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.small_button("«").on_hover_text("Ocultar (Ctrl+B)").clicked() {
                     self.show_sidebar = false;
+                }
+                if ui.add(Button::new(RichText::new("+ Espacio").small()).small()).on_hover_text("Crear un espacio: un grupo de archivos que se abre y cierra como una carpeta.\nArrastra archivos encima o usa su menú (clic derecho).").clicked() {
+                    self.file_action(ui.ctx(), FileAction::NewSpace(None));
                 }
                 let on = self.cur_wrap() != Wrap::Off;
                 let r = ui.add_enabled(!self.tabs.is_empty(), Button::new(RichText::new("↩ Ajuste").small()).small().selected(on));
@@ -2198,95 +2297,129 @@ impl App {
         });
         ui.separator();
         let mut action = None;
+        let spaces = self.spaces.clone();
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for (i, t) in self.tabs.iter().enumerate() {
-                let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
-                ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
-                    // Toda la fila se puede pulsar (se registra antes que la ×, que
-                    // queda encima y conserva su propio clic).
-                    let row_rect = ui.max_rect();
-                    let r = ui.interact(row_rect, Id::NULL.with(("fila_archivo", i)), Sense::click());
-                    let v = ui.visuals();
-                    let active = i == self.active;
-                    let fill = if active {
-                        Some(v.selection.bg_fill)
-                    } else if r.contains_pointer() {
-                        Some(v.widgets.hovered.weak_bg_fill)
-                    } else {
-                        None
-                    };
-                    if let Some(f) = fill {
-                        ui.painter().rect_filled(row_rect, v.widgets.inactive.corner_radius, f);
+            // Primero los espacios (como carpetas) y después los archivos sueltos.
+            for sp in &spaces {
+                let files: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].space == Some(sp.id)).collect();
+                let has_active = files.contains(&self.active);
+                self.space_header(ui, sp, files.len(), has_active, &mut action);
+                if sp.open {
+                    for &i in &files {
+                        file_row(ui, i, &self.tabs[i], i == self.active, &spaces, 14.0, self.tabs.len(), &mut action);
                     }
-                    let ink = if active { v.selection.stroke.color } else { v.strong_text_color() };
-                    // El botón de cerrar, pegado a la derecha; el nombre ocupa el resto.
-                    if ui.small_button("×").on_hover_text("Cerrar (Ctrl+W)").clicked() {
-                        action = Some(FileAction::Close(i));
-                    }
-                    let name = if t.dirty() { format!("● {}", t.doc.name) } else { t.doc.name.clone() };
-                    let free = ui.available_rect_before_wrap();
-                    let galley = WidgetText::from(RichText::new(name).strong()).into_galley(
-                        ui,
-                        Some(TextWrapMode::Truncate),
-                        (free.width() - 8.0).max(10.0),
-                        TextStyle::Button,
-                    );
-                    let pos = pos2(row_rect.left() + 6.0, row_rect.center().y - galley.size().y / 2.0);
-                    ui.painter().galley(pos, galley, ink);
-                    let r = r.on_hover_text(format!(
-                            "{}\nClic derecho: más opciones\n{}",
-                            if t.untitled { "Archivo nuevo sin guardar".to_string() } else { t.doc.path.display().to_string() },
-                            tab_details(t)
-                        ));
-                    if r.clicked() {
-                        self.active = i;
-                    }
-                    r.context_menu(|ui| {
-                        let mut chosen = None;
-                        let on_disk = !t.untitled;
-                        let nw = ui.add_enabled(on_disk, Button::new("Abrir en una ventana nueva"));
-                        let nw = if t.dirty() { nw.on_hover_text("La ventana nueva muestra la versión guardada en disco") } else { nw };
-                        if nw.clicked() {
-                            chosen = Some(FileAction::NewWindow(i));
-                        }
-                        ui.separator();
-                        if ui.add_enabled(on_disk, Button::new(REVEAL_LABEL)).clicked() {
-                            chosen = Some(FileAction::Reveal(i));
-                        }
-                        if ui.add_enabled(on_disk, Button::new("Copiar ruta")).clicked() {
-                            chosen = Some(FileAction::CopyPath(i));
-                        }
-                        if ui.button("Copiar nombre").clicked() {
-                            chosen = Some(FileAction::CopyName(i));
-                        }
-                        ui.separator();
-                        let dup = ui.add_enabled(on_disk, Button::new("Duplicar"));
-                        let dup = if t.dirty() { dup.on_hover_text("La copia incluye los cambios sin guardar; el original no se modifica") } else { dup };
-                        if dup.clicked() {
-                            chosen = Some(FileAction::Duplicate(i));
-                        }
-                        ui.separator();
-                        if ui.button("Cerrar").clicked() {
-                            chosen = Some(FileAction::Close(i));
-                        }
-                        if ui.add_enabled(self.tabs.len() > 1, Button::new("Cerrar los demás")).clicked() {
-                            chosen = Some(FileAction::CloseOthers(i));
-                        }
-                        if chosen.is_some() {
-                            action = chosen;
-                            ui.close();
-                        }
-                    });
-                });
-                ui.add_space(2.0);
+                }
+            }
+            if !spaces.is_empty() && self.tabs.iter().any(|t| t.space.is_none()) {
+                ui.add_space(4.0);
+            }
+            for i in (0..self.tabs.len()).filter(|&i| self.tabs[i].space.is_none()) {
+                file_row(ui, i, &self.tabs[i], i == self.active, &spaces, 0.0, self.tabs.len(), &mut action);
             }
             if self.tabs.is_empty() {
                 ui.weak("Sin archivos.\nUsa «Abrir…» o arrastra archivos aquí.");
+            }
+            // El resto del panel: soltar aquí saca el archivo de su espacio.
+            let rest = ui.available_rect_before_wrap();
+            let rest = Rect::from_min_size(rest.min, vec2(rest.width(), rest.height().max(24.0)));
+            let r = ui.allocate_rect(rest, Sense::hover());
+            if r.dnd_hover_payload::<DragFile>().is_some() && !spaces.is_empty() {
+                ui.painter().rect_stroke(rest.shrink(2.0), 3.0, ui.visuals().selection.stroke, StrokeKind::Inside);
+                ui.painter().text(rest.center_top() + vec2(0.0, 12.0), Align2::CENTER_CENTER, "Soltar aquí: fuera de los espacios", FontId::proportional(11.0), ui.visuals().weak_text_color());
+            }
+            if let Some(d) = r.dnd_release_payload::<DragFile>() {
+                action = Some(FileAction::ToSpace(d.0, None));
             }
         });
         if let Some(a) = action {
             self.file_action(ui.ctx(), a);
         }
+    }
+
+    /// Cabecera de un espacio: clic abre/cierra, doble clic o menú para renombrar.
+    fn space_header(&mut self, ui: &mut Ui, sp: &Space, count: usize, has_active: bool, action: &mut Option<FileAction>) {
+        let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
+        let (rect, r) = ui.allocate_exact_size(row, Sense::click());
+        let v = ui.visuals().clone();
+        let dropping = r.dnd_hover_payload::<DragFile>().is_some();
+        let fill = if dropping || r.hovered() {
+            Some(v.widgets.hovered.weak_bg_fill)
+        } else if has_active && !sp.open {
+            Some(v.selection.bg_fill.gamma_multiply(0.5))
+        } else {
+            None
+        };
+        if let Some(f) = fill {
+            ui.painter().rect_filled(rect, v.widgets.inactive.corner_radius, f);
+        }
+        if dropping {
+            ui.painter().rect_stroke(rect, v.widgets.inactive.corner_radius, v.selection.stroke, StrokeKind::Inside);
+        }
+        // Triángulo pintado (no depende de la fuente).
+        let c = pos2(rect.left() + 10.0, rect.center().y);
+        let tri = if sp.open {
+            vec![c + vec2(-4.0, -2.5), c + vec2(4.0, -2.5), c + vec2(0.0, 3.0)]
+        } else {
+            vec![c + vec2(-2.5, -4.0), c + vec2(3.0, 0.0), c + vec2(-2.5, 4.0)]
+        };
+        ui.painter().add(Shape::convex_polygon(tri, v.text_color(), Stroke::NONE));
+        let text_left = rect.left() + 20.0;
+        if self.renaming.as_ref().is_some_and(|(id, _)| *id == sp.id) {
+            let edit_rect = Rect::from_min_max(pos2(text_left, rect.top() + 1.0), pos2(rect.right() - 4.0, rect.bottom() - 1.0));
+            let (_, text) = self.renaming.as_mut().unwrap();
+            let te = ui.put(edit_rect, TextEdit::singleline(text).desired_width(edit_rect.width()));
+            if !te.has_focus() && !te.lost_focus() {
+                te.request_focus();
+            }
+            let (enter, esc) = ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
+            if te.lost_focus() || enter || esc {
+                let (id, text) = self.renaming.take().unwrap();
+                let text = text.trim().to_string();
+                if !esc && !text.is_empty() {
+                    if let Some(s) = self.spaces.iter_mut().find(|s| s.id == id) {
+                        s.name = text;
+                    }
+                }
+            }
+            return;
+        }
+        let galley = WidgetText::from(RichText::new(format!("{}  ({count})", sp.name)).strong()).into_galley(
+            ui,
+            Some(TextWrapMode::Truncate),
+            (rect.right() - text_left - 4.0).max(10.0),
+            TextStyle::Button,
+        );
+        ui.painter().galley(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, v.strong_text_color());
+        let r = r.on_hover_text("Clic: abrir/cerrar el espacio (los archivos siguen abiertos)\nDoble clic: renombrar · Clic derecho: más opciones\nArrastra archivos aquí para meterlos");
+        if r.double_clicked() {
+            *action = Some(FileAction::RenameSpace(sp.id));
+        } else if r.clicked() {
+            *action = Some(FileAction::ToggleSpace(sp.id));
+        }
+        if let Some(d) = r.dnd_release_payload::<DragFile>() {
+            *action = Some(FileAction::ToSpace(d.0, Some(sp.id)));
+        }
+        r.context_menu(|ui| {
+            let mut chosen = None;
+            if ui.button(if sp.open { "Cerrar el espacio" } else { "Abrir el espacio" }).clicked() {
+                chosen = Some(FileAction::ToggleSpace(sp.id));
+            }
+            if ui.button("Renombrar").clicked() {
+                chosen = Some(FileAction::RenameSpace(sp.id));
+            }
+            ui.separator();
+            if ui.add_enabled(count > 0, Button::new("Cerrar sus archivos")).clicked() {
+                chosen = Some(FileAction::CloseSpace(sp.id));
+            }
+            let del = ui.button("Quitar el espacio").on_hover_text("Los archivos siguen abiertos, fuera de los espacios");
+            if del.clicked() {
+                chosen = Some(FileAction::DeleteSpace(sp.id));
+            }
+            if chosen.is_some() {
+                *action = chosen;
+                ui.close();
+            }
+        });
     }
 
     /// Barra de estado: información del archivo y del cursor a la izquierda
@@ -2586,6 +2719,22 @@ impl App {
         let indexed = self.tabs.get(self.active).is_some_and(|t| t.doc.indexing_done());
         if self.debug_frames >= 30 && self.debug_frames < 1000 && !self.debug_typed && indexed {
             self.debug_typed = true;
+            // Pruebas: BUSCADOR_ESPACIOS='Logs=0,1;Config-=2' crea espacios con esos
+            // archivos (índices); «-» al final del nombre = espacio cerrado.
+            if let Ok(spec) = std::env::var("BUSCADOR_ESPACIOS") {
+                for part in spec.split(';') {
+                    let (name, files) = part.split_once('=').unwrap_or((part, ""));
+                    let id = self.next_space;
+                    self.next_space += 1;
+                    let open = !name.ends_with('-');
+                    self.spaces.push(Space { id, name: name.trim_end_matches('-').to_string(), open });
+                    for n in files.split(',').filter_map(|n| n.trim().parse::<usize>().ok()) {
+                        if let Some(t) = self.tabs.get_mut(n) {
+                            t.space = Some(id);
+                        }
+                    }
+                }
+            }
             // Pruebas: BUSCADOR_RECARGAR=texto añade esa línea al archivo y lo recarga.
             if let (Ok(extra), Some(t)) = (std::env::var("BUSCADOR_RECARGAR"), self.tabs.get(self.active)) {
                 use std::io::Write;
@@ -4701,6 +4850,124 @@ fn add_signed(v: u64, d: i64) -> u64 {
 }
 
 /// «14.6 KB · UTF-8 · 60 líneas» (tooltip del panel de archivos).
+/// Lo que se arrastra en el panel de archivos: el índice del archivo.
+struct DragFile(usize);
+
+/// Una fila del panel de archivos: toda la fila selecciona (salvo la ×), se
+/// puede arrastrar a un espacio o a otra posición, y tiene menú contextual.
+#[allow(clippy::too_many_arguments)]
+fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, spaces: &[Space], indent: f32, total: usize, action: &mut Option<FileAction>) {
+    let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
+    ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
+        // Se registra antes que la ×, que queda encima y conserva su propio clic.
+        let row_rect = ui.max_rect();
+        let r = ui.interact(row_rect, Id::NULL.with(("fila_archivo", i)), Sense::click_and_drag());
+        r.dnd_set_drag_payload(DragFile(i));
+        let v = ui.visuals();
+        let dragged = r.dnd_hover_payload::<DragFile>().map(|d| d.0).filter(|&d| d != i);
+        let fill = if active {
+            Some(v.selection.bg_fill)
+        } else if r.contains_pointer() {
+            Some(v.widgets.hovered.weak_bg_fill)
+        } else {
+            None
+        };
+        if let Some(f) = fill {
+            ui.painter().rect_filled(row_rect, v.widgets.inactive.corner_radius, f);
+        }
+        // Línea donde quedará: debajo si se arrastra hacia abajo, encima si hacia arriba.
+        if let Some(d) = dragged {
+            let y = if d < i { row_rect.bottom() } else { row_rect.top() };
+            ui.painter().hline(row_rect.x_range(), y, Stroke::new(2.0, v.selection.stroke.color));
+        }
+        let ink = if active { v.selection.stroke.color } else { v.strong_text_color() };
+        if ui.small_button("×").on_hover_text("Cerrar (Ctrl+W)").clicked() {
+            *action = Some(FileAction::Close(i));
+        }
+        let name = if t.dirty() { format!("● {}", t.doc.name) } else { t.doc.name.clone() };
+        let free = ui.available_rect_before_wrap();
+        let left = row_rect.left() + 6.0 + indent;
+        let galley = WidgetText::from(RichText::new(name).strong()).into_galley(
+            ui,
+            Some(TextWrapMode::Truncate),
+            (free.right() - left - 2.0).max(10.0),
+            TextStyle::Button,
+        );
+        let pos = pos2(left, row_rect.center().y - galley.size().y / 2.0);
+        ui.painter().galley(pos, galley, ink);
+        if r.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        }
+        if let Some(d) = r.dnd_release_payload::<DragFile>() {
+            if d.0 != i {
+                *action = Some(FileAction::MoveBefore(d.0, i));
+            }
+        }
+        let r = r.on_hover_text(format!(
+            "{}\nClic derecho: más opciones · Arrastrar: mover a un espacio\n{}",
+            if t.untitled { "Archivo nuevo sin guardar".to_string() } else { t.doc.path.display().to_string() },
+            tab_details(t)
+        ));
+        if r.clicked() {
+            *action = Some(FileAction::Select(i));
+        }
+        r.context_menu(|ui| {
+            let mut chosen = None;
+            let on_disk = !t.untitled;
+            let nw = ui.add_enabled(on_disk, Button::new("Abrir en una ventana nueva"));
+            let nw = if t.dirty() { nw.on_hover_text("La ventana nueva muestra la versión guardada en disco") } else { nw };
+            if nw.clicked() {
+                chosen = Some(FileAction::NewWindow(i));
+            }
+            ui.separator();
+            if ui.add_enabled(on_disk, Button::new(REVEAL_LABEL)).clicked() {
+                chosen = Some(FileAction::Reveal(i));
+            }
+            if ui.add_enabled(on_disk, Button::new("Copiar ruta")).clicked() {
+                chosen = Some(FileAction::CopyPath(i));
+            }
+            if ui.button("Copiar nombre").clicked() {
+                chosen = Some(FileAction::CopyName(i));
+            }
+            ui.separator();
+            ui.menu_button("Mover a un espacio", |ui| {
+                for sp in spaces {
+                    if ui.add_enabled(t.space != Some(sp.id), Button::new(&sp.name)).clicked() {
+                        chosen = Some(FileAction::ToSpace(i, Some(sp.id)));
+                    }
+                }
+                if !spaces.is_empty() {
+                    ui.separator();
+                }
+                if ui.button("Nuevo espacio…").clicked() {
+                    chosen = Some(FileAction::NewSpace(Some(i)));
+                }
+                if t.space.is_some() && ui.button("Sacar del espacio").clicked() {
+                    chosen = Some(FileAction::ToSpace(i, None));
+                }
+            });
+            ui.separator();
+            let dup = ui.add_enabled(on_disk, Button::new("Duplicar"));
+            let dup = if t.dirty() { dup.on_hover_text("La copia incluye los cambios sin guardar; el original no se modifica") } else { dup };
+            if dup.clicked() {
+                chosen = Some(FileAction::Duplicate(i));
+            }
+            ui.separator();
+            if ui.button("Cerrar").clicked() {
+                chosen = Some(FileAction::Close(i));
+            }
+            if ui.add_enabled(total > 1, Button::new("Cerrar los demás")).clicked() {
+                chosen = Some(FileAction::CloseOthers(i));
+            }
+            if chosen.is_some() {
+                *action = chosen;
+                ui.close();
+            }
+        });
+    });
+    ui.add_space(2.0);
+}
+
 fn tab_details(t: &Tab) -> String {
     let idx = if t.doc.indexing_done() {
         format!("{} líneas", fmt_num(t.total()))
