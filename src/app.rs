@@ -2439,7 +2439,8 @@ impl App {
         }
         let t = self.tabs.get(self.active);
         self.menu.sync([
-            t.is_some_and(|t| t.dirty()),
+            // Un archivo nuevo sin cambios también se puede guardar (Guardar como).
+            t.is_some_and(|t| t.dirty() || t.untitled),
             t.is_some_and(|t| t.editable),
             self.show_sidebar,
             self.show_results,
@@ -2615,7 +2616,8 @@ impl App {
                 let files: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].space == Some(sp.id)).collect();
                 let has_active = files.contains(&self.active);
                 let y0 = ui.cursor().top();
-                self.space_header(ui, sp, files.len(), has_active, &mut action);
+                let dirty = files.iter().any(|&i| self.tabs[i].dirty());
+                self.space_header(ui, sp, files.len(), has_active, dirty, &mut action);
                 if sp.open {
                     for &i in &files {
                         order.push(i);
@@ -2664,7 +2666,7 @@ impl App {
     }
 
     /// Cabecera de un espacio: clic abre/cierra, doble clic o menú para renombrar.
-    fn space_header(&mut self, ui: &mut Ui, sp: &Space, count: usize, has_active: bool, action: &mut Option<FileAction>) {
+    fn space_header(&mut self, ui: &mut Ui, sp: &Space, count: usize, has_active: bool, dirty: bool, action: &mut Option<FileAction>) {
         let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
         let (rect, r) = ui.allocate_exact_size(row, Sense::click_and_drag());
         r.dnd_set_drag_payload(DragSpace(sp.id));
@@ -2733,14 +2735,15 @@ impl App {
             }
             return;
         }
-        let galley = WidgetText::from(RichText::new(format!("{}  ({count})", sp.name)).strong()).into_galley(
+        let galley = WidgetText::from(RichText::new(format!("{}{}  ({count})", if dirty { "● " } else { "" }, sp.name)).strong()).into_galley(
             ui,
             Some(TextWrapMode::Truncate),
             (rect.right() - text_left - 4.0).max(10.0),
             TextStyle::Button,
         );
         ui.painter().galley(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, v.strong_text_color());
-        let r = r.on_hover_text(t!("Clic: abrir/cerrar el espacio (los archivos siguen abiertos)\nDoble clic: renombrar · Clic derecho: más opciones\nArrastra archivos aquí para meterlos · arrastra la cabecera para cambiar el orden"));
+        let hint = t!("Clic: abrir/cerrar el espacio (los archivos siguen abiertos)\nDoble clic: renombrar · Clic derecho: más opciones\nArrastra archivos aquí para meterlos · arrastra la cabecera para cambiar el orden");
+        let r = if dirty { r.on_hover_text(format!("{}\n\n{hint}", t!("● Hay archivos sin guardar en este espacio"))) } else { r.on_hover_text(hint) };
         if r.double_clicked() {
             *action = Some(FileAction::RenameSpace(sp.id));
         } else if r.clicked() {
@@ -3144,6 +3147,18 @@ impl App {
                     let _ = writeln!(f, "{extra}");
                 }
                 self.reload(self.active, false);
+            }
+            // BUSCADOR_GUARDAR=línea: edita, se coloca en esa línea y guarda (Cmd+S).
+            if let (Ok(l), Some(t)) = (std::env::var("BUSCADOR_GUARDAR"), self.tabs.get_mut(self.active)) {
+                let l: u64 = l.parse().unwrap_or(0);
+                t.editable = true;
+                let p = Pos::new(1, 0);
+                t.select(p, p);
+                let _ = t.insert("editado ", EditKind::Typing);
+                let p = Pos::new(l, 0);
+                t.select(p, p);
+                t.top = l.saturating_sub(5);
+                self.save(false);
             }
             if let (Ok(txt), Some(t)) = (std::env::var("BUSCADOR_TYPE"), self.tabs.get_mut(self.active)) {
                 t.editable = true;
@@ -3674,7 +3689,12 @@ fn log_view(
         }
     });
 
-    tab.top = tab.top.min(max_top);
+    // Mientras se indexa (p. ej. justo después de guardar, que reabre el
+    // archivo) aún no se sabe cuántas líneas hay: no recortar la posición, o
+    // la vista saltaría al principio.
+    if tab.buf.is_some() || tab.doc.indexing_done() {
+        tab.top = tab.top.min(max_top);
+    }
 
     // Maquetar las líneas visibles.
     let visuals = ui.visuals().clone();
