@@ -96,7 +96,8 @@ impl MacMenu {
         let in_folder = item(t!("Buscar en carpeta…"), "Cmd+Shift+O", cmd_shift(Key::O));
         let close = item(t!("Cerrar archivo"), "Cmd+W", cmd(Key::W));
         let next = item(t!("Siguiente archivo"), "Ctrl+Tab", Cmd::Key(Modifiers::CTRL, Key::Tab));
-        let file = Submenu::with_items(t!("Archivo"), true, &[&new, &open, &in_folder, &sep(), &save, &save_as, &sep(), &reload, &sep(), &next, &close]).unwrap();
+        let prev = item(t!("Archivo anterior"), "Ctrl+Shift+Tab", Cmd::Key(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab));
+        let file = Submenu::with_items(t!("Archivo"), true, &[&new, &open, &in_folder, &sep(), &save, &save_as, &sep(), &reload, &sep(), &next, &prev, &close]).unwrap();
 
         let undo = item(t!("Deshacer"), "Cmd+Z", cmd(Key::Z));
         let redo = item(t!("Rehacer"), "Cmd+Shift+Z", cmd_shift(Key::Z));

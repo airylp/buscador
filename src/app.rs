@@ -1085,6 +1085,8 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
                 (k("C+Shift+S"), t!("Guardar como…")),
                 (k("C+W"), t!("Cerrar archivo")),
                 ("Ctrl+Tab".into(), t!("Siguiente archivo")),
+                ("Ctrl+Shift+Tab".into(), t!("Archivo anterior")),
+                (k("C+A+→ / C+A+←"), t!("Archivo siguiente / anterior")),
                 (k("C+B"), t!("Mostrar/ocultar panel de archivos")),
                 (k("C+E"), t!("Activar/desactivar edición")),
                 (t!("Clic derecho en un archivo").into(), t!("Abrir en ventana nueva, mostrar en carpeta, copiar ruta, duplicar…")),
@@ -1890,6 +1892,24 @@ impl App {
         }
     }
 
+    /// Pasa al archivo anterior (-1) o siguiente (+1) en el orden en que se ven
+    /// en el panel (los de espacios cerrados se saltan); da la vuelta.
+    fn cycle_tab(&mut self, dir: i64) {
+        let n = self.tabs.len();
+        if n == 0 {
+            return;
+        }
+        let order: Vec<usize> = if self.row_order.len() > 1 && self.row_order.iter().all(|&i| i < n) {
+            self.row_order.clone()
+        } else {
+            (0..n).collect()
+        };
+        let pos = order.iter().position(|&i| i == self.active).unwrap_or(0) as i64;
+        let next = (pos + dir).rem_euclid(order.len() as i64) as usize;
+        self.active = order[next];
+        self.focus_view = true;
+    }
+
     /// Cierra los archivos que cumplen `pred` salvo los que tienen cambios sin
     /// guardar (o se están guardando); conserva el activo si sigue abierto.
     fn close_many(&mut self, pred: impl Fn(&Tab) -> bool) {
@@ -2092,8 +2112,11 @@ impl App {
         if pressed(sc(Modifiers::COMMAND, Key::Minus)) {
             self.set_font(self.font_size - 1.0);
         }
-        if pressed(sc(Modifiers::CTRL, Key::Tab)) && !self.tabs.is_empty() {
-            self.active = (self.active + 1) % self.tabs.len();
+        // Archivo anterior / siguiente (Cmd+Shift+Tab lo reserva macOS para las apps).
+        if pressed(sc(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab)) || pressed(sc(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowLeft)) {
+            self.cycle_tab(-1);
+        } else if pressed(sc(Modifiers::CTRL, Key::Tab)) || pressed(sc(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowRight)) {
+            self.cycle_tab(1);
         }
         if pressed(sc(Modifiers::SHIFT, Key::F3)) {
             if let Some(t) = self.tab() {
@@ -2661,12 +2684,20 @@ impl App {
                 *action = Some(FileAction::MoveSpace(d.0, sp.id));
             }
         }
+        // Cabecera siempre con un fondo más claro que el panel (se distingue de
+        // los archivos); más claro aún al pasar por encima.
+        let lighter = |c: Color32, k: f32| {
+            let l = |x: u8| (x as f32 + (255.0 - x as f32) * k) as u8;
+            Color32::from_rgb(l(c.r()), l(c.g()), l(c.b()))
+        };
+        let base = lighter(v.panel_fill, if v.dark_mode { 0.12 } else { 0.0 });
+        let base = if v.dark_mode { base } else { v.widgets.inactive.weak_bg_fill };
         let fill = if dropping || r.hovered() {
-            Some(v.widgets.hovered.weak_bg_fill)
+            Some(if v.dark_mode { lighter(v.panel_fill, 0.2) } else { v.widgets.hovered.weak_bg_fill })
         } else if has_active && !sp.open {
             Some(v.selection.bg_fill.gamma_multiply(0.5))
         } else {
-            None
+            Some(base)
         };
         if let Some(f) = fill {
             ui.painter().rect_filled(rect, v.widgets.inactive.corner_radius, f);
