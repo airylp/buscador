@@ -65,3 +65,28 @@ unsafe extern "C-unwind" fn open_urls(_this: *mut AnyObject, _cmd: Sel, _app: *m
         }
     }));
 }
+
+/// Posición del ratón dentro de la ventana (en puntos de egui). Mientras se
+/// arrastran archivos desde Finder, winit no informa del puntero; se le
+/// pregunta directamente a macOS para saber dónde se soltaron.
+pub fn mouse_in_window(ctx: &eframe::egui::Context) -> Option<eframe::egui::Pos2> {
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSPoint, NSRect};
+    let inner = ctx.input(|i| i.viewport().inner_rect)?;
+    // SAFETY: mensajes de clase de AppKit sin efectos; se comprueba el nulo.
+    unsafe {
+        let p: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+        let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
+        if screens.is_null() {
+            return None;
+        }
+        let first: *mut AnyObject = msg_send![screens, firstObject];
+        if first.is_null() {
+            return None;
+        }
+        let f: NSRect = msg_send![first, frame];
+        // Cocoa cuenta la «y» desde abajo de la pantalla principal; winit/egui desde arriba.
+        let (x, y) = (p.x as f32, (f.size.height - p.y) as f32);
+        Some(eframe::egui::pos2(x - inner.min.x, y - inner.min.y))
+    }
+}

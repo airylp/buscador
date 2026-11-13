@@ -1377,6 +1377,10 @@ pub struct App {
     /// Selección múltiple en el panel de archivos (rutas) y desde dónde se
     /// extiende con Shift; orden de las filas visibles del último fotograma.
     picked: Vec<PathBuf>,
+    /// Zonas del panel que pertenecen a cada espacio (cabecera y sus filas),
+    /// del último fotograma, y el espacio bajo el puntero al arrastrar desde fuera.
+    drop_zones: Vec<(Rect, u32)>,
+    os_drop_space: Option<u32>,
     pick_anchor: Option<PathBuf>,
     row_order: Vec<usize>,
     /// Guardar/recuperar la sesión (no en ventanas nuevas ni en pruebas).
@@ -1453,6 +1457,8 @@ impl App {
             next_space: 1,
             renaming: None,
             picked: Vec::new(),
+            drop_zones: Vec::new(),
+            os_drop_space: None,
             pick_anchor: None,
             row_order: Vec::new(),
             use_session: false,
@@ -2463,11 +2469,13 @@ impl App {
         let tabs = &self.tabs;
         self.picked.retain(|p| tabs.iter().any(|t| &t.doc.path == p));
         let mut order = Vec::new();
+        let mut zones = Vec::new();
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             // Primero los espacios (como carpetas) y después los archivos sueltos.
             for sp in &spaces {
                 let files: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].space == Some(sp.id)).collect();
                 let has_active = files.contains(&self.active);
+                let y0 = ui.cursor().top();
                 self.space_header(ui, sp, files.len(), has_active, &mut action);
                 if sp.open {
                     for &i in &files {
@@ -2475,6 +2483,8 @@ impl App {
                         file_row(ui, i, &self.tabs[i], i == self.active, self.multi(i), &spaces, 14.0, self.tabs.len(), &mut action);
                     }
                 }
+                let r = ui.max_rect();
+                zones.push((Rect::from_x_y_ranges(r.x_range(), y0..=ui.cursor().top()).intersect(ui.clip_rect()), sp.id));
             }
             if !spaces.is_empty() && self.tabs.iter().any(|t| t.space.is_none()) {
                 ui.add_space(4.0);
@@ -2501,6 +2511,7 @@ impl App {
             }
         });
         self.row_order = order;
+        self.drop_zones = zones;
         if let Some(a) = action {
             self.file_action(ui.ctx(), a);
         }
@@ -2518,7 +2529,7 @@ impl App {
         let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
         let (rect, r) = ui.allocate_exact_size(row, Sense::click());
         let v = ui.visuals().clone();
-        let dropping = r.dnd_hover_payload::<DragFile>().is_some();
+        let dropping = r.dnd_hover_payload::<DragFile>().is_some() || self.os_drop_space == Some(sp.id);
         let fill = if dropping || r.hovered() {
             Some(v.widgets.hovered.weak_bg_fill)
         } else if has_active && !sp.open {
@@ -3035,10 +3046,31 @@ impl eframe::App for App {
         for p in crate::macopen::take() {
             self.open(p);
         }
-        // Archivos arrastrados a la ventana.
+        // Archivos arrastrados a la ventana; si se sueltan sobre un espacio del
+        // panel (su cabecera o sus archivos), quedan dentro de él.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
+        let os_drag = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        self.os_drop_space = if os_drag || !dropped.is_empty() {
+            let pos = os_pointer(&ctx);
+            pos.and_then(|p| self.drop_zones.iter().find(|z| z.0.contains(p)).map(|z| z.1))
+        } else {
+            None
+        };
+        if os_drag {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+        let into = self.os_drop_space.take();
         for p in dropped {
-            self.open(p);
+            self.open(p.clone());
+            if let (Some(id), Some(t)) = (into, self.tabs.iter_mut().find(|t| t.doc.path == p)) {
+                t.space = Some(id);
+                if let Some(s) = self.spaces.iter_mut().find(|s| s.id == id) {
+                    s.open = true;
+                }
+            }
+        }
+        if os_drag {
+            self.os_drop_space = into;
         }
         if self.confirm.is_none() {
             self.handle_shortcuts(&ctx);
@@ -5036,6 +5068,16 @@ fn add_signed(v: u64, d: i64) -> u64 {
 }
 
 /// «14.6 KB · UTF-8 · 60 líneas» (tooltip del panel de archivos).
+/// Posición del puntero en la ventana, también mientras se arrastran archivos
+/// desde fuera (en macOS winit no la informa durante el arrastre).
+fn os_pointer(ctx: &Context) -> Option<Pos2> {
+    #[cfg(target_os = "macos")]
+    if let Some(p) = crate::macopen::mouse_in_window(ctx) {
+        return Some(p);
+    }
+    ctx.input(|i| i.pointer.latest_pos())
+}
+
 /// Lo que se arrastra en el panel de archivos: el índice del archivo.
 struct DragFile(usize);
 

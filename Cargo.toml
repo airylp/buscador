@@ -25,4 +25,4 @@ opt-level = 2
 muda = { version = "0.21", default-features = false }
 # Abrir archivos desde Finder («Abrir con»): ver src/macopen.rs.
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSURL", "NSString"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSURL", "NSString", "NSGeometry"] }
