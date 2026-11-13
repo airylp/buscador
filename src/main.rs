@@ -5,6 +5,7 @@ mod buffer;
 mod diskmap;
 mod document;
 mod filter;
+mod foldersearch;
 mod encoding;
 mod fonts;
 mod icon;

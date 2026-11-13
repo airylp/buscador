@@ -1060,6 +1060,7 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
         (k("C+A+Z"), "Ajuste de línea (activar / desactivar)"),
         (k("C+R"), "Recargar el archivo del disco (cursor al final)"),
         (k("C+Shift+L"), "Vista filtrada (solo las líneas que cumplen las reglas)"),
+        (k("C+Shift+O"), "Buscar en carpeta (todos sus archivos)"),
         (k("Retroceso / Supr"), "Borrar carácter"),
         (k("W+Retroceso / W+Supr"), "Borrar palabra"),
         (k("Enter"), "Nueva línea"),
@@ -1143,6 +1144,8 @@ enum DialogKind {
     Open,
     /// Carpeta para el mapa de disco.
     Folder,
+    /// Carpeta para «Buscar en carpeta».
+    SearchFolder,
     /// Guardar como: ruta actual de la pestaña (la identifica aunque cambie de sitio).
     SaveAs(PathBuf),
 }
@@ -1353,6 +1356,8 @@ pub struct App {
     dialog: Option<PendingDialog>,
     /// Ventana «Mapa de disco».
     map: crate::diskmap::DiskMap,
+    /// Ventana «Buscar en carpeta».
+    folder: crate::foldersearch::FolderSearch,
     tabs: Vec<Tab>,
     active: usize,
     show_sidebar: bool,
@@ -1490,6 +1495,7 @@ impl App {
             },
             dialog: None,
             map: Default::default(),
+            folder: Default::default(),
             view_focused: false,
             advs: Vec::new(),
             next_adv: 1,
@@ -1655,6 +1661,12 @@ impl App {
             DialogKind::Open => {
                 for f in paths {
                     self.open(f);
+                }
+            }
+            DialogKind::SearchFolder => {
+                if let Some(dir) = paths.into_iter().next() {
+                    self.folder.dir = dir.display().to_string();
+                    self.folder.open = true;
                 }
             }
             DialogKind::Folder => {
@@ -2033,6 +2045,9 @@ impl App {
         if pressed(sc(Modifiers::COMMAND, Key::R)) {
             self.reload(self.active, false);
         }
+        if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::O)) {
+            self.show_folder_search();
+        }
         if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::L)) {
             let (q, re, cs) = (self.query.clone(), self.use_regex, self.case_sensitive);
             if let Some(t) = self.tabs.get_mut(self.active) {
@@ -2254,7 +2269,7 @@ impl App {
 
             // --- Búsqueda ---
             // Lo que va detrás del buscador ocupa ~400 px; el buscador se adapta.
-            let search_w = (ui.available_width() - 340.0).clamp(70.0, 320.0);
+            let search_w = (ui.available_width() - 372.0).clamp(70.0, 320.0);
             let r = ui.add(
                 TextEdit::singleline(&mut self.query)
                     .desired_width(search_w)
@@ -2334,6 +2349,14 @@ impl App {
             ui.toggle_value(&mut self.map.open, "🗺").on_hover_text(
                 "Mapa de disco: qué ocupa cada carpeta y archivo de una carpeta, y búsqueda de texto en sus archivos (se resaltan en verde)",
             );
+            let fk = if MAC { "Cmd+Shift+O" } else { "Ctrl+Shift+O" };
+            if ui.selectable_label(self.folder.open, "📁").on_hover_text(format!("Buscar en carpeta: el texto en todos los archivos de una carpeta ({fk})")).clicked() {
+                if self.folder.open {
+                    self.folder.open = false;
+                } else {
+                    self.show_folder_search();
+                }
+            }
 
         });
         if self.show_replace {
@@ -3050,6 +3073,18 @@ impl App {
                 t.follow = true;
                 t.goto_end = true;
             }
+            // BUSCADOR_CARPETA='dir|texto' abre «Buscar en carpeta» y busca.
+            if let Ok(spec) = std::env::var("BUSCADOR_CARPETA") {
+                let (d, q) = spec.split_once('|').unwrap_or((&spec, ""));
+                self.folder.dir = d.to_string();
+                self.folder.query = q.to_string();
+                self.folder.open = true;
+                if !q.is_empty() {
+                    if let Ok(j) = crate::foldersearch::Job::start(d.into(), q, false, false, Vec::new(), ctx.clone()) {
+                        self.folder.job = Some(j);
+                    }
+                }
+            }
             // BUSCADOR_ELEGIR='0,2': selección múltiple en el panel (índices).
             if let Ok(spec) = std::env::var("BUSCADOR_ELEGIR") {
                 self.picked = spec.split(',').filter_map(|n| self.tabs.get(n.trim().parse::<usize>().ok()?)).map(|t| t.doc.path.clone()).collect();
@@ -3320,6 +3355,7 @@ impl eframe::App for App {
         self.keys_window(&ctx);
         self.adv_windows(&ctx);
         self.map_window(&ctx);
+        self.folder_window(&ctx);
         self.confirm_dialog(&ctx);
 
         // Saltar a la primera coincidencia en cuanto aparezca.
@@ -3349,7 +3385,8 @@ impl eframe::App for App {
                     || t.search.as_ref().is_some_and(|s| !s.is_done())
             })
             || self.advs.iter().any(|w| w.is_busy())
-            || self.map.is_busy();
+            || self.map.is_busy()
+            || self.folder.is_busy();
         if busy {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
@@ -4452,6 +4489,7 @@ impl App {
             self.show_keys.then(keys_window_id),
             self.show_settings.then(settings_window_id),
             (self.map.open && !self.map.detached).then(crate::diskmap::window_id),
+            self.folder.open.then(crate::foldersearch::window_id),
         ]
             .into_iter()
             .flatten()
@@ -4594,6 +4632,73 @@ impl App {
                 });
             });
         self.show_keys = open;
+    }
+
+    /// Abre «Buscar en carpeta»: propone la carpeta del archivo activo y el
+    /// texto de «Buscar».
+    fn show_folder_search(&mut self) {
+        let dir = self.tabs.get(self.active).filter(|t| !t.untitled).and_then(|t| t.doc.path.parent().map(|p| p.to_path_buf()));
+        if self.folder.query.is_empty() {
+            self.folder.query = self.query.clone();
+            self.folder.regex = self.use_regex;
+            self.folder.case = self.case_sensitive;
+        }
+        self.folder.show(dir.as_deref());
+    }
+
+    /// Ventana «Buscar en carpeta» (ver `foldersearch`).
+    fn folder_window(&mut self, ctx: &Context) {
+        if !self.folder.open {
+            if self.folder.is_busy() {
+                self.folder.stop();
+            }
+            return;
+        }
+        let mut open = true;
+        let mut out = crate::foldersearch::Out::default();
+        Window::new("Buscar en carpeta")
+            .id(crate::foldersearch::window_id())
+            .open(&mut open)
+            .default_size([860.0, 560.0])
+            .min_size([560.0, 300.0])
+            .max_width(ctx.content_rect().width() * 0.95)
+            .resizable(true)
+            .collapsible(false)
+            .show(ctx, |ui| out = self.folder.ui(ui));
+        self.folder.open &= open;
+        if out.pick_folder && self.dialog.is_none() {
+            let mut d = rfd::AsyncFileDialog::new().set_title("Carpeta donde buscar");
+            let cur = std::path::PathBuf::from(self.folder.dir.trim());
+            if cur.is_dir() {
+                d = d.set_directory(cur);
+            }
+            let fut = d.pick_folder();
+            self.dialog = Some(PendingDialog::spawn(&self.ctx, DialogKind::SearchFolder, async move { fut.await.map(|h| vec![h.path().to_path_buf()]) }));
+        }
+        if let Some((path, line)) = out.open {
+            let (q, re, cs) = self.folder.job.as_ref().map(|j| (j.query.clone(), j.regex, j.case)).unwrap_or_default();
+            self.open(path.clone());
+            if let Some(i) = self.tabs.iter().position(|t| t.doc.path == path) {
+                self.active = i;
+                let t = &mut self.tabs[i];
+                let p = Pos::new(line, 0);
+                if t.doc.indexing_done() || t.total() > line + 200 {
+                    t.select(p, p);
+                    t.center_on = Some(line);
+                } else {
+                    t.restore = Some((line.saturating_sub(10), p));
+                }
+                // Resaltar lo buscado en el archivo, sin saltar a la primera.
+                if !q.is_empty() {
+                    (self.query, self.use_regex, self.case_sensitive) = (q, re, cs);
+                    self.search_or_next();
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        t.pending_first = false;
+                    }
+                }
+                self.focus_view = true;
+            }
+        }
     }
 
     /// Ventana «Mapa de disco» (ver `diskmap`).

@@ -93,9 +93,10 @@ impl MacMenu {
         let save = item("Guardar", "Cmd+S", cmd(Key::S));
         let save_as = item("Guardar como…", "Cmd+Shift+S", cmd_shift(Key::S));
         let reload = item("Recargar del disco", "Cmd+R", cmd(Key::R));
+        let in_folder = item("Buscar en carpeta…", "Cmd+Shift+O", cmd_shift(Key::O));
         let close = item("Cerrar archivo", "Cmd+W", cmd(Key::W));
         let next = item("Siguiente archivo", "Ctrl+Tab", Cmd::Key(Modifiers::CTRL, Key::Tab));
-        let file = Submenu::with_items("Archivo", true, &[&new, &open, &sep(), &save, &save_as, &sep(), &reload, &sep(), &next, &close]).unwrap();
+        let file = Submenu::with_items("Archivo", true, &[&new, &open, &in_folder, &sep(), &save, &save_as, &sep(), &reload, &sep(), &next, &close]).unwrap();
 
         let undo = item("Deshacer", "Cmd+Z", cmd(Key::Z));
         let redo = item("Rehacer", "Cmd+Shift+Z", cmd_shift(Key::Z));
@@ -119,10 +120,11 @@ impl MacMenu {
         let replace = item("Reemplazar…", "Cmd+Alt+F", Cmd::Key(Modifiers::COMMAND | Modifiers::ALT, Key::F));
         let adv = item("Nueva búsqueda avanzada…", "Cmd+Shift+F", cmd_shift(Key::F));
         let goto = item("Ir a línea…", "Cmd+G", cmd(Key::G));
+        let in_folder2 = item("Buscar en carpeta…", "", cmd_shift(Key::O));
         let search = Submenu::with_items(
             "Buscar",
             true,
-            &[&find, &find_next, &find_prev, &sep(), &replace, &adv, &sep(), &goto],
+            &[&find, &find_next, &find_prev, &sep(), &replace, &adv, &in_folder2, &sep(), &goto],
         )
         .unwrap();
 
