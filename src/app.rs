@@ -12,7 +12,7 @@ use eframe::egui::{
     *,
 };
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1130,6 +1130,7 @@ impl Tab {
             Key::Delete => return self.delete(true, word),
             Key::Escape => {
                 self.anchor = self.cursor;
+                self.colsel = None;
                 return Ok(());
             }
             _ => None,
@@ -1537,6 +1538,38 @@ impl Drop for Tab {
 }
 
 /// Carpeta de los archivos temporales de «Nuevo».
+enum RecentPick {
+    Open(usize),
+    Clear,
+}
+
+/// Lista de archivos recientes (nombre y carpeta); devuelve lo elegido.
+fn recent_menu(ui: &mut Ui, recent: &[PathBuf]) -> Option<RecentPick> {
+    ui.set_min_width(260.0);
+    ui.weak(t!("Abrir recientes"));
+    if recent.is_empty() {
+        ui.weak(t!("(ningún archivo reciente)"));
+        return None;
+    }
+    let mut pick = None;
+    for (i, p) in recent.iter().enumerate() {
+        let name = p.file_name().map_or_else(|| p.to_string_lossy(), |n| n.to_string_lossy());
+        let dir = p.parent().map(|d| d.to_string_lossy()).unwrap_or_default();
+        let mut job = LayoutJob::default();
+        let style = ui.style();
+        job.append(&name, 0.0, TextFormat { font_id: TextStyle::Button.resolve(style), color: style.visuals.text_color(), ..Default::default() });
+        job.append(&dir, 8.0, TextFormat { font_id: TextStyle::Small.resolve(style), color: style.visuals.weak_text_color(), ..Default::default() });
+        if ui.button(job).on_hover_text(p.to_string_lossy()).clicked() {
+            pick = Some(RecentPick::Open(i));
+        }
+    }
+    ui.separator();
+    if ui.button(t!("Borrar la lista")).clicked() {
+        pick = Some(RecentPick::Clear);
+    }
+    pick
+}
+
 fn untitled_dir() -> PathBuf {
     std::env::temp_dir().join("buscador-nuevos")
 }
@@ -1621,6 +1654,9 @@ pub struct App {
     row_order: Vec<usize>,
     /// Guardar/recuperar la sesión (no en ventanas nuevas ni en pruebas).
     use_session: bool,
+    /// Archivos abiertos recientemente (el último primero); se graban salvo en pruebas.
+    recent: Vec<PathBuf>,
+    save_recent: bool,
     /// Última sesión guardada y cuándo se miró por última vez.
     session_saved: crate::settings::Session,
     session_checked: Instant,
@@ -1710,6 +1746,8 @@ impl App {
             pick_anchor: None,
             row_order: Vec::new(),
             use_session: false,
+            recent: crate::settings::load_recent(),
+            save_recent: false,
             session_saved: Default::default(),
             session_checked: Instant::now(),
             fallback_fonts: fallbacks,
@@ -1747,6 +1785,9 @@ impl App {
         let testing = std::env::var_os("BUSCADOR_SCREENSHOT").is_some() && std::env::var_os("BUSCADOR_SESION").is_none();
         let no_session = files.iter().any(|f| f.as_os_str() == "--sin-sesion") || testing;
         app.use_session = !no_session;
+        app.save_recent = !testing;
+        #[cfg(target_os = "macos")]
+        app.menu.set_recent(&app.recent);
         if app.use_session {
             app.restore_session();
         }
@@ -1844,9 +1885,46 @@ impl App {
                 self.tabs.push(t);
                 self.active = self.tabs.len() - 1;
                 self.focus_view = true;
+                self.note_recent(&path);
             }
             Err(e) => self.msg(tf!("No se pudo abrir {display}: {e}", display = path.display(), e = e)),
         }
+    }
+
+    /// Apunta `path` como el archivo más reciente (no los temporales de «Sin título»).
+    fn note_recent(&mut self, path: &Path) {
+        if path.starts_with(untitled_dir()) || self.recent.first().is_some_and(|f| f == path) {
+            return;
+        }
+        crate::settings::push_recent(&mut self.recent, path);
+        self.recent_changed();
+    }
+
+    fn recent_changed(&mut self) {
+        if self.save_recent {
+            if let Err(e) = crate::settings::save_recent(&self.recent) {
+                self.msg(tf!("No se pudo guardar la lista de recientes: {e}", e = e));
+            }
+        }
+        #[cfg(target_os = "macos")]
+        self.menu.set_recent(&self.recent);
+    }
+
+    /// Abre el reciente número `i` (si ya no existe, lo quita de la lista).
+    fn open_recent(&mut self, i: usize) {
+        let Some(p) = self.recent.get(i).cloned() else { return };
+        if p.is_file() {
+            self.open(p);
+        } else {
+            self.recent.remove(i);
+            self.recent_changed();
+            self.msg(tf!("Ya no existe: {p}", p = p.display()));
+        }
+    }
+
+    fn clear_recent(&mut self) {
+        self.recent.clear();
+        self.recent_changed();
     }
 
     /// Archivo nuevo vacío (o con `text`), editable; Guardar pedirá dónde.
@@ -2472,6 +2550,21 @@ impl App {
             if ui.button(lb("📂", t!("Abrir"))).on_hover_text(t!("Abrir archivos (Ctrl+O) · también puedes arrastrarlos")).clicked() {
                 self.open_dialog();
             }
+            // Recientes: desplegable pegado a «Abrir».
+            let gap = ui.spacing().item_spacing.x;
+            ui.spacing_mut().item_spacing.x = 1.0;
+            let mut pick = None;
+            let r = ui.menu_button("▾", |ui| pick = recent_menu(ui, &self.recent)).response.on_hover_text(t!("Abrir recientes"));
+            // Pruebas: BUSCADOR_RECIENTES_VER=1 lo deja abierto para la captura.
+            if self.debug_frames == 3 && std::env::var_os("BUSCADOR_RECIENTES_VER").is_some() {
+                eframe::egui::Popup::open_id(ui.ctx(), eframe::egui::Popup::default_response_id(&r));
+            }
+            ui.spacing_mut().item_spacing.x = gap;
+            match pick {
+                Some(RecentPick::Open(i)) => self.open_recent(i),
+                Some(RecentPick::Clear) => self.clear_recent(),
+                None => {}
+            }
             let has_tab = !self.tabs.is_empty();
             let (editable, dirty, can_undo, can_redo) = self.tabs.get(self.active).map_or((false, false, false, false), |t| {
                 (
@@ -2673,6 +2766,8 @@ impl App {
                 Cmd::Update => self.open_updater(ctx),
                 Cmd::ToggleResults => self.show_results = !self.show_results,
                 Cmd::ToggleDetail => self.show_detail = !self.show_detail,
+                Cmd::OpenRecent(i) => self.open_recent(i),
+                Cmd::ClearRecent => self.clear_recent(),
                 c => inject(ctx, c),
             }
         }
@@ -3513,9 +3608,19 @@ impl eframe::App for App {
         self.mac_menu(&ctx);
 
         // Guardados terminados.
-        let done: Vec<String> = self.tabs.iter_mut().filter_map(|t| t.poll_save()).collect();
-        for m in done {
+        let mut done = Vec::new();
+        for t in self.tabs.iter_mut().filter(|t| t.save.is_some()) {
+            let before = t.doc.path.clone();
+            if let Some(m) = t.poll_save() {
+                // Guardar como: el archivo nuevo pasa a ser reciente.
+                done.push((m, (t.doc.path != before).then(|| t.doc.path.clone())));
+            }
+        }
+        for (m, new_path) in done {
             self.msg(m);
+            if let Some(p) = new_path {
+                self.note_recent(&p);
+            }
         }
 
         // Duplicados terminados: abrirlos.
@@ -4928,6 +5033,7 @@ impl App {
             #[cfg(target_os = "macos")]
             {
                 self.menu = crate::macmenu::MacMenu::new(ctx);
+                self.menu.set_recent(&self.recent);
             }
         }
         if theme != self.theme {
@@ -4957,8 +5063,8 @@ impl App {
         self.persist();
     }
 
-    /// Escape cierra la ventana emergente que está delante (si el foco no
-    /// está en el editor, donde Escape quita la selección).
+    /// Escape cierra la ventana emergente que está delante. Con el foco en el
+    /// editor, si hay selección, Escape solo la quita (la siguiente cierra).
     fn escape_closes_popup(&mut self, ctx: &Context) {
         if !ctx.input(|i| i.key_pressed(Key::Escape)) {
             return;
@@ -4969,7 +5075,7 @@ impl App {
             self.updater = None;
             return;
         }
-        if self.view_focused {
+        if self.view_focused && self.tabs.get(self.active).is_some_and(|t| t.selection().is_some() || t.colsel.is_some()) {
             return;
         }
         let inline: Vec<Id> = self.advs.iter().filter(|w| !w.detached).map(|w| adv_window_id(w.id)).collect();

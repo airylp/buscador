@@ -567,3 +567,8 @@ Quitar espacios y tabs al final	Remove trailing spaces and tabs	Supprimer les es
 En cada línea seleccionada, borra los espacios y tabuladores que haya al final	On each selected line, deletes any spaces and tabs at the end	Sur chaque ligne sélectionnée, supprime les espaces et tabulations en fin de ligne
 pasos (se conservan también al guardar)	steps (also kept after saving)	étapes (conservées aussi après l’enregistrement)
 Guardado {name} ({len}) · el deshacer se reinició	Saved {name} ({len}) · undo history was reset	{name} enregistré ({len}) · l’historique d’annulation a été réinitialisé
+Abrir recientes	Open Recent	Ouvrir récents
+(ningún archivo reciente)	(no recent files)	(aucun fichier récent)
+Borrar la lista	Clear list	Effacer la liste
+No se pudo guardar la lista de recientes: {e}	Could not save the recent files list: {e}	Impossible d’enregistrer la liste des récents : {e}
+Ya no existe: {p}	No longer exists: {p}	N’existe plus : {p}

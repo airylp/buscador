@@ -233,6 +233,39 @@ impl Settings {
     }
 }
 
+/// Archivos abiertos recientemente (el más reciente primero), máximo.
+pub const MAX_RECENT: usize = 20;
+
+fn recent_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("recientes.txt"))
+}
+
+/// Lee la lista de recientes (una ruta por línea).
+pub fn load_recent() -> Vec<PathBuf> {
+    let Some(text) = recent_path().and_then(|p| std::fs::read_to_string(p).ok()) else { return Vec::new() };
+    text.lines().filter(|l| !l.trim().is_empty()).take(MAX_RECENT).map(PathBuf::from).collect()
+}
+
+pub fn save_recent(list: &[PathBuf]) -> Result<(), String> {
+    let p = recent_path().ok_or("no se encontró la carpeta de configuración")?;
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let mut text = String::new();
+    for f in list.iter().take(MAX_RECENT) {
+        text += &f.to_string_lossy();
+        text.push('\n');
+    }
+    std::fs::write(&p, text).map_err(|e| e.to_string())
+}
+
+/// Pone `p` al principio de la lista (sin repetir y sin pasar del máximo).
+pub fn push_recent(list: &mut Vec<PathBuf>, p: &std::path::Path) {
+    list.retain(|f| f != p);
+    list.insert(0, p.to_path_buf());
+    list.truncate(MAX_RECENT);
+}
+
 fn hex(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
@@ -267,5 +300,19 @@ mod tests {
         assert_eq!(super::parse_hex("#1e2a38"), Some([0x1e, 0x2a, 0x38]));
         assert_eq!(super::hex([0x1e, 0x2a, 0x38]), "#1e2a38");
         assert_eq!(super::parse_hex("zz"), None);
+    }
+
+    #[test]
+    fn recent_list_moves_to_front_and_caps() {
+        let mut l = Vec::new();
+        for i in 0..25 {
+            super::push_recent(&mut l, std::path::Path::new(&format!("/a/{i}")));
+        }
+        assert_eq!(l.len(), super::MAX_RECENT);
+        assert_eq!(l[0], std::path::PathBuf::from("/a/24"));
+        super::push_recent(&mut l, std::path::Path::new("/a/10"));
+        assert_eq!(l[0], std::path::PathBuf::from("/a/10"));
+        assert_eq!(l.iter().filter(|p| p.ends_with("10")).count(), 1);
+        assert_eq!(l.len(), super::MAX_RECENT);
     }
 }

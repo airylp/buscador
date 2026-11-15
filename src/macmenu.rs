@@ -21,12 +21,17 @@ pub enum Cmd {
     ToggleDetail,
     Settings,
     Update,
+    OpenRecent(usize),
+    ClearRecent,
 }
 
 pub struct MacMenu {
     _menu: Menu,
     rx: Receiver<MenuEvent>,
-    items: Vec<(MenuId, Cmd)>,
+    items: std::cell::RefCell<Vec<(MenuId, Cmd)>>,
+    /// «Abrir recientes» (se rehace cuando cambia la lista).
+    recent: Submenu,
+    recent_ids: std::cell::RefCell<Vec<MenuId>>,
     pub save: MenuItem,
     pub edit: CheckMenuItem,
     pub sidebar: CheckMenuItem,
@@ -95,10 +100,11 @@ impl MacMenu {
         let save_as = item(t!("Guardar como…"), "Cmd+Shift+S", cmd_shift(Key::S));
         let reload = item(t!("Recargar del disco"), "Cmd+R", cmd(Key::R));
         let in_folder = item(t!("Buscar en carpeta…"), "Cmd+Shift+O", cmd_shift(Key::O));
+        let recent = Submenu::new(t!("Abrir recientes"), true);
         let close = item(t!("Cerrar archivo"), "Cmd+W", cmd(Key::W));
         let next = item(t!("Siguiente archivo"), "Ctrl+Tab", Cmd::Key(Modifiers::CTRL, Key::Tab));
         let prev = item(t!("Archivo anterior"), "Ctrl+Shift+Tab", Cmd::Key(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab));
-        let file = Submenu::with_items(t!("Archivo"), true, &[&new, &open, &in_folder, &sep(), &save, &save_as, &sep(), &reload, &sep(), &next, &prev, &close]).unwrap();
+        let file = Submenu::with_items(t!("Archivo"), true, &[&new, &open, &recent, &in_folder, &sep(), &save, &save_as, &sep(), &reload, &sep(), &next, &prev, &close]).unwrap();
 
         let undo = item(t!("Deshacer"), "Cmd+Z", cmd(Key::Z));
         let redo = item(t!("Rehacer"), "Cmd+Shift+Z", cmd_shift(Key::Z));
@@ -180,7 +186,7 @@ impl MacMenu {
         window.set_as_windows_menu_for_nsapp();
         help.set_as_help_menu_for_nsapp();
 
-        MacMenu { _menu: menu, rx, items: items.into_inner(), save, edit, sidebar, results, detail, ws, state: Default::default() }
+        MacMenu { _menu: menu, rx, items, recent, recent_ids: Default::default(), save, edit, sidebar, results, detail, ws, state: Default::default() }
     }
 
     /// Refleja en el menú el estado de la aplicación (sólo si cambió).
@@ -197,11 +203,36 @@ impl MacMenu {
         self.ws.set_checked(st[5]);
     }
 
+    /// Rehace «Abrir recientes» con esta lista (nombre — carpeta).
+    pub fn set_recent(&self, list: &[std::path::PathBuf]) {
+        while self.recent.remove_at(0).is_some() {}
+        let old = std::mem::take(&mut *self.recent_ids.borrow_mut());
+        self.items.borrow_mut().retain(|(id, _)| !old.contains(id));
+        let add = |text: String, cmd: Cmd| {
+            let it = MenuItem::new(text, true, None);
+            self.items.borrow_mut().push((it.id().clone(), cmd));
+            self.recent_ids.borrow_mut().push(it.id().clone());
+            let _ = self.recent.append(&it);
+        };
+        if list.is_empty() {
+            let it = MenuItem::new(t!("(ningún archivo reciente)"), false, None);
+            let _ = self.recent.append(&it);
+            return;
+        }
+        for (i, p) in list.iter().enumerate() {
+            let name = p.file_name().map_or_else(|| p.to_string_lossy(), |n| n.to_string_lossy());
+            let dir = p.parent().map(|d| d.to_string_lossy()).unwrap_or_default();
+            add(format!("{name} — {dir}"), Cmd::OpenRecent(i));
+        }
+        let _ = self.recent.append(&PredefinedMenuItem::separator());
+        add(t!("Borrar la lista").to_string(), Cmd::ClearRecent);
+    }
+
     /// Opciones elegidas desde el último fotograma.
     pub fn poll(&self) -> Vec<Cmd> {
         self.rx
             .try_iter()
-            .filter_map(|e| self.items.iter().find(|(id, _)| *id == e.id).map(|(_, c)| *c))
+            .filter_map(|e| self.items.borrow().iter().find(|(id, _)| *id == e.id).map(|(_, c)| *c))
             .collect()
     }
 }
@@ -215,6 +246,6 @@ pub fn inject(ctx: &Context, c: Cmd) {
         Cmd::Copy => ctx.input_mut(|i| i.events.push(Event::Copy)),
         Cmd::Cut => ctx.input_mut(|i| i.events.push(Event::Cut)),
         Cmd::Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
-        Cmd::ToggleResults | Cmd::ToggleDetail | Cmd::Settings | Cmd::Update => {}
+        Cmd::ToggleResults | Cmd::ToggleDetail | Cmd::Settings | Cmd::Update | Cmd::OpenRecent(_) | Cmd::ClearRecent => {}
     }
 }
