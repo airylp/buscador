@@ -581,3 +581,9 @@ Renombrado a {name}	Renamed to {name}	Renommé en {name}
 archivo nuevo sin guardar	new unsaved file	nouveau fichier non enregistré
 ya no existe en el disco	no longer exists on disk	n’existe plus sur le disque
 {multi} archivos	{multi} files	{multi} fichiers
+Clic: copiar el nombre	Click: copy the name	Clic : copier le nom
+{p}\nClic: copiar la ruta	{p}\nClick: copy the path	{p}\nClic : copier le chemin
+Ocultar esta barra	Hide this bar	Masquer cette barre
+Encabezado	Header	En-tête
+Mostrar el nombre y la ruta del archivo encima del texto	Show the file name and path above the text	Afficher le nom et le chemin du fichier au-dessus du texte
+Nombre y ruta del archivo	File name and path	Nom et chemin du fichier

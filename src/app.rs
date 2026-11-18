@@ -1643,6 +1643,8 @@ pub struct App {
     lang_chosen: Option<crate::i18n::Lang>,
     /// Minimapa del texto a la derecha.
     show_minimap: bool,
+    /// Franja con el nombre y la ruta del archivo encima del texto (menú Ver).
+    show_header: bool,
     /// Siguiente número para «Sin título N».
     next_untitled: u32,
     /// Espacios del panel de archivos (grupos que se abren y cierran como carpetas).
@@ -1744,6 +1746,7 @@ impl App {
             borders: settings.borders,
             lang_chosen: chosen,
             show_minimap: settings.minimap,
+            show_header: settings.header,
             wrap_last: match Wrap::parse(&settings.wrap) {
                 Wrap::Off => Wrap::Window,
                 w => w,
@@ -2029,6 +2032,7 @@ impl App {
             borders: self.borders,
             lang: self.lang_chosen.map(|l| l.code().to_string()),
             minimap: self.show_minimap,
+            header: self.show_header,
             tab_width: tab_width(),
             show_ws: show_whitespace(),
             undo_steps: buffer::max_undo(),
@@ -2781,6 +2785,10 @@ impl App {
                 Cmd::Update => self.open_updater(ctx),
                 Cmd::ToggleResults => self.show_results = !self.show_results,
                 Cmd::ToggleDetail => self.show_detail = !self.show_detail,
+                Cmd::ToggleHeader => {
+                    self.show_header = !self.show_header;
+                    self.persist();
+                }
                 Cmd::OpenRecent(i) => self.open_recent(i),
                 Cmd::ClearRecent => self.clear_recent(),
                 c => inject(ctx, c),
@@ -2795,6 +2803,7 @@ impl App {
             self.show_results,
             self.show_detail,
             show_whitespace(),
+            self.show_header,
         ]);
     }
 
@@ -3852,9 +3861,10 @@ impl eframe::App for App {
         let show_minimap = self.show_minimap;
         let show_detail = &mut self.show_detail;
         let focus_view = std::mem::take(&mut self.focus_view);
+        let mut header_action = None;
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
-            if let Some(t) = self.tabs.get(self.active) {
-                editor_header(ui, t);
+            if let Some(t) = self.tabs.get(self.active).filter(|_| self.show_header) {
+                header_action = editor_header(ui, t);
             }
             if let Some(t) = self.tabs.get_mut(self.active).filter(|t| t.filter.on) {
                 message = filter_view(ui, t, &font, colors, syntax_on);
@@ -3878,6 +3888,17 @@ impl eframe::App for App {
             }
         });
         self.view_focused = view_focused;
+        match header_action {
+            Some(HeaderAction::Copy(text, what)) => {
+                ctx.copy_text(text.clone());
+                self.msg(if what { tf!("Ruta copiada: {p}", p = text) } else { tf!("Nombre copiado: {n}", n = text) });
+            }
+            Some(HeaderAction::Hide) => {
+                self.show_header = false;
+                self.persist();
+            }
+            None => {}
+        }
         // «Nuevo archivo con la selección» y texto pendiente de archivos nuevos.
         let exports: Vec<String> = self.tabs.iter_mut().filter_map(|t| t.export_request.take()).collect();
         for text in exports {
@@ -4898,6 +4919,7 @@ impl App {
         let mut borders = self.borders;
         let mut tabw = tab_width();
         let mut show_ws = show_whitespace();
+        let mut show_header = self.show_header;
         let mut undo_steps = buffer::max_undo();
         let mut lang_change = None;
         let mut wrap = self.wrap;
@@ -4989,6 +5011,10 @@ impl App {
 
                     ui.strong(t!("Espacios"));
                     ui.checkbox(&mut show_ws, t!("Mostrar espacios y tabuladores (· y →)"));
+                    ui.end_row();
+
+                    ui.strong(t!("Encabezado"));
+                    ui.checkbox(&mut show_header, t!("Mostrar el nombre y la ruta del archivo encima del texto"));
                     ui.end_row();
 
                     ui.strong(t!("Colores del texto"));
@@ -5128,6 +5154,10 @@ impl App {
         }
         if undo_steps != buffer::max_undo() {
             buffer::set_max_undo(undo_steps);
+            self.persist();
+        }
+        if show_header != self.show_header {
+            self.show_header = show_header;
             self.persist();
         }
         if show_ws != show_whitespace() {
@@ -6428,19 +6458,27 @@ fn live_icon(ui: &Ui, at: Pos2) -> f32 {
     w + 4.0
 }
 
+enum HeaderAction {
+    /// Copiar este texto (`true` = la ruta, `false` = el nombre).
+    Copy(String, bool),
+    Hide,
+}
+
 /// Franja encima del texto con el nombre del archivo activo y su carpeta.
-fn editor_header(ui: &mut Ui, t: &Tab) {
+/// Clic en el nombre lo copia; clic en la carpeta copia la ruta completa.
+fn editor_header(ui: &mut Ui, t: &Tab) -> Option<HeaderAction> {
     let h = ui.spacing().interact_size.y + 2.0;
-    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
-    let v = ui.visuals();
+    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
+    let v = ui.visuals().clone();
     ui.painter().rect_filled(rect, 0.0, v.faint_bg_color);
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, v.widgets.noninteractive.bg_stroke);
     let ink = if t.missing { v.error_fg_color } else { v.strong_text_color() };
-    let mut job = LayoutJob::default();
-    let style = ui.style();
     let name = if t.dirty() { format!("● {}", t.doc.name) } else { t.doc.name.clone() };
     let strike = if t.missing { Stroke::new(1.0, ink) } else { Stroke::NONE };
-    job.append(&name, 0.0, TextFormat { font_id: TextStyle::Button.resolve(style), color: ink, strikethrough: strike, ..Default::default() });
+    let max_w = rect.width() - 20.0;
+    let mut job = LayoutJob::single_section(name, TextFormat { font_id: TextStyle::Button.resolve(ui.style()), color: ink, strikethrough: strike, ..Default::default() });
+    job.wrap = text::TextWrapping::truncate_at_width(max_w * 0.6);
+    let g_name = ui.painter().layout_job(job);
     let dir = if t.untitled {
         t!("archivo nuevo sin guardar").to_string()
     } else if t.missing {
@@ -6448,13 +6486,50 @@ fn editor_header(ui: &mut Ui, t: &Tab) {
     } else {
         t.doc.path.parent().map(|d| d.display().to_string()).unwrap_or_default()
     };
-    job.append(&dir, 10.0, TextFormat { font_id: TextStyle::Small.resolve(style), color: if t.missing { ink } else { v.weak_text_color() }, ..Default::default() });
-    job.wrap = text::TextWrapping::truncate_at_width(rect.width() - 20.0);
-    let g = ui.painter().layout_job(job);
-    ui.painter().galley(pos2(rect.left() + 10.0, rect.center().y - g.size().y / 2.0), g, ink);
-    if !t.untitled && r.hovered() {
-        r.on_hover_text(t.doc.path.display().to_string());
+    let mut job = LayoutJob::single_section(dir, TextFormat { font_id: TextStyle::Small.resolve(ui.style()), color: if t.missing { ink } else { v.weak_text_color() }, ..Default::default() });
+    job.wrap = text::TextWrapping::truncate_at_width((max_w - g_name.size().x - 10.0).max(10.0));
+    let g_dir = ui.painter().layout_job(job);
+    let name_r = Rect::from_min_size(pos2(rect.left() + 10.0, rect.center().y - g_name.size().y / 2.0), g_name.size());
+    let dir_r = Rect::from_min_size(pos2(name_r.right() + 10.0, rect.center().y - g_dir.size().y / 2.0), g_dir.size());
+    let hover = r.hover_pos();
+    let on_name = hover.is_some_and(|p| name_r.expand(3.0).contains(p));
+    let on_dir = !t.untitled && hover.is_some_and(|p| dir_r.expand(3.0).contains(p));
+    for (on, rr) in [(on_name, name_r), (on_dir, dir_r)] {
+        if on {
+            ui.painter().rect_filled(rr.expand2(vec2(4.0, 2.0)), 3.0, v.widgets.hovered.weak_bg_fill);
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
     }
+    ui.painter().galley(name_r.min, g_name, ink);
+    ui.painter().galley(dir_r.min, g_dir, ink);
+    let mut out = None;
+    let r = if on_name {
+        r.on_hover_text(t!("Clic: copiar el nombre"))
+    } else if on_dir {
+        r.on_hover_text(tf!("{p}\nClic: copiar la ruta", p = t.doc.path.display()))
+    } else {
+        r
+    };
+    if r.clicked() {
+        if on_name {
+            out = Some(HeaderAction::Copy(t.doc.name.clone(), false));
+        } else if on_dir {
+            out = Some(HeaderAction::Copy(t.doc.path.display().to_string(), true));
+        }
+    }
+    r.context_menu(|ui| {
+        if ui.button(t!("Copiar nombre")).clicked() {
+            out = Some(HeaderAction::Copy(t.doc.name.clone(), false));
+        }
+        if ui.add_enabled(!t.untitled, Button::new(t!("Copiar ruta"))).clicked() {
+            out = Some(HeaderAction::Copy(t.doc.path.display().to_string(), true));
+        }
+        ui.separator();
+        if ui.button(t!("Ocultar esta barra")).clicked() {
+            out = Some(HeaderAction::Hide);
+        }
+    });
+    out
 }
 
 /// Campo para escribir un nombre en `rect`. Al aparecer toma el foco y
