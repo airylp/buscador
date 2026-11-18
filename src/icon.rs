@@ -1,5 +1,5 @@
 //! Ícono de la aplicación: una «B» pixel-art azul sobre un cuadrado
-//! redondeado blanco y liso (con bordes suavizados), generado en código, sin
+//! redondeado blanco semitransparente (60 %) y liso (con bordes suavizados), generado en código, sin
 //! archivos de imagen. Lo usan Cmd+Tab y el Dock en macOS, y la barra de
 //! tareas en Windows/Linux.
 
@@ -25,6 +25,8 @@ const B: [&str; 8] = [
 /// Fondo: blanco con un degradado vertical muy suave.
 const BG_TOP: [f32; 3] = [0xff as f32, 0xff as f32, 0xff as f32];
 const BG_BOTTOM: [f32; 3] = [0xec as f32, 0xf0 as f32, 0xf6 as f32];
+/// Opacidad del fondo (deja ver lo que hay detrás en el Dock).
+const BG_OPACITY: f32 = 0.6;
 const BLUE: [u8; 3] = [0x2f, 0x8c, 0xff];
 const BLUE_LIGHT: [u8; 3] = [0x8f, 0xcf, 0xff];
 const BLUE_DARK: [u8; 3] = [0x1d, 0x5f, 0xd6];
@@ -92,13 +94,16 @@ fn render(size: usize) -> Vec<u8> {
             // Media celda hacia abajo/derecha: la «B» (celdas 3–10) queda en el centro
             // exacto; la sombra sobresale abajo a la derecha sin descentrarla.
             let (gr, gc) = (((py - m) / cell - 0.5).floor() as isize, ((px - m) / cell - 0.5).floor() as isize);
+            // El fondo es semitransparente; la «B» y su sombra, opacas.
+            let mut opacity = BG_OPACITY;
             if (0..N).contains(&gr) && (0..N).contains(&gc) {
                 if let Some(b) = b_cell(gr, gc) {
                     col = b;
+                    opacity = 1.0;
                 }
             }
             let i = (y * size + x) * 4;
-            rgba[i..i + 4].copy_from_slice(&[col[0], col[1], col[2], (alpha * 255.0).round() as u8]);
+            rgba[i..i + 4].copy_from_slice(&[col[0], col[1], col[2], (alpha * opacity * 255.0).round() as u8]);
         }
     }
     rgba
