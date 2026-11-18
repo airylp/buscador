@@ -22,6 +22,14 @@ static CTX: OnceLock<eframe::egui::Context> = OnceLock::new();
 
 /// Instala el método. Llamar en `main`, antes de `eframe::run_native`.
 pub fn install() {
+    // Sin la «barra de pestañas» que macOS añade sola al menú Ver (ventanas
+    // agrupadas como pestañas): cada ventana de buscador es otro proceso.
+    if let Some(win) = AnyClass::get(c"NSWindow") {
+        // SAFETY: método de clase de NSWindow que recibe un BOOL.
+        unsafe {
+            let _: () = objc2::msg_send![win, setAllowsAutomaticWindowTabbing: objc2::runtime::Bool::NO];
+        }
+    }
     let Some(cls) = AnyClass::get(c"NSObject") else { return };
     let imp: unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut NSArray<NSURL>) = open_urls;
     // SAFETY: la firma coincide con la codificación «v@:@@» (void, self, _cmd, id, id).
