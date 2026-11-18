@@ -6,7 +6,7 @@
 use eframe::egui::IconData;
 
 /// La «B» (8×8 + sombra) se dibuja en una cuadrícula de 15×15 «píxeles»
-/// gordos sobre el cuadrado redondeado, centrada (celdas 3–11).
+/// gordos sobre el cuadrado redondeado; la «B» (celdas 3–10) va centrada.
 const N: isize = 15;
 /// Tamaño del ícono de la ventana: 512 px (nítido en Retina).
 const SIZE: usize = 512;
@@ -89,7 +89,9 @@ fn render(size: usize) -> Vec<u8> {
                 }
             }
             let cell = (s - 2.0 * m) / N as f32;
-            let (gr, gc) = (((py - m) / cell).floor() as isize, ((px - m) / cell).floor() as isize);
+            // Media celda hacia abajo/derecha: la «B» (celdas 3–10) queda en el centro
+            // exacto; la sombra sobresale abajo a la derecha sin descentrarla.
+            let (gr, gc) = (((py - m) / cell - 0.5).floor() as isize, ((px - m) / cell - 0.5).floor() as isize);
             if (0..N).contains(&gr) && (0..N).contains(&gc) {
                 if let Some(b) = b_cell(gr, gc) {
                     col = b;
