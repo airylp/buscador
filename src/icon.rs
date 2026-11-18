@@ -1,5 +1,5 @@
 //! Ícono de la aplicación: una «B» pixel-art azul sobre un cuadrado
-//! redondeado oscuro y liso (con bordes suavizados), generado en código, sin
+//! redondeado blanco y liso (con bordes suavizados), generado en código, sin
 //! archivos de imagen. Lo usan Cmd+Tab y el Dock en macOS, y la barra de
 //! tareas en Windows/Linux.
 
@@ -22,13 +22,13 @@ const B: [&str; 8] = [
     "#######.", //
 ];
 
-/// Fondo: degradado vertical oscuro.
-const BG_TOP: [f32; 3] = [0x25 as f32, 0x2d as f32, 0x3f as f32];
-const BG_BOTTOM: [f32; 3] = [0x0b as f32, 0x0e as f32, 0x16 as f32];
+/// Fondo: blanco con un degradado vertical muy suave.
+const BG_TOP: [f32; 3] = [0xff as f32, 0xff as f32, 0xff as f32];
+const BG_BOTTOM: [f32; 3] = [0xec as f32, 0xf0 as f32, 0xf6 as f32];
 const BLUE: [u8; 3] = [0x2f, 0x8c, 0xff];
 const BLUE_LIGHT: [u8; 3] = [0x8f, 0xcf, 0xff];
 const BLUE_DARK: [u8; 3] = [0x1d, 0x5f, 0xd6];
-const SHADOW: [u8; 3] = [0x06, 0x1c, 0x45];
+const SHADOW: [u8; 3] = [0xb4, 0xc6, 0xe2];
 
 /// Color de la «B» en la celda (fila, columna) de la cuadrícula, si hay.
 fn b_cell(r: isize, c: isize) -> Option<[u8; 3]> {
@@ -81,11 +81,11 @@ fn render(size: usize) -> Vec<u8> {
             for k in 0..3 {
                 col[k] = (BG_TOP[k] + (BG_BOTTOM[k] - BG_TOP[k]) * t).round() as u8;
             }
-            // Filo claro muy suave en el borde: se distingue sobre fondos oscuros.
+            // Filo gris muy suave en el borde: se distingue sobre fondos claros.
             let edge = (-out).clamp(0.0, s * 0.012) / (s * 0.012);
             if edge < 1.0 {
                 for c in col.iter_mut() {
-                    *c = (*c as f32 + (1.0 - edge) * 28.0).min(255.0) as u8;
+                    *c = (*c as f32 - (1.0 - edge) * 40.0).max(0.0) as u8;
                 }
             }
             let cell = (s - 2.0 * m) / N as f32;

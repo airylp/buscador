@@ -374,7 +374,7 @@ Selecciona una línea para verla completa aquí.	Select a line to see it in full
 \n…[truncado: la línea mide más de 1 MB]	\n…[truncated: the line is longer than 1 MB]	\n…[tronqué : la ligne dépasse 1 Mo]
 Línea {fmt_num}	Line {fmt_num}	Ligne {fmt_num}
 Cerrar (Ctrl+W)	Close (Ctrl+W)	Fermer (Ctrl+W)
-{to_string}\nClic derecho: más opciones · Arrastrar: mover a un espacio\n{if_MAC_Cmd_else_Ctrl} + clic / Shift + clic: seleccionar varios\n{tab_details}	{to_string}\nRight-click: more options · Drag: move to a space\n{if_MAC_Cmd_else_Ctrl} + click / Shift + click: select several\n{tab_details}	{to_string}\nClic droit : plus d'options · Glisser : déplacer vers un espace\n{if_MAC_Cmd_else_Ctrl} + clic / Shift + clic : sélection multiple\n{tab_details}
+{missing}{to_string}\nClic derecho: más opciones · Arrastrar: mover a un espacio\n{if_MAC_Cmd_else_Ctrl} + clic / Shift + clic: seleccionar varios\n{tab_details}	{missing}{to_string}\nRight-click: more options · Drag: move to a space\n{if_MAC_Cmd_else_Ctrl} + click / Shift + click: select several\n{tab_details}	{missing}{to_string}\nClic droit : plus d'options · Glisser : déplacer vers un espace\n{if_MAC_Cmd_else_Ctrl} + clic / Shift + clic : sélection multiple\n{tab_details}
 Archivo nuevo sin guardar	New unsaved file	Nouveau fichier non enregistré
 {multi} archivos seleccionados	{multi} files selected	{multi} fichiers sélectionnés
 Mover los {multi} a un espacio	Move the {multi} to a space	Déplacer les {multi} vers un espace
@@ -572,3 +572,12 @@ Abrir recientes	Open Recent	Ouvrir récents
 Borrar la lista	Clear list	Effacer la liste
 No se pudo guardar la lista de recientes: {e}	Could not save the recent files list: {e}	Impossible d’enregistrer la liste des récents : {e}
 Ya no existe: {p}	No longer exists: {p}	N’existe plus : {p}
+Renombrar…	Rename…	Renommer…
+Nombre no válido: {name}	Invalid name: {name}	Nom non valide : {name}
+Ya existe un archivo llamado {name}	A file named {name} already exists	Un fichier nommé {name} existe déjà
+No se pudo renombrar: {e}	Could not rename: {e}	Impossible de renommer : {e}
+Renombrado a {name}	Renamed to {name}	Renommé en {name}
+⚠ El archivo ya no existe en el disco\n	⚠ The file no longer exists on disk\n	⚠ Le fichier n’existe plus sur le disque\n
+archivo nuevo sin guardar	new unsaved file	nouveau fichier non enregistré
+ya no existe en el disco	no longer exists on disk	n’existe plus sur le disque
+{multi} archivos	{multi} files	{multi} fichiers

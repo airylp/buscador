@@ -97,6 +97,8 @@ pub struct Tab {
     goto_end: bool,
     /// Espacio (grupo del panel de archivos) al que pertenece: `Space::id`.
     space: Option<u32>,
+    /// El archivo ya no está en el disco (borrado, movido o renombrado fuera).
+    missing: bool,
     /// Petición del menú contextual: crear un archivo nuevo con este texto.
     export_request: Option<String>,
     /// Lenguaje para el resaltado (por la extensión; se puede cambiar).
@@ -163,6 +165,7 @@ impl Tab {
             restore: None,
             goto_end: false,
             space: None,
+            missing: false,
             export_request: None,
             colsel: None,
             layout_map: Vec::new(),
@@ -1448,7 +1451,7 @@ impl ColSel {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum FileAction {
     NewWindow(usize),
     Reveal(usize),
@@ -1474,6 +1477,10 @@ enum FileAction {
     /// Arrastrar un espacio: pasa al lugar del otro (antes o después según la dirección).
     MoveSpace(u32, u32),
     RenameSpace(u32),
+    /// Empezar a renombrar el archivo / aceptar el nombre nuevo / cancelar.
+    RenameFile(usize),
+    CommitRename(usize, String),
+    CancelRename,
     /// Quitar el espacio; sus archivos siguen abiertos, fuera de espacios.
     DeleteSpace(u32),
     /// Cerrar los archivos del espacio (los que tienen cambios se quedan).
@@ -1643,6 +1650,10 @@ pub struct App {
     next_space: u32,
     /// Espacio cuyo nombre se está editando y el texto.
     renaming: Option<(u32, String)>,
+    /// Archivo que se está renombrando en el panel (ruta) y el nombre nuevo.
+    renaming_file: Option<(PathBuf, String)>,
+    /// Cuándo se miró por última vez si los archivos abiertos siguen en disco.
+    missing_checked: Instant,
     /// Selección múltiple en el panel de archivos (rutas) y desde dónde se
     /// extiende con Shift; orden de las filas visibles del último fotograma.
     picked: Vec<PathBuf>,
@@ -1685,6 +1696,7 @@ pub struct App {
     /// «Reiniciar ahora»: versión nueva que se abre cuando esta termine (`on_exit`).
     relaunch: Option<PathBuf>,
     debug_frames: u64,
+    debug_mouse: Pos2,
     debug_typed: bool,
     #[cfg(target_os = "macos")]
     menu: crate::macmenu::MacMenu,
@@ -1740,6 +1752,8 @@ impl App {
             spaces: Vec::new(),
             next_space: 1,
             renaming: None,
+            renaming_file: None,
+            missing_checked: Instant::now(),
             picked: Vec::new(),
             drop_zones: Vec::new(),
             os_drop_space: None,
@@ -1776,6 +1790,7 @@ impl App {
             allow_quit: false,
             relaunch: None,
             debug_frames: 0,
+            debug_mouse: Pos2::ZERO,
             debug_typed: false,
             #[cfg(target_os = "macos")]
             menu: crate::macmenu::MacMenu::new(&cc.egui_ctx),
@@ -2876,6 +2891,16 @@ impl App {
                     s.open = !s.open;
                 }
             }
+            FileAction::RenameFile(i) => {
+                self.renaming_file = Some((self.tabs[i].doc.path.clone(), self.tabs[i].doc.name.clone()));
+            }
+            FileAction::CancelRename => self.renaming_file = None,
+            FileAction::CommitRename(i, name) => {
+                self.renaming_file = None;
+                if let Err(e) = self.rename_file(i, &name) {
+                    self.msg(e);
+                }
+            }
             FileAction::RenameSpace(id) => {
                 if let Some(s) = self.spaces.iter().find(|s| s.id == id) {
                     self.renaming = Some((id, s.name.clone()));
@@ -2888,6 +2913,56 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Marca los archivos que ya no están en el disco. No despierta la app:
+    /// mira al volver a la ventana o, como mucho, cada 2 s mientras se usa.
+    fn check_missing(&mut self, ctx: &Context) {
+        let focus = ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::WindowFocused(true))));
+        if self.tabs.is_empty() || (!focus && self.missing_checked.elapsed() < Duration::from_secs(2)) {
+            return;
+        }
+        self.missing_checked = Instant::now();
+        for t in self.tabs.iter_mut().filter(|t| !t.untitled) {
+            t.missing = !t.doc.path.exists();
+        }
+    }
+
+    /// Cambia el nombre del archivo en disco (misma carpeta). El mapa en memoria
+    /// sigue siendo válido (mismo inodo), así que no se reabre ni se pierde el deshacer.
+    fn rename_file(&mut self, i: usize, name: &str) -> Result<(), String> {
+        let t = &self.tabs[i];
+        if name.is_empty() || name == t.doc.name {
+            return Ok(());
+        }
+        if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+            return Err(tf!("Nombre no válido: {name}", name = name));
+        }
+        let old = t.doc.path.clone();
+        let new = old.with_file_name(name);
+        if new.exists() {
+            return Err(tf!("Ya existe un archivo llamado {name}", name = name));
+        }
+        std::fs::rename(&old, &new).map_err(|e| tf!("No se pudo renombrar: {e}", e = e))?;
+        let t = &mut self.tabs[i];
+        t.doc.rebind(&new);
+        t.missing = false;
+        let lang = syntax::detect(&t.doc.name);
+        if lang != t.lang {
+            t.lang = lang;
+            t.syntax_cache = None;
+        }
+        for p in self.picked.iter_mut().chain(self.pick_anchor.iter_mut()) {
+            if *p == old {
+                p.clone_from(&new);
+            }
+        }
+        if let Some(r) = self.recent.iter_mut().find(|r| **r == old) {
+            r.clone_from(&new);
+            self.recent_changed();
+        }
+        self.msg(tf!("Renombrado a {name}", name = name));
+        Ok(())
     }
 
     /// Copia el archivo junto al original («nombre copia.ext») en segundo
@@ -2957,7 +3032,9 @@ impl App {
                 if sp.open {
                     for &i in &files {
                         order.push(i);
-                        file_row(ui, i, &self.tabs[i], i == self.active, self.multi(i), &spaces, 14.0, self.tabs.len(), &mut action);
+                        let multi = self.multi(i);
+                        let rename = self.renaming_file.as_mut().filter(|(p, _)| *p == self.tabs[i].doc.path).map(|(_, s)| s);
+                        file_row(ui, i, &self.tabs[i], i == self.active, multi, &spaces, 14.0, self.tabs.len(), rename, &mut action);
                     }
                 }
                 let r = ui.max_rect();
@@ -2968,7 +3045,9 @@ impl App {
             }
             for i in (0..self.tabs.len()).filter(|&i| self.tabs[i].space.is_none()) {
                 order.push(i);
-                file_row(ui, i, &self.tabs[i], i == self.active, self.multi(i), &spaces, 0.0, self.tabs.len(), &mut action);
+                let multi = self.multi(i);
+                let rename = self.renaming_file.as_mut().filter(|(p, _)| *p == self.tabs[i].doc.path).map(|(_, s)| s);
+                file_row(ui, i, &self.tabs[i], i == self.active, multi, &spaces, 0.0, self.tabs.len(), rename, &mut action);
             }
             if self.tabs.is_empty() {
                 ui.weak(t!("Sin archivos.\nUsa «Abrir…» o arrastra archivos aquí."));
@@ -2981,7 +3060,7 @@ impl App {
                 ui.painter().rect_stroke(rest.shrink(2.0), 3.0, ui.visuals().selection.stroke, StrokeKind::Inside);
                 ui.painter().text(rest.center_top() + vec2(0.0, 12.0), Align2::CENTER_CENTER, t!("Soltar aquí: fuera de los espacios"), FontId::proportional(11.0), ui.visuals().weak_text_color());
             }
-            if let Some(d) = r.dnd_release_payload::<DragFile>() {
+            if let Some(d) = dnd_release::<DragFile>(&r) {
                 action = Some(FileAction::ToSpace(d.0, None));
             } else if r.clicked() && !self.picked.is_empty() {
                 action = Some(FileAction::Unpick);
@@ -3017,7 +3096,7 @@ impl App {
             let y = if pos(d.0) < pos(sp.id) { rect.bottom() } else { rect.top() };
             ui.painter().hline(rect.x_range(), y, Stroke::new(2.0, v.selection.stroke.color));
         }
-        if let Some(d) = r.dnd_release_payload::<DragSpace>() {
+        if let Some(d) = dnd_release::<DragSpace>(&r) {
             if d.0 != sp.id {
                 *action = Some(FileAction::MoveSpace(d.0, sp.id));
             }
@@ -3058,15 +3137,11 @@ impl App {
         if self.renaming.as_ref().is_some_and(|(id, _)| *id == sp.id) {
             let edit_rect = Rect::from_min_max(pos2(text_left, rect.top() + 1.0), pos2(rect.right() - 4.0, rect.bottom() - 1.0));
             let (_, text) = self.renaming.as_mut().unwrap();
-            let te = ui.put(edit_rect, TextEdit::singleline(text).desired_width(edit_rect.width()));
-            if !te.has_focus() && !te.lost_focus() {
-                te.request_focus();
-            }
-            let (enter, esc) = ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
-            if te.lost_focus() || enter || esc {
+            let all = text.chars().count();
+            if let Some(ok) = name_editor(ui, edit_rect, text, all) {
                 let (id, text) = self.renaming.take().unwrap();
                 let text = text.trim().to_string();
-                if !esc && !text.is_empty() {
+                if ok && !text.is_empty() {
                     if let Some(s) = self.spaces.iter_mut().find(|s| s.id == id) {
                         s.name = text;
                     }
@@ -3097,7 +3172,7 @@ impl App {
         } else if r.clicked() {
             *action = Some(FileAction::ToggleSpace(sp.id));
         }
-        if let Some(d) = r.dnd_release_payload::<DragFile>() {
+        if let Some(d) = dnd_release::<DragFile>(&r) {
             *action = Some(FileAction::ToSpace(d.0, Some(sp.id)));
         }
         r.context_menu(|ui| {
@@ -3508,6 +3583,16 @@ impl App {
                     }
                 }
             }
+            // BUSCADOR_RENOMBRAR=2 (archivo) o e (primer espacio): campo de renombrar abierto.
+            match std::env::var("BUSCADOR_RENOMBRAR").ok().as_deref() {
+                Some("e") => self.renaming = self.spaces.first().map(|s| (s.id, s.name.clone())),
+                Some(n) => {
+                    if let Some(t) = n.parse::<usize>().ok().and_then(|n| self.tabs.get(n)) {
+                        self.renaming_file = Some((t.doc.path.clone(), t.doc.name.clone()));
+                    }
+                }
+                None => {}
+            }
             // Pruebas: BUSCADOR_RECARGAR=texto añade esa línea al archivo y lo recarga.
             if let (Ok(extra), Some(t)) = (std::env::var("BUSCADOR_RECARGAR"), self.tabs.get(self.active)) {
                 use std::io::Write;
@@ -3578,6 +3663,34 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Pruebas: BUSCADOR_RATON='x,y;d;x,y;u;t:texto;enter' mueve el ratón, lo pulsa
+    /// (d), lo suelta (u), escribe o pulsa Enter/Escape: un paso por fotograma
+    /// desde el fotograma 30 de la captura.
+    fn raw_input_hook(&mut self, _ctx: &Context, raw: &mut RawInput) {
+        if !(30..999).contains(&self.debug_frames) {
+            return;
+        }
+        let Ok(script) = std::env::var("BUSCADOR_RATON") else { return };
+        let Some(step) = script.split(';').nth((self.debug_frames - 30) as usize) else { return };
+        let last = self.debug_mouse;
+        match step.trim() {
+            st if st.starts_with("t:") => raw.events.push(Event::Text(st[2..].to_string())),
+            "enter" | "esc" => {
+                let key = if step.trim() == "enter" { Key::Enter } else { Key::Escape };
+                for pressed in [true, false] {
+                    raw.events.push(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+                }
+            }
+            "d" | "u" => raw.events.push(Event::PointerButton { pos: last, button: PointerButton::Primary, pressed: step.trim() == "d", modifiers: Modifiers::NONE }),
+            xy => {
+                if let Some((x, y)) = xy.split_once(',').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))) {
+                    self.debug_mouse = pos2(x, y);
+                    raw.events.push(Event::PointerMoved(self.debug_mouse));
+                }
+            }
+        }
+    }
+
     fn on_exit(&mut self) {
         self.save_session(true);
         if let Some(p) = self.relaunch.take() {
@@ -3740,6 +3853,9 @@ impl eframe::App for App {
         let show_detail = &mut self.show_detail;
         let focus_view = std::mem::take(&mut self.focus_view);
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
+            if let Some(t) = self.tabs.get(self.active) {
+                editor_header(ui, t);
+            }
             if let Some(t) = self.tabs.get_mut(self.active).filter(|t| t.filter.on) {
                 message = filter_view(ui, t, &font, colors, syntax_on);
             } else if let Some(t) = self.tabs.get_mut(self.active) {
@@ -3768,6 +3884,7 @@ impl eframe::App for App {
             self.new_untitled(Some(text));
         }
         self.follow_files(&ctx);
+        self.check_missing(&ctx);
         for t in &mut self.tabs {
             // Posición de la sesión anterior, en cuanto el índice llega hasta ella.
             if let Some((top, c)) = t.restore {
@@ -6311,6 +6428,71 @@ fn live_icon(ui: &Ui, at: Pos2) -> f32 {
     w + 4.0
 }
 
+/// Franja encima del texto con el nombre del archivo activo y su carpeta.
+fn editor_header(ui: &mut Ui, t: &Tab) {
+    let h = ui.spacing().interact_size.y + 2.0;
+    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let v = ui.visuals();
+    ui.painter().rect_filled(rect, 0.0, v.faint_bg_color);
+    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, v.widgets.noninteractive.bg_stroke);
+    let ink = if t.missing { v.error_fg_color } else { v.strong_text_color() };
+    let mut job = LayoutJob::default();
+    let style = ui.style();
+    let name = if t.dirty() { format!("● {}", t.doc.name) } else { t.doc.name.clone() };
+    let strike = if t.missing { Stroke::new(1.0, ink) } else { Stroke::NONE };
+    job.append(&name, 0.0, TextFormat { font_id: TextStyle::Button.resolve(style), color: ink, strikethrough: strike, ..Default::default() });
+    let dir = if t.untitled {
+        t!("archivo nuevo sin guardar").to_string()
+    } else if t.missing {
+        t!("ya no existe en el disco").to_string()
+    } else {
+        t.doc.path.parent().map(|d| d.display().to_string()).unwrap_or_default()
+    };
+    job.append(&dir, 10.0, TextFormat { font_id: TextStyle::Small.resolve(style), color: if t.missing { ink } else { v.weak_text_color() }, ..Default::default() });
+    job.wrap = text::TextWrapping::truncate_at_width(rect.width() - 20.0);
+    let g = ui.painter().layout_job(job);
+    ui.painter().galley(pos2(rect.left() + 10.0, rect.center().y - g.size().y / 2.0), g, ink);
+    if !t.untitled && r.hovered() {
+        r.on_hover_text(t.doc.path.display().to_string());
+    }
+}
+
+/// Campo para escribir un nombre en `rect`. Al aparecer toma el foco y
+/// selecciona `text[..sel]` en caracteres (todo el nombre, o sin la extensión).
+/// Devuelve `Some(true)` al aceptar (Enter o clic fuera) y `Some(false)` con Escape.
+fn name_editor(ui: &mut Ui, rect: Rect, text: &mut String, sel: usize) -> Option<bool> {
+    let te = ui.put(rect, TextEdit::singleline(text).desired_width(rect.width()));
+    if !te.has_focus() && !te.lost_focus() {
+        te.request_focus();
+        if let Some(mut st) = TextEdit::load_state(ui.ctx(), te.id) {
+            st.cursor.set_char_range(Some(text::CCursorRange::two(CCursor::new(0), CCursor::new(sel))));
+            st.store(ui.ctx(), te.id);
+        }
+    }
+    let (enter, esc) = ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
+    if esc {
+        Some(false)
+    } else if te.lost_focus() || enter {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// Caracteres del nombre sin la extensión (lo que se selecciona al renombrar).
+fn stem_chars(name: &str) -> usize {
+    match name.rfind('.') {
+        Some(i) if i > 0 => name[..i].chars().count(),
+        _ => name.chars().count(),
+    }
+}
+
+/// Lo soltado sobre `r`, solo si es de tipo `T`. `Response::dnd_release_payload`
+/// se queda con la carga aunque sea de otro tipo (y se perdería para el resto).
+fn dnd_release<T: std::any::Any + Send + Sync>(r: &Response) -> Option<Arc<T>> {
+    if DragAndDrop::has_payload_of_type::<T>(&r.ctx) { r.dnd_release_payload::<T>() } else { None }
+}
+
 /// Un espacio que se arrastra para cambiarlo de orden.
 struct DragSpace(u32);
 
@@ -6320,8 +6502,20 @@ struct DragFile(usize);
 /// Una fila del panel de archivos: toda la fila selecciona (salvo la ×), se
 /// puede arrastrar a un espacio o a otra posición, y tiene menú contextual.
 #[allow(clippy::too_many_arguments)]
-fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: &[Space], indent: f32, total: usize, action: &mut Option<FileAction>) {
+fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: &[Space], indent: f32, total: usize, rename: Option<&mut String>, action: &mut Option<FileAction>) {
     let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
+    // Renombrando: un campo con el nombre (sin la extensión seleccionada).
+    if let Some(text) = rename {
+        let (rect, _) = ui.allocate_exact_size(row, Sense::hover());
+        let edit = Rect::from_min_max(pos2(rect.left() + 4.0 + indent, rect.top() + 1.0), pos2(rect.right() - 4.0, rect.bottom() - 1.0));
+        let sel = stem_chars(&t.doc.name);
+        match name_editor(ui, edit, text, sel) {
+            Some(true) => *action = Some(FileAction::CommitRename(i, text.trim().to_string())),
+            Some(false) => *action = Some(FileAction::CancelRename),
+            None => {}
+        }
+        return;
+    }
     ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
         // Se registra antes que la ×, que queda encima y conserva su propio clic.
         let row_rect = ui.max_rect();
@@ -6351,7 +6545,15 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
             let y = if d < i { row_rect.bottom() } else { row_rect.top() };
             ui.painter().hline(row_rect.x_range(), y, Stroke::new(2.0, v.selection.stroke.color));
         }
-        let ink = if active || multi > 0 { v.selection.stroke.color } else { v.strong_text_color() };
+        let ink = if t.missing && (active || multi > 0) && v.dark_mode {
+            Color32::from_rgb(255, 175, 175)
+        } else if t.missing {
+            v.error_fg_color
+        } else if active || multi > 0 {
+            v.selection.stroke.color
+        } else {
+            v.strong_text_color()
+        };
         if ui.small_button("×").on_hover_text(t!("Cerrar (Ctrl+W)")).clicked() {
             *action = Some(FileAction::Close(i));
         }
@@ -6362,7 +6564,8 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
         if t.follow {
             left += live_icon(ui, pos2(left, row_rect.center().y));
         }
-        let galley = WidgetText::from(RichText::new(name).strong()).into_galley(
+        let rich = RichText::new(name).strong();
+        let galley = WidgetText::from(if t.missing { rich.strikethrough() } else { rich }).into_galley(
             ui,
             Some(TextWrapMode::Truncate),
             (free.right() - left - 2.0).max(10.0),
@@ -6372,13 +6575,23 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
         ui.painter().galley(pos, galley, ink);
         if r.dragged() {
             ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+            // Lo que se arrastra, junto al puntero.
+            if let Some(p) = ui.ctx().pointer_latest_pos() {
+                let label = if multi > 0 { tf!("{multi} archivos", multi = multi) } else { t.doc.name.clone() };
+                let v = ui.visuals();
+                let painter = ui.ctx().layer_painter(LayerId::new(Order::Tooltip, Id::NULL.with("arrastre_archivo")));
+                let g = painter.layout_no_wrap(label, TextStyle::Button.resolve(ui.style()), v.strong_text_color());
+                let rect = Rect::from_min_size(p + vec2(14.0, 6.0), g.size() + vec2(12.0, 6.0));
+                painter.rect(rect, 4.0, v.window_fill, v.window_stroke, StrokeKind::Inside);
+                painter.galley(rect.min + vec2(6.0, 3.0), g, v.strong_text_color());
+            }
         }
-        if let Some(d) = r.dnd_release_payload::<DragFile>() {
+        if let Some(d) = dnd_release::<DragFile>(&r) {
             if d.0 != i {
                 *action = Some(FileAction::MoveBefore(d.0, i));
             }
         }
-        let r = r.on_hover_text(tf!("{to_string}\nClic derecho: más opciones · Arrastrar: mover a un espacio\n{if_MAC_Cmd_else_Ctrl} + clic / Shift + clic: seleccionar varios\n{tab_details}", to_string = if t.untitled { t!("Archivo nuevo sin guardar").to_string() } else { t.doc.path.display().to_string() }, if_MAC_Cmd_else_Ctrl = if MAC { "Cmd" } else { "Ctrl" }, tab_details = tab_details(t)));
+        let r = r.on_hover_text(tf!("{missing}{to_string}\nClic derecho: más opciones · Arrastrar: mover a un espacio\n{if_MAC_Cmd_else_Ctrl} + clic / Shift + clic: seleccionar varios\n{tab_details}", to_string = if t.untitled { t!("Archivo nuevo sin guardar").to_string() } else { t.doc.path.display().to_string() }, if_MAC_Cmd_else_Ctrl = if MAC { "Cmd" } else { "Ctrl" }, tab_details = tab_details(t), missing = if t.missing { t!("⚠ El archivo ya no existe en el disco\n") } else { "" }));
         if r.clicked() {
             *action = Some(FileAction::Click(i, ui.input(|i| i.modifiers)));
         }
@@ -6432,6 +6645,9 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
             }
             if ui.button(t!("Copiar nombre")).clicked() {
                 chosen = Some(FileAction::CopyName(i));
+            }
+            if ui.add_enabled(on_disk && t.save.is_none(), Button::new(t!("Renombrar…"))).clicked() {
+                chosen = Some(FileAction::RenameFile(i));
             }
             ui.separator();
             ui.menu_button(t!("Mover a un espacio"), |ui| {
