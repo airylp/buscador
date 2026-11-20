@@ -510,7 +510,7 @@ mod tests {
         let r = j.results.lock().unwrap();
         let got: Vec<(String, Vec<(u64, String)>)> = r
             .iter()
-            .map(|f| (f.path.strip_prefix(&dir).unwrap().display().to_string(), f.hits.iter().map(|h| (h.line, h.text.clone())).collect()))
+            .map(|f| (f.path.strip_prefix(&dir).unwrap().display().to_string().replace('\\', "/"), f.hits.iter().map(|h| (h.line, h.text.clone())).collect()))
             .collect();
         assert_eq!(
             got,

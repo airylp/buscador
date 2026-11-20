@@ -567,7 +567,12 @@ mod tests {
             assert_eq!(doc.line_text(n), format!("line {n}"));
         }
         assert_eq!(doc.line_text(1000), "medio completo");
-        // Truncado: hay que reabrir.
+        // Truncado: hay que reabrir. (Windows no deja truncar un archivo
+        // mapeado: el otro programa recibe un error y el archivo no cambia.)
+        if cfg!(windows) {
+            assert!(std::fs::write(&p, "nuevo\n").is_err());
+            return;
+        }
         std::fs::write(&p, "nuevo\n").unwrap();
         assert_eq!(doc.check_growth().unwrap(), Change::Replaced);
     }
