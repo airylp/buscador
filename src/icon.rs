@@ -177,6 +177,30 @@ pub fn write_iconset(dir: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Ícono de Windows (`.ico` con PNG de 16 a 256 px). Se guarda en
+/// `windows/buscador.ico` (`buscador --ico ruta`); un test vigila que esté al día.
+pub fn ico() -> Vec<u8> {
+    const SIZES: [usize; 7] = [16, 24, 32, 48, 64, 128, 256];
+    let pngs: Vec<Vec<u8>> = SIZES.iter().map(|&s| png(s)).collect();
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0, 0, 1, 0]);
+    out.extend_from_slice(&(SIZES.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * SIZES.len();
+    for (&s, p) in SIZES.iter().zip(&pngs) {
+        let b = if s >= 256 { 0 } else { s as u8 }; // 0 = 256
+        out.extend_from_slice(&[b, b, 0, 0]);
+        out.extend_from_slice(&1u16.to_le_bytes()); // planos
+        out.extend_from_slice(&32u16.to_le_bytes()); // bits por píxel
+        out.extend_from_slice(&(p.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(offset as u32).to_le_bytes());
+        offset += p.len();
+    }
+    for p in &pngs {
+        out.extend_from_slice(p);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -194,5 +218,15 @@ mod tests {
             out.extend_from_slice(&ic.rgba);
             std::fs::write(p, out).unwrap();
         }
+    }
+
+    /// El `.ico` del instalador de Windows corresponde al ícono actual.
+    /// Si cambia el ícono: `cargo run --release -- --ico windows/buscador.ico`.
+    #[test]
+    fn windows_ico_up_to_date() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/windows/buscador.ico");
+        let ico = super::ico();
+        assert_eq!(&ico[..6], &[0, 0, 1, 0, 7, 0]);
+        assert!(std::fs::read(path).is_ok_and(|f| f == ico), "windows/buscador.ico está desactualizado: cargo run --release -- --ico windows/buscador.ico");
     }
 }

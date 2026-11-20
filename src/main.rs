@@ -1,3 +1,5 @@
+// En Windows, sin ventana de consola junto a la app.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 // Primero: sus macros t!/tf! se usan en todos los demás módulos.
 #[macro_use]
 mod i18n;
@@ -29,6 +31,12 @@ fn main() -> eframe::Result {
     if files.first().is_some_and(|a| a.as_os_str() == "--iconset") {
         let dir = files.get(1).cloned().unwrap_or_else(|| PathBuf::from("buscador.iconset"));
         icon::write_iconset(&dir).expect("no se pudo escribir el iconset");
+        return Ok(());
+    }
+    // Para el instalador de Windows: `buscador --ico archivo.ico`.
+    if files.first().is_some_and(|a| a.as_os_str() == "--ico") {
+        let path = files.get(1).cloned().unwrap_or_else(|| PathBuf::from("buscador.ico"));
+        std::fs::write(&path, icon::ico()).expect("no se pudo escribir el .ico");
         return Ok(());
     }
     // macOS añade «-psn_…» al abrir una .app en algunas versiones.

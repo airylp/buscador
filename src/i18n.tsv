@@ -587,3 +587,11 @@ Ocultar esta barra	Hide this bar	Masquer cette barre
 Encabezado	Header	En-tête
 Mostrar el nombre y la ruta del archivo encima del texto	Show the file name and path above the text	Afficher le nom et le chemin du fichier au-dessus du texte
 Nombre y ruta del archivo	File name and path	Nom et chemin du fichier
+Descarga el instalador de la última versión publicada y lo ejecuta	Downloads the installer of the latest published version and runs it	Télécharge l’installateur de la dernière version publiée et l’exécute
+Se descarga el instalador de la versión nueva. Al reiniciar, buscador se cierra, se instala la versión nueva y vuelve a abrirse.	The installer of the new version is downloaded. On restart, buscador closes, the new version is installed and it opens again.	L’installateur de la nouvelle version est téléchargé. Au redémarrage, buscador se ferme, la nouvelle version s’installe et il se rouvre.
+⬇ Descargar	⬇ Download	⬇ Télécharger
+Descargando el instalador…	Downloading the installer…	Téléchargement de l’installateur…
+✔ Instalador descargado	✔ Installer downloaded	✔ Installateur téléchargé
+⟳ Instalar y reiniciar	⟳ Install and restart	⟳ Installer et redémarrer
+no hay instalador publicado	no published installer	aucun installateur publié
+no se pudo descargar: {e}	could not download: {e}	téléchargement impossible : {e}

@@ -557,13 +557,49 @@ pub fn save_file(
         if let Ok(m) = std::fs::metadata(&target) {
             std::fs::set_permissions(&tmp, m.permissions())?;
         }
-        std::fs::rename(&tmp, &target)?;
+        replace_file(&tmp, &target, cfg!(windows))?;
         Ok(lossy)
     })();
     if res.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     res.map_err(|e| e.to_string())
+}
+
+/// Pone `tmp` en lugar de `target`. En Unix basta con `rename` (el `mmap`
+/// abierto sigue apuntando al archivo viejo). En Windows (`aside`) no se puede
+/// sustituir un archivo mapeado, pero sí renombrarlo: el original pasa a
+/// `.nombre.buscador-viejo` (el mapa sigue siendo válido) y se borra si se puede
+/// (si no, en el próximo guardado).
+fn replace_file(tmp: &Path, target: &Path, aside: bool) -> io::Result<()> {
+    if !aside || !target.exists() {
+        return std::fs::rename(tmp, target);
+    }
+    if std::fs::rename(tmp, target).is_ok() {
+        return Ok(()); // no estaba mapeado
+    }
+    replace_aside(tmp, target)
+}
+
+/// El original se aparta con otro nombre y `tmp` ocupa su lugar (ver `replace_file`).
+fn replace_aside(tmp: &Path, target: &Path) -> io::Result<()> {
+    let dir = target.parent().unwrap_or(Path::new("."));
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let mut old = dir.join(format!(".{name}.buscador-viejo"));
+    let _ = std::fs::remove_file(&old); // de un guardado anterior
+    let mut n = 1;
+    while old.exists() {
+        old = dir.join(format!(".{name}.buscador-viejo-{n}"));
+        let _ = std::fs::remove_file(&old);
+        n += 1;
+    }
+    std::fs::rename(target, &old)?;
+    if let Err(e) = std::fs::rename(tmp, target) {
+        let _ = std::fs::rename(&old, target); // dejarlo como estaba
+        return Err(e);
+    }
+    let _ = std::fs::remove_file(&old);
+    Ok(())
 }
 
 /// `\r\n` y `\r` sueltos pasan a `\n`.
@@ -588,6 +624,26 @@ fn cap_str(s: &str, cap: usize) -> (&str, bool) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// Guardado al estilo Windows: el original (mapeado) se aparta, el nuevo
+    /// ocupa su lugar, el mapa viejo sigue leyendo lo de antes y no quedan restos.
+    #[test]
+    fn save_moving_original_aside() {
+        let dir = std::env::temp_dir().join(format!("buscador-aparte-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (target, tmp) = (dir.join("a.txt"), dir.join(".a.txt.buscador-tmp"));
+        std::fs::write(&target, "viejo\n").unwrap();
+        std::fs::write(dir.join(".a.txt.buscador-viejo"), "resto").unwrap();
+        let doc = Document::open(&target).unwrap();
+        std::fs::write(&tmp, "nuevo\n").unwrap();
+        replace_aside(&tmp, &target).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "nuevo\n");
+        assert_eq!(&doc.src.data[..5], b"viejo");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("a.txt")]);
+        drop(doc);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn open(name: &str, bytes: &[u8]) -> Document {
         let dir = std::env::temp_dir().join("buscador-tests");

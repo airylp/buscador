@@ -70,6 +70,21 @@ pub fn system() -> Option<Lang> {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        // Idioma de la interfaz de Windows: el idioma principal son los 10 bits bajos.
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetUserDefaultUILanguage() -> u16;
+        }
+        // SAFETY: función de Windows sin argumentos que solo devuelve un número.
+        match unsafe { GetUserDefaultUILanguage() } & 0x3ff {
+            0x0a => return Some(Lang::Es),
+            0x09 => return Some(Lang::En),
+            0x0c => return Some(Lang::Fr),
+            _ => {}
+        }
+    }
     ["LC_ALL", "LC_MESSAGES", "LANG"].iter().filter_map(|k| std::env::var(k).ok()).find(|v| !v.is_empty() && v != "C" && v != "POSIX").and_then(|v| Lang::from_code(&v))
 }
 

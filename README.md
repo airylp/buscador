@@ -63,6 +63,25 @@ reiniciar.
 
 Requisitos: `curl` y las herramientas de línea de comandos de Xcode (`xcode-select --install`).
 
+### Windows
+
+Descarga `buscador-…-setup.exe` de la última versión en
+[Releases](https://github.com/airylp/buscador/releases/latest) y ábrelo, o en PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/airylp/buscador/main/install.ps1 | iex
+```
+
+Se instala para tu usuario (no pide permisos de administrador), con acceso en el menú Inicio,
+«Abrir con» y, opcionalmente, «Abrir con buscador» en el clic derecho de los archivos. Se
+desinstala desde Configuración → Aplicaciones. Las actualizaciones se instalan desde la app
+(⚙ Ajustes → «Buscar actualizaciones…»).
+
+El instalador no está firmado: si Windows muestra «Windows protegió su PC», pulsa
+«Más información» → «Ejecutar de todas formas».
+
+### Desde el código
+
 Desde una copia del repositorio también se puede usar `./empaquetar-mac.sh` (menú: crear,
 instalar, actualizar, desinstalar) o compilar a mano:
 

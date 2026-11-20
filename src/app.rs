@@ -5082,7 +5082,8 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(tf!("Versión {crate_update_version_label}", crate_update_version_label = crate::update::version_label()));
                     if crate::update::SUPPORTED {
-                        if ui.button(t!("⟳ Buscar actualizaciones…")).on_hover_text(t!("Descarga la última versión de GitHub, la compila y la instala")).clicked() {
+                        let hint = if crate::update::WINDOWS { t!("Descarga el instalador de la última versión publicada y lo ejecuta") } else { t!("Descarga la última versión de GitHub, la compila y la instala") };
+                        if ui.button(t!("⟳ Buscar actualizaciones…")).on_hover_text(hint).clicked() {
                             open_update = true;
                         }
                     }
@@ -5092,9 +5093,6 @@ impl App {
                         }
                     });
                 });
-                if !crate::update::SUPPORTED {
-                    ui.weak(t!("En Windows, actualiza volviendo a ejecutar el instalador."));
-                }
                 ui.add_space(6.0);
                 ui.weak(t!("Los ajustes se guardan automáticamente."));
             });
@@ -5292,19 +5290,28 @@ impl App {
                     }
                     Stage::Available(h) => {
                         ui.strong(tf!("Hay una versión nueva: {h}", h = h));
-                        ui.label(t!("Se descarga el código a una carpeta temporal, se compila (la primera vez tarda unos minutos) y se reemplaza la app instalada. Puedes seguir trabajando mientras tanto."));
-                        run = ui.button(t!("⬇ Descargar, compilar e instalar")).clicked();
+                        if crate::update::WINDOWS {
+                            ui.label(t!("Se descarga el instalador de la versión nueva. Al reiniciar, buscador se cierra, se instala la versión nueva y vuelve a abrirse."));
+                            run = ui.button(t!("⬇ Descargar")).clicked();
+                        } else {
+                            ui.label(t!("Se descarga el código a una carpeta temporal, se compila (la primera vez tarda unos minutos) y se reemplaza la app instalada. Puedes seguir trabajando mientras tanto."));
+                            run = ui.button(t!("⬇ Descargar, compilar e instalar")).clicked();
+                        }
                     }
                     Stage::Running => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(t!("Descargando, compilando e instalando…"));
+                            ui.label(if crate::update::WINDOWS { t!("Descargando el instalador…") } else { t!("Descargando, compilando e instalando…") });
                         });
                     }
                     Stage::Done(p) => {
-                        ui.strong(tf!("✔ Instalada en {display}", display = p.display()));
+                        if crate::update::WINDOWS {
+                            ui.strong(t!("✔ Instalador descargado"));
+                        } else {
+                            ui.strong(tf!("✔ Instalada en {display}", display = p.display()));
+                        }
                         restart = ui
-                            .button(t!("⟳ Reiniciar ahora"))
+                            .button(if crate::update::WINDOWS { t!("⟳ Instalar y reiniciar") } else { t!("⟳ Reiniciar ahora") })
                             .on_hover_text(t!("Cierra buscador y lo abre con la versión nueva (recupera los archivos abiertos)"))
                             .clicked();
                         if dirty {
