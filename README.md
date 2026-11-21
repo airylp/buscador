@@ -69,7 +69,7 @@ Descarga `buscador-…-setup.exe` de la última versión en
 [Releases](https://github.com/airylp/buscador/releases/latest) y ábrelo, o en PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/airylp/buscador/main/install.ps1 | iex
+[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; irm https://raw.githubusercontent.com/airylp/buscador/main/install.ps1 | iex
 ```
 
 Se instala para tu usuario (no pide permisos de administrador), con acceso en el menú Inicio,

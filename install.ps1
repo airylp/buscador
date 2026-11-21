@@ -1,6 +1,6 @@
 # buscador para Windows: descarga el instalador de la última versión y lo abre.
 #
-#   irm https://raw.githubusercontent.com/airylp/buscador/main/install.ps1 | iex
+#   [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; irm https://raw.githubusercontent.com/airylp/buscador/main/install.ps1 | iex
 #
 # El instalador lo crea .github/workflows/windows.yml en GitHub Releases.
 # Descargado así no lleva la marca «de Internet», así que Windows no muestra

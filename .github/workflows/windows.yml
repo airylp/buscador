@@ -70,7 +70,7 @@ jobs:
         run: |
           notes="Instalador para Windows 10/11 (64 bits). Descarga \`buscador-${VERSION_NUM}-setup.exe\` y ábrelo.
           Si Windows muestra «Windows protegió su PC», pulsa «Más información» → «Ejecutar de todas formas» (el instalador no está firmado).
-          También: \`irm https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.ps1 | iex\` en PowerShell."
+          También: \`[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; irm https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.ps1 | iex\` en PowerShell."
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" target/instalador/*.exe --clobber
           else
