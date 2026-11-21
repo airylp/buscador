@@ -1639,6 +1639,8 @@ enum FileAction {
     CancelRename,
     /// Quitar el espacio; sus archivos siguen abiertos, fuera de espacios.
     DeleteSpace(u32),
+    /// Color del espacio (`None`: sin color).
+    SpaceColor(u32, Option<[u8; 3]>),
     /// Cerrar los archivos del espacio (los que tienen cambios se quedan).
     CloseSpace(u32),
 }
@@ -1649,6 +1651,41 @@ struct Space {
     id: u32,
     name: String,
     open: bool,
+    /// Color de fondo (fuerte en la cabecera, tenue en sus archivos).
+    color: Option<[u8; 3]>,
+}
+
+impl Space {
+    /// Fondo de la cabecera y color del texto encima (negro o blanco según lo claro que sea).
+    fn header_colors(&self) -> Option<(Color32, Color32)> {
+        let [r, g, b] = self.color?;
+        let lum = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+        let ink = if lum > 150.0 { Color32::from_rgb(25, 25, 25) } else { Color32::WHITE };
+        Some((Color32::from_rgb(r, g, b), ink))
+    }
+
+    /// Fondo tenue para las filas de sus archivos: el color mezclado con el del panel.
+    fn row_tint(&self, panel: Color32, dark: bool) -> Option<Color32> {
+        let [r, g, b] = self.color?;
+        let k = if dark { 0.24 } else { 0.22 };
+        let mix = |p: u8, c: u8| (p as f32 + (c as f32 - p as f32) * k).round() as u8;
+        Some(Color32::from_rgb(mix(panel.r(), r), mix(panel.g(), g), mix(panel.b(), b)))
+    }
+}
+
+/// Colores para los espacios (menú «Color»).
+fn space_colors() -> [([u8; 3], &'static str); 9] {
+    [
+        ([0xe0, 0x52, 0x52], t!("Rojo")),
+        ([0xe8, 0x88, 0x3a], t!("Naranja")),
+        ([0xe6, 0xc2, 0x29], t!("Amarillo")),
+        ([0x4c, 0xaf, 0x50], t!("Verde")),
+        ([0x26, 0xa6, 0x9a], t!("Turquesa")),
+        ([0x3d, 0x7f, 0xe0], t!("Azul")),
+        ([0x8e, 0x5c, 0xd9], t!("Morado")),
+        ([0xd9, 0x59, 0x9b], t!("Rosa")),
+        ([0x8a, 0x8f, 0x98], t!("Gris")),
+    ]
 }
 
 pub(crate) fn reveal_label() -> &'static str {
@@ -2034,7 +2071,7 @@ impl App {
             }
         }
         // Ids de espacio = índice + 1 (los archivos ya se asignaron así).
-        self.spaces = s.spaces.iter().enumerate().map(|(n, (name, open))| Space { id: n as u32 + 1, name: name.clone(), open: *open }).collect();
+        self.spaces = s.spaces.iter().enumerate().map(|(n, (name, open, color))| Space { id: n as u32 + 1, name: name.clone(), open: *open, color: *color }).collect();
         self.next_space = self.spaces.len() as u32 + 1;
         if !self.tabs.is_empty() {
             self.active = s.active.min(self.tabs.len() - 1);
@@ -2065,7 +2102,7 @@ impl App {
             })
             .collect();
         let active = self.tabs.iter().take(self.active).filter(|t| !t.untitled).count();
-        let spaces = self.spaces.iter().map(|s| (s.name.clone(), s.open)).collect();
+        let spaces = self.spaces.iter().map(|s| (s.name.clone(), s.open, s.color)).collect();
         crate::settings::Session { active: active.min(files.len().saturating_sub(1)), files, spaces }
     }
 
@@ -3101,7 +3138,7 @@ impl App {
                 self.next_space += 1;
                 let n = self.spaces.len() + 1;
                 let name = tf!("Espacio {n}", n = n);
-                self.spaces.push(Space { id, name: name.clone(), open: true });
+                self.spaces.push(Space { id, name: name.clone(), open: true, color: None });
                 for j in file.map(|i| self.targets(i)).unwrap_or_default() {
                     self.tabs[j].space = Some(id);
                 }
@@ -3133,6 +3170,11 @@ impl App {
             FileAction::RenameSpace(id) => {
                 if let Some(s) = self.spaces.iter().find(|s| s.id == id) {
                     self.renaming = Some((id, s.name.clone()));
+                }
+            }
+            FileAction::SpaceColor(id, color) => {
+                if let Some(s) = self.spaces.iter_mut().find(|s| s.id == id) {
+                    s.color = color;
                 }
             }
             FileAction::DeleteSpace(id) => {
@@ -3520,7 +3562,8 @@ impl App {
                         order.push(i);
                         let multi = self.multi(i);
                         let rename = self.renaming_file.as_mut().filter(|(p, _)| *p == self.tabs[i].doc.path).map(|(_, s)| s);
-                        let rect = file_row(ui, i, &self.tabs[i], i == self.active, multi, &spaces, 14.0, self.tabs.len(), rename, &mut action);
+                        let tint = sp.row_tint(ui.visuals().panel_fill, ui.visuals().dark_mode);
+                        let rect = file_row(ui, i, &self.tabs[i], i == self.active, multi, &spaces, 14.0, self.tabs.len(), rename, tint, &mut action);
                         if i == self.active {
                             active_rect = Some(rect);
                         }
@@ -3536,7 +3579,7 @@ impl App {
                 order.push(i);
                 let multi = self.multi(i);
                 let rename = self.renaming_file.as_mut().filter(|(p, _)| *p == self.tabs[i].doc.path).map(|(_, s)| s);
-                let rect = file_row(ui, i, &self.tabs[i], i == self.active, multi, &spaces, 0.0, self.tabs.len(), rename, &mut action);
+                let rect = file_row(ui, i, &self.tabs[i], i == self.active, multi, &spaces, 0.0, self.tabs.len(), rename, None, &mut action);
                 if i == self.active {
                     active_rect = Some(rect);
                 }
@@ -3610,7 +3653,11 @@ impl App {
         };
         let base = lighter(v.panel_fill, if v.dark_mode { 0.12 } else { 0.0 });
         let base = if v.dark_mode { base } else { v.widgets.inactive.weak_bg_fill };
-        let fill = if dropping || r.hovered() {
+        let colored = sp.header_colors();
+        let fill = if let Some((bg, _)) = colored {
+            // Con color: fuerte; un poco más claro al pasar por encima.
+            Some(if dropping || r.hovered() { lighter(bg, 0.15) } else { bg })
+        } else if dropping || r.hovered() {
             Some(if v.dark_mode { lighter(v.panel_fill, 0.2) } else { v.widgets.hovered.weak_bg_fill })
         } else if has_active && !sp.open {
             Some(v.selection.bg_fill.gamma_multiply(0.5))
@@ -3630,7 +3677,8 @@ impl App {
         } else {
             vec![c + vec2(-2.5, -4.0), c + vec2(3.0, 0.0), c + vec2(-2.5, 4.0)]
         };
-        ui.painter().add(Shape::convex_polygon(tri, v.text_color(), Stroke::NONE));
+        let ink = colored.map_or(v.strong_text_color(), |(_, ink)| ink);
+        ui.painter().add(Shape::convex_polygon(tri, colored.map_or(v.text_color(), |(_, ink)| ink), Stroke::NONE));
         let mut text_left = rect.left() + 20.0;
         if live && !self.renaming.as_ref().is_some_and(|(id, _)| *id == sp.id) {
             text_left += live_icon(ui, pos2(text_left, rect.center().y));
@@ -3656,7 +3704,7 @@ impl App {
             (rect.right() - text_left - 4.0).max(10.0),
             TextStyle::Button,
         );
-        ui.painter().galley(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, v.strong_text_color());
+        ui.painter().galley(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, ink);
         let hint = t!("Clic: abrir/cerrar el espacio (los archivos siguen abiertos)\nDoble clic: renombrar · Clic derecho: más opciones\nArrastra archivos aquí para meterlos · arrastra la cabecera para cambiar el orden");
         let mut extra = String::new();
         if dirty {
@@ -3684,6 +3732,11 @@ impl App {
             if ui.button(t!("Renombrar")).clicked() {
                 chosen = Some(FileAction::RenameSpace(sp.id));
             }
+            ui.menu_button(t!("Color"), |ui| match space_color_menu(ui, sp.color) {
+                Some((c, true)) => chosen = Some(FileAction::SpaceColor(sp.id, c)),
+                Some((c, false)) => *action = Some(FileAction::SpaceColor(sp.id, c)),
+                None => {}
+            });
             ui.separator();
             if ui.add_enabled(count > 0, Button::new(t!("Cerrar sus archivos"))).clicked() {
                 chosen = Some(FileAction::CloseSpace(sp.id));
@@ -4101,8 +4154,13 @@ impl App {
                     let (name, files) = part.split_once('=').unwrap_or((part, ""));
                     let id = self.next_space;
                     self.next_space += 1;
-                    let open = !name.ends_with('-');
-                    self.spaces.push(Space { id, name: name.trim_end_matches('-').to_string(), open });
+                    // «Logs#e05252=0,1»: con color.
+                    let (name, color) = match name.split_once('#') {
+                        Some((n, c)) => (n, crate::settings::parse_hex(c.trim_end_matches('-'))),
+                        None => (name, None),
+                    };
+                    let open = !part.split_once('=').map_or(part, |p| p.0).ends_with('-');
+                    self.spaces.push(Space { id, name: name.trim_end_matches('-').to_string(), open, color });
                     for n in files.split(',').filter_map(|n| n.trim().parse::<usize>().ok()) {
                         if let Some(t) = self.tabs.get_mut(n) {
                             t.space = Some(id);
@@ -4238,6 +4296,12 @@ impl eframe::App for App {
                 }
             }
             "d" | "u" => raw.events.push(Event::PointerButton { pos: last, button: PointerButton::Primary, pressed: step.trim() == "d", modifiers: Modifiers::NONE }),
+            // «r»: clic derecho.
+            "r" => {
+                for pressed in [true, false] {
+                    raw.events.push(Event::PointerButton { pos: last, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+                }
+            }
             xy => {
                 if let Some((x, y)) = xy.split_once(',').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))) {
                     self.debug_mouse = pos2(x, y);
@@ -7306,7 +7370,39 @@ fn ago(when: u64) -> String {
 }
 
 /// Devuelve el rectángulo de la fila.
-fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: &[Space], indent: f32, total: usize, rename: Option<&mut String>, action: &mut Option<FileAction>) -> Rect {
+/// Muestras de color para un espacio: `Some((nuevo, cerrar_el_menú))` si se
+/// eligió uno (`None` = sin color). El selector «Otro» no cierra el menú.
+fn space_color_menu(ui: &mut Ui, current: Option<[u8; 3]>) -> Option<(Option<[u8; 3]>, bool)> {
+    let mut out = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (c, name) in space_colors() {
+            let (rect, r) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+            let col = Color32::from_rgb(c[0], c[1], c[2]);
+            ui.painter().rect_filled(rect.shrink(1.0), 4.0, col);
+            if current == Some(c) || r.hovered() {
+                ui.painter().rect_stroke(rect, 5.0, Stroke::new(2.0, ui.visuals().strong_text_color()), StrokeKind::Inside);
+            }
+            if r.on_hover_text(name).clicked() {
+                out = Some((Some(c), true));
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        let mut c = current.unwrap_or([0x3d, 0x7f, 0xe0]);
+        ui.label(t!("Otro:"));
+        if ui.color_edit_button_srgb(&mut c).changed() {
+            out = Some((Some(c), false));
+        }
+        if ui.add_enabled(current.is_some(), Button::new(t!("Sin color"))).clicked() {
+            out = Some((None, true));
+        }
+    });
+    out
+}
+
+/// `tint`: fondo tenue del espacio al que pertenece (si tiene color).
+fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: &[Space], indent: f32, total: usize, rename: Option<&mut String>, tint: Option<Color32>, action: &mut Option<FileAction>) -> Rect {
     let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
     // Renombrando: un campo con el nombre (sin la extensión seleccionada).
     if let Some(text) = rename {
@@ -7335,7 +7431,7 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
         } else if r.contains_pointer() {
             Some(v.widgets.hovered.weak_bg_fill)
         } else {
-            None
+            tint
         };
         if let Some(f) = fill {
             ui.painter().rect_filled(row_rect, v.widgets.inactive.corner_radius, f);

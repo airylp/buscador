@@ -78,8 +78,8 @@ pub struct SessionFile {
 pub struct Session {
     pub files: Vec<SessionFile>,
     pub active: usize,
-    /// Espacios del panel de archivos: (nombre, abierto).
-    pub spaces: Vec<(String, bool)>,
+    /// Espacios del panel de archivos: (nombre, abierto, color).
+    pub spaces: Vec<(String, bool, Option<[u8; 3]>)>,
 }
 
 impl Session {
@@ -89,12 +89,16 @@ impl Session {
 
     /// Formato: `activo=N` y una línea por archivo
     /// `archivo=arriba|línea|columna|encoding|ruta` (la ruta va al final: puede tener «|»).
-    /// Espacios: `espacio=abierto(1/0)|nombre`; un archivo dentro de uno lleva
+    /// Espacios: `espacio=abierto(1/0)|nombre` y, si tiene color, `espacio_color=#rrggbb`
+    /// detrás; un archivo dentro de uno lleva
     /// detrás `espacio_archivo=N` (las versiones antiguas lo ignoran).
     pub fn to_text(&self) -> String {
         let mut t = format!("activo={}\n", self.active);
-        for (name, open) in &self.spaces {
+        for (name, open, color) in &self.spaces {
             t += &format!("espacio={}|{}\n", *open as u8, name.replace('\n', " "));
+            if let Some(c) = color {
+                t += &format!("espacio_color={}\n", hex(*c));
+            }
         }
         for f in &self.files {
             t += &format!("archivo={}|{}|{}|{}|{}\n", f.top, f.line, f.col, f.encoding, f.path.display());
@@ -115,7 +119,11 @@ impl Session {
                 s.active = v.trim().parse().unwrap_or(0);
             } else if let Some(v) = line.strip_prefix("espacio=") {
                 let (open, name) = v.split_once('|').unwrap_or(("1", v));
-                s.spaces.push((name.to_string(), open != "0"));
+                s.spaces.push((name.to_string(), open != "0", None));
+            } else if let Some(v) = line.strip_prefix("espacio_color=") {
+                if let Some(sp) = s.spaces.last_mut() {
+                    sp.2 = parse_hex(v.trim());
+                }
             } else if let Some(v) = line.strip_prefix("ajuste_archivo=") {
                 if let Some(f) = s.files.last_mut() {
                     f.wrap = Some(v.trim().to_string());
@@ -276,7 +284,7 @@ fn hex(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
 
-fn parse_hex(v: &str) -> Option<[u8; 3]> {
+pub fn parse_hex(v: &str) -> Option<[u8; 3]> {
     let v = v.trim().trim_start_matches('#');
     if v.len() != 6 {
         return None;
@@ -292,7 +300,7 @@ mod tests {
         use super::{Session, SessionFile};
         let s = Session {
             active: 1,
-            spaces: vec![("Logs | prod".into(), true), ("Otro".into(), false)],
+            spaces: vec![("Logs | prod".into(), true, Some([0xe0, 0x52, 0x52])), ("Otro".into(), false, None)],
             files: vec![
                 SessionFile { path: "/a/b.log".into(), top: 10, line: 12, col: 3, encoding: "UTF-8".into(), space: Some(1), wrap: Some("ventana".into()) },
                 SessionFile { path: "/c/con|barra.txt".into(), top: 0, line: 0, col: 0, encoding: "windows-1252".into(), space: None, wrap: None },

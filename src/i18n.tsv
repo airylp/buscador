@@ -700,3 +700,15 @@ texto UTF-8	UTF-8 text	texte UTF-8
 · selección: {n} bytes (0x{a}–0x{b})	· selection: {n} bytes (0x{a}–0x{b})	· sélection : {n} octets (0x{a}–0x{b})
 ⇄ Convertir Base64 / hex…	⇄ Convert Base64 / hex…	⇄ Convertir Base64 / hex…
 ⬡ Hex	⬡ Hex	⬡ Hex
+Amarillo	Yellow	Jaune
+Azul	Blue	Bleu
+Color	Color	Couleur
+Gris	Gray	Gris
+Morado	Purple	Violet
+Naranja	Orange	Orange
+Otro:	Other:	Autre :
+Rojo	Red	Rouge
+Rosa	Pink	Rose
+Sin color	No color	Sans couleur
+Turquesa	Teal	Turquoise
+Verde	Green	Vert
