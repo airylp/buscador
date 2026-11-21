@@ -115,12 +115,13 @@ impl MacMenu {
         let paste = item(t!("Pegar"), "Cmd+V", Cmd::Paste);
         let all = item(t!("Seleccionar todo"), "Cmd+A", cmd(Key::A));
         let beautify = item(t!("Embellecer JSON / XML"), "Cmd+Shift+B", cmd_shift(Key::B));
+        let convert = item(t!("Convertir Base64 / hexadecimal…"), "Cmd+Shift+K", cmd_shift(Key::K));
         let edit = CheckMenuItem::new(t!("Permitir edición"), true, false, accel("Cmd+E"));
         items.borrow_mut().push((edit.id().clone(), cmd(Key::E)));
         let edit_menu = Submenu::with_items(
             t!("Edición"),
             true,
-            &[&undo, &redo, &sep(), &cut, &copy, &paste, &all, &sep(), &beautify, &edit],
+            &[&undo, &redo, &sep(), &cut, &copy, &paste, &all, &sep(), &beautify, &convert, &edit],
         )
         .unwrap();
 
@@ -149,6 +150,7 @@ impl MacMenu {
         let wrap = item(t!("Ajuste de línea"), "Cmd+Alt+Z", Cmd::Key(Modifiers::COMMAND | Modifiers::ALT, Key::Z));
         let ws = CheckMenuItem::new(t!("Mostrar espacios y tabuladores"), true, false, accel("Cmd+Alt+I"));
         items.borrow_mut().push((ws.id().clone(), Cmd::Key(Modifiers::COMMAND | Modifiers::ALT, Key::I)));
+        let hex = item(t!("Vista hexadecimal"), "Cmd+Shift+H", cmd_shift(Key::H));
         let bigger = item(t!("Letra más grande"), "Cmd+=", cmd(Key::Equals));
         let smaller = item(t!("Letra más pequeña"), "Cmd+-", cmd(Key::Minus));
         let view = Submenu::with_items(
@@ -161,6 +163,7 @@ impl MacMenu {
                 &header,
                 &wrap,
                 &ws,
+                &hex,
                 &sep(),
                 &bigger,
                 &smaller,

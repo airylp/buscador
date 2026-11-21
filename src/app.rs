@@ -133,6 +133,10 @@ pub struct Tab {
     journal: JournalState,
     /// Cambios recuperados de un cierre inesperado, a aplicar cuando esté indexado.
     recover: Option<Recover>,
+    /// Vista hexadecimal (en lugar del texto).
+    hex: crate::hexview::Hex,
+    /// Petición del menú contextual: abrir «Convertir» con este texto.
+    convert_request: Option<String>,
 }
 
 /// Qué le hizo otro programa al archivo abierto.
@@ -242,6 +246,8 @@ impl Tab {
             ext: None,
             journal: Default::default(),
             recover: None,
+            hex: Default::default(),
+            convert_request: None,
         }
     }
 
@@ -1419,6 +1425,8 @@ fn shortcut_list() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
         (k("C+R"), t!("Recargar el archivo del disco (cursor al final)")),
         (k("C+Shift+L"), t!("Vista filtrada (solo las líneas que cumplen las reglas)")),
         (k("C+Shift+O"), t!("Buscar en carpeta (todos sus archivos)")),
+        (k("C+Shift+K"), t!("Convertir Base64 / hexadecimal (la selección)")),
+        (k("C+Shift+H"), t!("Vista hexadecimal del archivo")),
         (k("C+A+I"), t!("Mostrar espacios y tabuladores (· y →)")),
         (k(t!("Retroceso / Supr")), t!("Borrar carácter")),
         (k(t!("W+Retroceso / W+Supr")), t!("Borrar palabra")),
@@ -1509,6 +1517,8 @@ enum DialogKind {
     SearchFolder,
     /// Guardar como: ruta actual de la pestaña (la identifica aunque cambie de sitio).
     SaveAs(PathBuf),
+    /// Guardar los bytes decodificados en «Convertir».
+    SaveBytes,
 }
 
 /// Diálogo de archivo asíncrono esperando en un hilo; `result` = Some(respuesta)
@@ -1761,6 +1771,8 @@ pub struct App {
     map: crate::diskmap::DiskMap,
     /// Ventana «Buscar en carpeta».
     folder: crate::foldersearch::FolderSearch,
+    /// Ventana «Convertir» (Base64 / hexadecimal).
+    convert: crate::convert::Convert,
     tabs: Vec<Tab>,
     active: usize,
     show_sidebar: bool,
@@ -1945,6 +1957,7 @@ impl App {
             dialog: None,
             map: Default::default(),
             folder: Default::default(),
+            convert: Default::default(),
             view_focused: false,
             advs: Vec::new(),
             next_adv: 1,
@@ -2182,6 +2195,14 @@ impl App {
                 if let Some(dir) = paths.into_iter().next() {
                     let ctx = self.ctx.clone();
                     self.map.start_scan(dir, &ctx);
+                }
+            }
+            DialogKind::SaveBytes => {
+                let Some(target) = paths.into_iter().next() else { return };
+                let Some(bytes) = self.convert.decoded() else { return };
+                match std::fs::write(&target, bytes) {
+                    Ok(()) => self.msg(tf!("Guardado {name} ({len})", name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), len = human_size(bytes.len() as u64))),
+                    Err(e) => self.msg(tf!("Error al guardar: {e}", e = e)),
                 }
             }
             DialogKind::SaveAs(src) => {
@@ -2596,6 +2617,15 @@ impl App {
         if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::B)) {
             self.beautify();
         }
+        if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::K)) {
+            self.show_convert();
+        }
+        if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::H)) {
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                t.hex.toggle();
+                self.focus_view = !t.hex.on;
+            }
+        }
         if pressed(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::F)) {
             self.new_adv_window();
         }
@@ -2912,6 +2942,14 @@ impl App {
                     self.folder.open = false;
                 } else {
                     self.show_folder_search();
+                }
+            }
+            let ck = if MAC { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
+            if ui.selectable_label(self.convert.open, "⇄").on_hover_text(tf!("Convertir Base64 / hexadecimal: decodificar o codificar la selección o un texto ({ck})", ck = ck)).clicked() {
+                if self.convert.open {
+                    self.convert.open = false;
+                } else {
+                    self.show_convert();
                 }
             }
 
@@ -3730,6 +3768,11 @@ impl App {
                 if r.on_hover_text(t!("Vista filtrada: solo las líneas que cumplen las reglas (incluir / excluir), sin tocar el archivo (Ctrl+Shift+L)")).clicked() {
                     toggle_filter(t, &self.query, self.use_regex, self.case_sensitive);
                 }
+                let r = ui.add(Button::selectable(t.hex.on, RichText::new(t!("⬡ Hex")).small()));
+                if r.on_hover_text(t!("Vista hexadecimal: los bytes del archivo en disco, con desplazamientos, búsqueda de bytes y valores (Ctrl+Shift+H)")).clicked() {
+                    t.hex.toggle();
+                    self.focus_view = !t.hex.on;
+                }
             }
             ui.toggle_value(&mut self.show_detail, RichText::new(t!("📄 Detalle")).small())
                 .on_hover_text(t!("Panel con la línea actual completa, seleccionable"));
@@ -3962,6 +4005,14 @@ impl App {
                 if let (4, Some(t)) = (v.len(), self.tabs.get_mut(self.active)) {
                     self.column_mode = true;
                     t.colsel = Some(ColSel { a: (v[0] as u64, v[1]), b: (v[2] as u64, v[3]) });
+                }
+            }
+            if let Ok(txt) = std::env::var("BUSCADOR_CONVERTIR") {
+                self.convert.show_with(Some(txt.replace("\\n", "\n")));
+            }
+            if std::env::var("BUSCADOR_HEX").is_ok() {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.hex.toggle();
                 }
             }
             if let Ok(txt) = std::env::var("BUSCADOR_NUEVO") {
@@ -4374,6 +4425,7 @@ impl eframe::App for App {
         let focus_view = std::mem::take(&mut self.focus_view);
         let mut header_action = None;
         let mut ext_action = None;
+        let mut hex_convert = None;
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
             if let Some(t) = self.tabs.get(self.active).filter(|_| self.show_header) {
                 header_action = editor_header(ui, t);
@@ -4383,7 +4435,13 @@ impl eframe::App for App {
                     ext_action = ext_banner(ui, e, &t.doc.name);
                 }
             }
-            if let Some(t) = self.tabs.get_mut(self.active).filter(|t| t.filter.on) {
+            if let Some(t) = self.tabs.get_mut(self.active).filter(|t| t.hex.on) {
+                let dirty = t.dirty();
+                let data = t.doc.src.data.clone();
+                let o = crate::hexview::show(ui, &mut t.hex, &data, font.size, dirty);
+                (message, view_focused) = (o.message, o.focused);
+                hex_convert = o.to_convert;
+            } else if let Some(t) = self.tabs.get_mut(self.active).filter(|t| t.filter.on) {
                 message = filter_view(ui, t, &font, colors, syntax_on);
             } else if let Some(t) = self.tabs.get_mut(self.active) {
                 let wrap = t.wrap;
@@ -4405,6 +4463,9 @@ impl eframe::App for App {
             }
         });
         self.view_focused = view_focused;
+        if let Some(text) = hex_convert {
+            self.convert.show_with(Some(text));
+        }
         match ext_action {
             Some(true) => self.reload_keep(self.active),
             Some(false) => {
@@ -4433,6 +4494,9 @@ impl eframe::App for App {
         let exports: Vec<String> = self.tabs.iter_mut().filter_map(|t| t.export_request.take()).collect();
         for text in exports {
             self.new_untitled(Some(text));
+        }
+        if let Some(text) = self.tabs.iter_mut().find_map(|t| t.convert_request.take()) {
+            self.convert.show_with(Some(text));
         }
         self.follow_files(&ctx);
         self.check_disk(&ctx);
@@ -4478,6 +4542,7 @@ impl eframe::App for App {
         self.adv_windows(&ctx);
         self.map_window(&ctx);
         self.folder_window(&ctx);
+        self.convert_window(&ctx);
         self.recover_window(&ctx);
         self.confirm_dialog(&ctx);
 
@@ -4739,6 +4804,15 @@ fn log_view(
             match text {
                 Some(t) => tab.export_request = Some(t),
                 None => message = Some(tf!("Selección demasiado grande (> {human_size})", human_size = human_size(MAX_COPY_BYTES as u64))),
+            }
+            ui.close();
+        }
+        if ui.add_enabled(has_sel, Button::new(t!("⇄ Convertir Base64 / hex…"))).on_hover_text(t!("Decodifica o codifica el texto seleccionado (Ctrl+Shift+K)")).clicked() {
+            if let Some((a, b)) = tab.selection() {
+                match tab.text(a, b, MAX_COPY_BYTES) {
+                    Some(t) => tab.convert_request = Some(t),
+                    None => message = Some(tf!("Selección demasiado grande (> {human_size})", human_size = human_size(MAX_COPY_BYTES as u64))),
+                }
             }
             ui.close();
         }
@@ -5764,6 +5838,7 @@ impl App {
             self.show_settings.then(settings_window_id),
             (self.map.open && !self.map.detached).then(crate::diskmap::window_id),
             self.folder.open.then(crate::foldersearch::window_id),
+            self.convert.open.then(crate::convert::window_id),
         ]
             .into_iter()
             .flatten()
@@ -5783,6 +5858,8 @@ impl App {
             self.map.open = false;
         } else if target == crate::foldersearch::window_id() {
             self.folder.open = false;
+        } else if target == crate::convert::window_id() {
+            self.convert.open = false;
         } else if let Some(w) = self.advs.iter_mut().find(|w| adv_window_id(w.id) == target) {
             w.open = false;
         }
@@ -5928,6 +6005,77 @@ impl App {
             self.folder.case = self.case_sensitive;
         }
         self.folder.show(dir.as_deref());
+    }
+
+    /// Texto seleccionado en el archivo activo (si cabe).
+    fn selected_text(&self) -> Option<String> {
+        let t = self.tabs.get(self.active)?;
+        let (a, b) = t.selection()?;
+        t.text(a, b, MAX_COPY_BYTES)
+    }
+
+    /// Abre «Convertir» con la selección del archivo activo (si hay).
+    fn show_convert(&mut self) {
+        let sel = self.selected_text();
+        self.convert.show_with(sel);
+    }
+
+    /// Ventana «Convertir» (ver `convert`).
+    fn convert_window(&mut self, ctx: &Context) {
+        if !self.convert.open {
+            return;
+        }
+        let has_sel = self.tabs.get(self.active).is_some_and(|t| t.selection().is_some());
+        let can_replace = has_sel && self.tabs.get(self.active).is_some_and(|t| t.editable && !t.hex.on);
+        let mut open = true;
+        let mut out = crate::convert::Out::default();
+        Window::new(t!("Convertir Base64 / hexadecimal"))
+            .id(crate::convert::window_id())
+            .pivot(Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .default_size([720.0, 520.0])
+            .min_size([520.0, 320.0])
+            .max_width(ctx.content_rect().width() * 0.95)
+            .resizable(true)
+            .collapsible(false)
+            .show(ctx, |ui| out = self.convert.ui(ui, has_sel, can_replace));
+        self.convert.open &= open;
+        if out.use_selection {
+            if let Some(s) = self.selected_text() {
+                self.convert.set_input(s);
+            }
+        }
+        if let Some(text) = out.copy {
+            let n = text.chars().count();
+            ctx.copy_text(text);
+            self.msg(tf!("Copiado ({n} caracteres)", n = fmt_num(n as u64)));
+        }
+        if let Some(text) = out.new_file {
+            self.new_untitled(Some(text));
+        }
+        if let Some(text) = out.replace_selection {
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                if let Err(e) = t.insert(&text, EditKind::Other) {
+                    self.msg(e);
+                }
+            }
+        }
+        if out.save_bytes && self.dialog.is_none() {
+            let ext = match self.convert.decoded().map(crate::convert::kind) {
+                Some("PNG") => "png",
+                Some("JPEG") => "jpg",
+                Some("GIF") => "gif",
+                Some("WebP") => "webp",
+                Some("PDF") => "pdf",
+                Some("gzip") => "gz",
+                Some("zstd") => "zst",
+                Some("JSON") => "json",
+                _ => "bin",
+            };
+            let fut = rfd::AsyncFileDialog::new().set_title(t!("Guardar los bytes")).set_file_name(format!("decodificado.{ext}")).save_file();
+            self.dialog = Some(PendingDialog::spawn(&self.ctx, DialogKind::SaveBytes, async move { fut.await.map(|h| vec![h.path().to_path_buf()]) }));
+        }
     }
 
     /// Ventana «Buscar en carpeta» (ver `foldersearch`).
@@ -6928,7 +7076,7 @@ fn detail_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color3
 
 /// Barra vertical con precisión de u64 (las de egui usan f32 y no sirven
 /// para cientos de millones de líneas).
-fn vscrollbar(ui: &mut Ui, rect: Rect, id: Id, top: &mut u64, total: u64, visible: u64) {
+pub(crate) fn vscrollbar(ui: &mut Ui, rect: Rect, id: Id, top: &mut u64, total: u64, visible: u64) {
     let resp = ui.interact(rect, id, Sense::click_and_drag());
     let vis = ui.visuals();
     let painter = ui.painter_at(rect);

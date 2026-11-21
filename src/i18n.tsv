@@ -622,3 +622,81 @@ hace {n} min	{n} min ago	il y a {n} min
 {name} cambió en el disco: se volvió a cargar	{name} changed on disk: reloaded	{name} a changé sur le disque : rechargé
 ⚠ Otro programa cambió {name} en el disco. Tienes cambios sin guardar.	⚠ Another program changed {name} on disk. You have unsaved changes.	⚠ Un autre programme a modifié {name} sur le disque. Vous avez des modifications non enregistrées.
 ⚠ Otro programa modificó {name} directamente: las partes que no editaste pueden verse mal o vacías. Guarda con otro nombre lo que quieras conservar.	⚠ Another program modified {name} in place: the parts you did not edit may look wrong or empty. Save what you want to keep under another name.	⚠ Un autre programme a modifié {name} directement : les parties non modifiées peuvent apparaître incorrectes ou vides. Enregistrez sous un autre nom ce que vous voulez garder.
+ (solo los primeros {max})	 (only the first {max})	 (seulement les premiers {max})
+Abrir como archivo nuevo	Open as new file	Ouvrir comme nouveau fichier
+Abrir en Convertir…	Open in Convert…	Ouvrir dans Convertir…
+Archivo vacío	Empty file	Fichier vide
+Base64 incompleto: le sobra un carácter	Incomplete Base64: one character too many	Base64 incomplet : un caractère de trop
+Base64 o hexadecimal	Base64 or hexadecimal	Base64 ou hexadécimal
+Buscar bytes escritos en hexadecimal	Search for bytes written in hexadecimal	Rechercher des octets écrits en hexadécimal
+Buscar texto (UTF-8)	Search for text (UTF-8)	Rechercher du texte (UTF-8)
+Carácter no válido en Base64 en la posición {pos}: «{c}»	Invalid Base64 character at position {pos}: “{c}”	Caractère Base64 non valide à la position {pos} : « {c} »
+Carácter no válido en hexadecimal en la posición {pos}: «{c}»	Invalid hexadecimal character at position {pos}: “{c}”	Caractère hexadécimal non valide à la position {pos} : « {c} »
+Codificar	Encode	Encoder
+Convertir Base64 / hexadecimal	Convert Base64 / hexadecimal	Convertir Base64 / hexadécimal
+Convertir Base64 / hexadecimal (la selección)	Convert Base64 / hexadecimal (the selection)	Convertir Base64 / hexadécimal (la sélection)
+Convertir Base64 / hexadecimal: decodificar o codificar la selección o un texto ({ck})	Convert Base64 / hexadecimal: decode or encode the selection or some text ({ck})	Convertir Base64 / hexadécimal : décoder ou encoder la sélection ou un texte ({ck})
+Convertir Base64 / hexadecimal…	Convert Base64 / hexadecimal…	Convertir Base64 / hexadécimal…
+Convirtiendo…	Converting…	Conversion…
+Copiado ({n} caracteres)	Copied ({n} characters)	Copié ({n} caractères)
+Copiados {n} bytes	Copied {n} bytes	{n} octets copiés
+Copiar como Base64	Copy as Base64	Copier en Base64
+Copiar como hexadecimal	Copy as hexadecimal	Copier en hexadécimal
+Copiar como texto	Copy as text	Copier comme texte
+Decodifica o codifica el texto seleccionado (Ctrl+Shift+K)	Decodes or encodes the selected text (Ctrl+Shift+K)	Décode ou encode le texte sélectionné (Ctrl+Shift+K)
+Decodificar	Decode	Décoder
+Desplazamiento 0x{hex} ({dec})	Offset 0x{hex} ({dec})	Position 0x{hex} ({dec})
+Desplazamiento fuera del archivo: {v}	Offset outside the file: {v}	Position hors du fichier : {v}
+Detectar	Detect	Détecter
+ELF (ejecutable)	ELF (executable)	ELF (exécutable)
+EXE/DLL de Windows	Windows EXE/DLL	EXE/DLL Windows
+El texto seleccionado en el archivo activo	The selected text in the active file	Le texte sélectionné dans le fichier actif
+Escribe o pega el texto	Type or paste the text	Saisissez ou collez le texte
+Guarda los bytes decodificados tal cual en un archivo (p. ej. una imagen o un PDF)	Saves the decoded bytes as they are to a file (e.g. an image or a PDF)	Enregistre les octets décodés tels quels dans un fichier (p. ex. une image ou un PDF)
+Guardar los bytes	Save the bytes	Enregistrer les octets
+Guardar los bytes…	Save the bytes…	Enregistrer les octets…
+Hay texto después del relleno «=»	There is text after the “=” padding	Il y a du texte après le remplissage « = »
+Hex	Hex	Hex
+Hexadecimal	Hexadecimal	Hexadécimal
+Hexadecimal: falta una cifra antes de la posición {pos}	Hexadecimal: a digit is missing before position {pos}	Hexadécimal : il manque un chiffre avant la position {pos}
+Hexadecimal: número impar de cifras	Hexadecimal: odd number of digits	Hexadécimal : nombre impair de chiffres
+Ir a:	Go to:	Aller à :
+Líneas de 76	76-character lines	Lignes de 76
+Mayúsculas	Uppercase	Majuscules
+Muestra el archivo en disco, sin los cambios sin guardar	Shows the file on disk, without the unsaved changes	Affiche le fichier sur le disque, sans les modifications non enregistrées
+No encontrado	Not found	Introuvable
+No es texto {enc} válido: los bytes que no encajan se ven como �. Prueba «Ver como: Hex» u otro encoding.	Not valid {enc} text: bytes that don't fit are shown as �. Try “View as: Hex” or another encoding.	Texte {enc} non valide : les octets qui ne conviennent pas s'affichent comme �. Essayez « Voir comme : Hex » ou un autre encodage.
+Orden de los bytes al leer números	Byte order when reading numbers	Ordre des octets pour lire les nombres
+Pone el resultado en lugar del texto seleccionado del archivo activo	Puts the result in place of the selected text in the active file	Met le résultat à la place du texte sélectionné du fichier actif
+Reemplazar la selección	Replace the selection	Remplacer la sélection
+Relleno «=»	“=” padding	Remplissage « = »
+Resultado	Result	Résultat
+Se muestra solo el principio; «Copiar», «Archivo nuevo» y «Guardar» usan todo.	Only the beginning is shown; “Copy”, “New file” and “Save” use all of it.	Seul le début est affiché ; « Copier », « Nouveau fichier » et « Enregistrer » utilisent tout.
+Separador:	Separator:	Séparateur :
+Siguiente ▶	Next ▶	Suivant ▶
+Texto	Text	Texte
+Texto en:	Text in:	Texte en :
+Usar la selección	Use the selection	Utiliser la sélection
+Vaciar	Clear	Vider
+Ver como:	View as:	Voir comme :
+Ver el texto en:	View the text in:	Voir le texte en :
+Vista hexadecimal	Hex view	Vue hexadécimale
+Vista hexadecimal del archivo	Hex view of the file	Vue hexadécimale du fichier
+Vista hexadecimal: los bytes del archivo en disco, con desplazamientos, búsqueda de bytes y valores (Ctrl+Shift+H)	Hex view: the bytes of the file on disk, with offsets, byte search and values (Ctrl+Shift+H)	Vue hexadécimale : les octets du fichier sur le disque, avec positions, recherche d'octets et valeurs (Ctrl+Shift+H)
+ZIP (o docx/xlsx/jar)	ZIP (or docx/xlsx/jar)	ZIP (ou docx/xlsx/jar)
+binario	binary	binaire
+class de Java / Mach-O	Java class / Mach-O	class Java / Mach-O
+espacio	space	espace
+hexadecimal	hexadecimal	hexadécimal
+ninguno	none	aucun
+texto	text	texte
+texto UTF-16	UTF-16 text	texte UTF-16
+texto UTF-8	UTF-8 text	texte UTF-8
+{n} bytes	{n} bytes	{n} octets
+{n} bytes seleccionados	{n} bytes selected	{n} octets sélectionnés
+{n} caracteres	{n} characters	{n} caractères
+{n} de texto (demasiado para mostrarlo; «Vaciar» para escribir otro)	{n} of text (too much to show; “Clear” to type another)	{n} de texte (trop pour l'afficher ; « Vider » pour en saisir un autre)
+{n} · desde {used} · tipo: {kind}	{n} · from {used} · type: {kind}	{n} · depuis {used} · type : {kind}
+· selección: {n} bytes (0x{a}–0x{b})	· selection: {n} bytes (0x{a}–0x{b})	· sélection : {n} octets (0x{a}–0x{b})
+⇄ Convertir Base64 / hex…	⇄ Convert Base64 / hex…	⇄ Convertir Base64 / hex…
+⬡ Hex	⬡ Hex	⬡ Hex

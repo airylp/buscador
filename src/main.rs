@@ -7,12 +7,14 @@ mod app;
 mod beautify;
 mod blocks;
 mod buffer;
+mod convert;
 mod diskmap;
 mod document;
 mod filter;
 mod foldersearch;
 mod encoding;
 mod fonts;
+mod hexview;
 mod icon;
 #[cfg(target_os = "macos")]
 mod macmenu;
