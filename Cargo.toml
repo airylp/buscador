@@ -13,6 +13,10 @@ memmap2 = "0.9.12"
 regex = "1.13.1"
 rfd = "0.17.2"
 
+# Proteger los archivos mapeados si otro programa los recorta (src/sigbus.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Ícono y datos de versión del .exe (solo al compilar en Windows): ver build.rs.
 [target.'cfg(windows)'.build-dependencies]
 winresource = { version = "0.1", default-features = false }

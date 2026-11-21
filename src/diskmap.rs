@@ -293,9 +293,8 @@ fn file_contains(path: &Path, re: &regex::bytes::Regex) -> std::io::Result<bool>
     if f.metadata()?.len() == 0 {
         return Ok(false);
     }
-    // SAFETY: solo lectura; si otro proceso trunca el archivo podría haber
-    // SIGBUS, igual que en el editor (conocido).
-    let m = unsafe { memmap2::Mmap::map(&f)? };
+    // Si otro proceso lo recorta mientras se lee, lo que falta se lee como ceros (sigbus.rs).
+    let m = crate::sigbus::map(&f)?;
     Ok(re.is_match(&m))
 }
 

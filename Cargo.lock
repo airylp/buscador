@@ -493,6 +493,7 @@ dependencies = [
  "chardetng",
  "eframe",
  "encoding_rs",
+ "libc",
  "memchr",
  "memmap2",
  "muda",

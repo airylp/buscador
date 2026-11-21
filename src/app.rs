@@ -127,7 +127,68 @@ pub struct Tab {
     filter: crate::filter::Filter,
     /// Minimapa ya dibujado y para qué estado (se rehace solo si cambia).
     minimap_cache: Option<(MiniKey, Arc<epaint::Mesh>)>,
+    /// Otro programa cambió el archivo mientras tenía cambios sin guardar.
+    ext: Option<ExtChange>,
+    /// Autoguardado para recuperar los cambios tras un cierre inesperado.
+    journal: JournalState,
+    /// Cambios recuperados de un cierre inesperado, a aplicar cuando esté indexado.
+    recover: Option<Recover>,
 }
+
+/// Qué le hizo otro programa al archivo abierto.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ExtChange {
+    /// Lo reemplazó por otro archivo (lo mapeado sigue intacto).
+    Changed,
+    /// Lo modificó o recortó en el sitio: lo no editado puede verse mal o vacío.
+    InPlace,
+}
+
+/// Cambios recuperados (ver `recovery.rs`).
+enum Recover {
+    Pieces(Vec<buffer::Piece>, (u64, Pos)),
+    Text(String, (u64, Pos)),
+}
+
+/// Diario de recuperación de una pestaña.
+struct JournalState {
+    file: Option<PathBuf>,
+    /// `edit_gen` que refleja el diario escrito.
+    written: u64,
+    /// Cuándo toca escribirlo (poco después de la última edición).
+    due: Option<Instant>,
+    exists: bool,
+    busy: Arc<AtomicBool>,
+    /// Se apaga al cerrar la pestaña: el hilo no deja el diario.
+    alive: Arc<AtomicBool>,
+}
+
+impl Default for JournalState {
+    fn default() -> Self {
+        JournalState {
+            file: crate::recovery::new_file(),
+            written: 0,
+            due: None,
+            exists: false,
+            busy: Default::default(),
+            alive: Arc::new(AtomicBool::new(true)),
+        }
+    }
+}
+
+impl JournalState {
+    fn remove(&mut self) {
+        if self.exists {
+            if let Some(f) = &self.file {
+                let _ = std::fs::remove_file(f);
+            }
+            self.exists = false;
+        }
+    }
+}
+
+/// Espera tras la última edición antes de escribir el diario de recuperación.
+const JOURNAL_DELAY: Duration = Duration::from_secs(2);
 
 /// Cada cuánto se mira si el archivo creció en modo «En vivo».
 const FOLLOW_EVERY: Duration = Duration::from_millis(400);
@@ -178,6 +239,9 @@ impl Tab {
             follow_at: Instant::now(),
             filter: Default::default(),
             minimap_cache: None,
+            ext: None,
+            journal: Default::default(),
+            recover: None,
         }
     }
 
@@ -715,6 +779,7 @@ impl Tab {
             Err(e) => return Some(tf!("Error al guardar: {e}", e = e)),
         };
         let size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+        self.ext = None;
         let ram = self.buf.as_ref().map_or(0, |b| b.memory().1);
         let keep = !self.follow && ram < (64 << 20) && self.buf.is_some();
         let old_name = self.doc.name.clone();
@@ -754,6 +819,87 @@ impl Tab {
             m += &tf!(" · {lossy} caracteres no representables se guardaron como «?»", lossy = lossy);
         }
         Some(m)
+    }
+
+    /// El archivo creció por el final (ya re-mapeado): buscar y filtrar solo lo nuevo.
+    fn grew(&mut self, from_line: u64, from_byte: usize) {
+        if let Some(s) = &self.search {
+            let next = if s.is_done() {
+                s.extend(self.doc.src.clone(), from_line, from_byte)
+            } else {
+                Search::start(self.doc.src.clone(), None, s.params.clone())
+            };
+            if let Ok(n) = next {
+                self.search = Some(n);
+            }
+        }
+        self.edit_gen += 1;
+        self.filter.extend(&self.doc.src, from_line, from_byte, self.edit_gen);
+        self.detail_cache = None;
+        self.syntax_cache = None;
+        self.minimap_cache = None;
+    }
+
+    /// Lo que debe guardar ahora el diario de recuperación (si hay ediciones).
+    fn journal_content(&self) -> Option<(crate::recovery::Head, crate::recovery::Content)> {
+        use crate::recovery::{Content, Head, MAX_TEXT};
+        let b = self.buf.as_ref()?;
+        let c = self.cursor.unwrap_or_default();
+        let head = Head {
+            path: self.doc.path.clone(),
+            untitled: self.untitled,
+            name: self.doc.name.clone(),
+            encoding: self.doc.src.encoding.name().to_string(),
+            top: self.top,
+            cursor: (c.line, c.col),
+        };
+        let pieces = b.snapshot();
+        // Las piezas solo sirven si lo mapeado sigue siendo lo que hay en disco.
+        let backed = self.doc.backing.filter(|st| !self.untitled && self.ext.is_none() && *st == self.doc.disk);
+        let content = match backed {
+            Some(st) => Content::Pieces(st, pieces),
+            None if self.doc.len() as u64 + b.memory().1 as u64 <= MAX_TEXT => {
+                Content::Text { pieces, src: self.doc.src.clone(), index: self.doc.index.clone(), newline: self.doc.newline_bytes() }
+            }
+            None => Content::Partial(pieces),
+        };
+        Some((head, content))
+    }
+
+    /// Aplica los cambios recuperados en cuanto el documento está indexado.
+    fn apply_recover(&mut self) -> Option<String> {
+        if self.recover.is_none() || !self.doc.indexing_done() {
+            return None;
+        }
+        let (top, c) = match self.recover.take()? {
+            Recover::Pieces(pieces, at) => match Buffer::from_pieces(&self.doc, pieces) {
+                Some(b) => {
+                    self.buf = Some(b);
+                    at
+                }
+                None => return Some(tf!("No se pudieron recuperar los cambios de {name}: el archivo no coincide", name = self.doc.name)),
+            },
+            Recover::Text(text, at) => {
+                self.editable = true;
+                let end = self.end_pos();
+                self.select(Pos::default(), end);
+                if let Err(e) = self.insert(&text, EditKind::Other) {
+                    return Some(e);
+                }
+                at
+            }
+        };
+        self.edit_gen += 1;
+        self.search_stale = self.search.is_some();
+        self.detail_cache = None;
+        self.syntax_cache = None;
+        self.minimap_cache = None;
+        let l = c.line.min(self.total().saturating_sub(1));
+        let c = Pos::new(l, buffer::floor_char(&self.line(l), c.col));
+        self.select(c, c);
+        self.top = top.min(self.total().saturating_sub(1));
+        self.reveal = false;
+        Some(tf!("Cambios recuperados en {name} (sin guardar)", name = self.doc.name))
     }
 
     // ---- Selección en bloque (columnas) ----
@@ -1537,6 +1683,8 @@ fn copy_name(path: &std::path::Path) -> PathBuf {
 
 impl Drop for Tab {
     fn drop(&mut self) {
+        self.journal.alive.store(false, Ordering::Release);
+        self.journal.remove();
         if self.untitled {
             let _ = std::fs::remove_file(&self.doc.path);
             let _ = std::fs::remove_dir(untitled_dir()); // solo si quedó vacía
@@ -1600,6 +1748,8 @@ enum Confirm {
     Quit,
     /// Recargar del disco un archivo con cambios sin guardar.
     Reload(usize),
+    /// Guardar encima de un archivo que otro programa cambió.
+    Overwrite(usize),
 }
 
 pub struct App {
@@ -1700,6 +1850,21 @@ pub struct App {
     debug_frames: u64,
     debug_mouse: Pos2,
     debug_typed: bool,
+    /// Siguiente paso de BUSCADOR_RATON.
+    debug_step: usize,
+    /// Escribir diarios de recuperación (no en el modo de pruebas).
+    journaling: bool,
+    /// Cambios de un cierre inesperado que se pueden recuperar (ventana abierta
+    /// si hay) y si se pueden recuperar enteros.
+    recoverable: Vec<(crate::recovery::Journal, bool)>,
+    /// El teclado (↑/↓) mueve la selección del panel de archivos.
+    panel_focus: bool,
+    /// Se confirmó guardar encima de los cambios de otro programa.
+    overwrite_ok: bool,
+    /// Dónde quedó el panel de archivos (para saber si un clic cae fuera).
+    sidebar_rect: Rect,
+    /// Desplazar el panel para que se vea el archivo activo.
+    reveal_row: bool,
     #[cfg(target_os = "macos")]
     menu: crate::macmenu::MacMenu,
 }
@@ -1795,6 +1960,13 @@ impl App {
             debug_frames: 0,
             debug_mouse: Pos2::ZERO,
             debug_typed: false,
+            debug_step: 0,
+            journaling: false,
+            recoverable: Vec::new(),
+            panel_focus: false,
+            overwrite_ok: false,
+            sidebar_rect: Rect::NOTHING,
+            reveal_row: false,
             #[cfg(target_os = "macos")]
             menu: crate::macmenu::MacMenu::new(&cc.egui_ctx),
         };
@@ -1804,6 +1976,14 @@ impl App {
         let no_session = files.iter().any(|f| f.as_os_str() == "--sin-sesion") || testing;
         app.use_session = !no_session;
         app.save_recent = !testing;
+        // Pruebas de la recuperación: BUSCADOR_RECUPERAR=1 la activa en modo captura.
+        app.journaling = !testing || std::env::var_os("BUSCADOR_RECUPERAR").is_some();
+        if app.journaling {
+            app.recoverable = crate::recovery::pending().into_iter().map(|j| {
+                let ok = j.complete();
+                (j, ok)
+            }).collect();
+        }
         #[cfg(target_os = "macos")]
         app.menu.set_recent(&app.recent);
         if app.use_session {
@@ -2185,20 +2365,7 @@ impl App {
             let stick = t.cursor.is_none_or(|c| c.line + 1 >= old_total);
             match t.doc.check_growth() {
                 Ok(crate::document::Change::Grew { from_line, from_byte }) => {
-                    if let Some(s) = &t.search {
-                        let next = if s.is_done() {
-                            s.extend(t.doc.src.clone(), from_line, from_byte)
-                        } else {
-                            Search::start(t.doc.src.clone(), None, s.params.clone())
-                        };
-                        if let Ok(n) = next {
-                            t.search = Some(n);
-                        }
-                    }
-                    t.edit_gen += 1;
-                    t.filter.extend(&t.doc.src, from_line, from_byte, t.edit_gen);
-                    t.detail_cache = None;
-                    t.syntax_cache = None;
+                    t.grew(from_line, from_byte);
                     if stick {
                         t.goto_end = true;
                     }
@@ -2362,6 +2529,12 @@ impl App {
             let fut = d.save_file();
             let kind = DialogKind::SaveAs(t.doc.path.clone());
             self.dialog = Some(PendingDialog::spawn(&self.ctx, kind, async move { fut.await.map(|h| vec![h.path().to_path_buf()]) }));
+            return;
+        }
+        // Otro programa lo cambió desde que se abrió: preguntar antes de pisarlo.
+        let changed = t.ext.is_some() || crate::document::Stamp::read(&t.doc.path).is_ok_and(|now| now != t.doc.disk);
+        if changed && t.dirty() && !std::mem::take(&mut self.overwrite_ok) {
+            self.confirm = Some(Confirm::Overwrite(self.active));
             return;
         }
         let target = t.doc.path.clone();
@@ -2837,7 +3010,16 @@ impl App {
                 self.msg(m);
             }
             FileAction::Close(i) => self.close_tab(i, false),
-            FileAction::Click(i, m) => self.click_row(i, m),
+            FileAction::Click(i, m) => {
+                self.click_row(i, m);
+                // El teclado pasa al panel (↑/↓ cambian de archivo).
+                self.panel_focus = true;
+                ctx.memory_mut(|mem| {
+                    if let Some(id) = mem.focused() {
+                        mem.surrender_focus(id);
+                    }
+                });
+            }
             FileAction::CloseSel(i) => {
                 let paths: Vec<PathBuf> = self.targets(i).iter().map(|&j| self.tabs[j].doc.path.clone()).collect();
                 self.close_many(|t| paths.contains(&t.doc.path));
@@ -2924,16 +3106,271 @@ impl App {
         }
     }
 
-    /// Marca los archivos que ya no están en el disco. No despierta la app:
-    /// mira al volver a la ventana o, como mucho, cada 2 s mientras se usa.
-    fn check_missing(&mut self, ctx: &Context) {
+    /// Mira (al volver a la app, cada 2 s con actividad, o en cuanto se leyó
+    /// algo recortado) si los archivos siguen en disco y si otro programa los
+    /// cambió. Sin cambios propios: si solo creció se lee lo nuevo; si no, se
+    /// vuelve a cargar en la misma posición. Con cambios: se avisa (`Tab::ext`).
+    fn check_disk(&mut self, ctx: &Context) {
         let focus = ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::WindowFocused(true))));
-        if self.tabs.is_empty() || (!focus && self.missing_checked.elapsed() < Duration::from_secs(2)) {
+        let cut = crate::sigbus::take();
+        if self.tabs.is_empty() || (!focus && !cut && self.missing_checked.elapsed() < Duration::from_secs(2)) {
             return;
         }
         self.missing_checked = Instant::now();
-        for t in self.tabs.iter_mut().filter(|t| !t.untitled) {
-            t.missing = !t.doc.path.exists();
+        let (mut reload, mut warn) = (Vec::new(), Vec::new());
+        for (i, t) in self.tabs.iter_mut().enumerate() {
+            if t.untitled {
+                continue;
+            }
+            let Ok(now) = crate::document::Stamp::read(&t.doc.path) else {
+                t.missing = true;
+                continue;
+            };
+            t.missing = false;
+            if t.follow || t.save.is_some() || t.ext.is_some() || now == t.doc.disk {
+                continue;
+            }
+            // El mismo archivo que está mapeado (no uno nuevo puesto en su lugar):
+            // lo mapeado cambió por debajo.
+            let in_place = t.doc.backing.is_some_and(|b| b.id == now.id);
+            if t.dirty() {
+                t.ext = Some(if in_place { ExtChange::InPlace } else { ExtChange::Changed });
+                t.journal.written = u64::MAX; // el diario ya no puede apoyarse en el original
+                warn.push(t.doc.name.clone());
+                continue;
+            }
+            let grew = t.buf.is_none() && t.doc.backing.is_some() && now.id == t.doc.disk.id && now.len > t.doc.disk.len;
+            if grew {
+                match t.doc.check_growth() {
+                    Ok(crate::document::Change::Grew { from_line, from_byte }) => t.grew(from_line, from_byte),
+                    Ok(crate::document::Change::Same) | Err(_) => {} // aún indexando: otra vez luego
+                    Ok(crate::document::Change::Replaced) => reload.push(i),
+                }
+            } else {
+                reload.push(i);
+            }
+        }
+        for i in reload {
+            let name = self.tabs[i].doc.name.clone();
+            self.reload_keep(i);
+            self.msg(tf!("{name} cambió en el disco: se volvió a cargar", name = name));
+        }
+        if !warn.is_empty() {
+            self.msg(tf!("{names} cambió en el disco y tiene cambios sin guardar", names = warn.join(", ")));
+        }
+    }
+
+    /// Escribe (en un hilo) el diario de recuperación de los archivos con
+    /// cambios, `JOURNAL_DELAY` después de la última edición; lo borra cuando
+    /// ya no hay nada sin guardar.
+    fn autosave(&mut self, ctx: &Context) {
+        if !self.journaling {
+            return;
+        }
+        let now = Instant::now();
+        let mut wake: Option<Duration> = None;
+        for t in &mut self.tabs {
+            if t.journal.file.is_none() {
+                continue;
+            }
+            if t.journal.busy.load(Ordering::Acquire) {
+                wake = Some(wake.map_or(Duration::from_millis(200), |w| w.min(Duration::from_millis(200))));
+                continue;
+            }
+            if !t.dirty() {
+                t.journal.remove();
+                t.journal.due = None;
+                continue;
+            }
+            if t.journal.exists && t.journal.written == t.edit_gen {
+                continue;
+            }
+            let due = *t.journal.due.get_or_insert(now + JOURNAL_DELAY);
+            if now < due {
+                wake = Some(wake.map_or(due - now, |w| w.min(due - now)));
+                continue;
+            }
+            t.journal.due = None;
+            t.journal.written = t.edit_gen;
+            let Some((head, content)) = t.journal_content() else { continue };
+            let (file, busy, alive) = (t.journal.file.clone().unwrap(), t.journal.busy.clone(), t.journal.alive.clone());
+            busy.store(true, Ordering::Release);
+            t.journal.exists = true;
+            let spawned = std::thread::Builder::new().name("recuperacion".into()).spawn(move || {
+                let _ = crate::recovery::write(&file, &head, content, &alive);
+                busy.store(false, Ordering::Release);
+            });
+            if spawned.is_err() {
+                t.journal.busy.store(false, Ordering::Release);
+            }
+        }
+        if let Some(w) = wake {
+            ctx.request_repaint_after(w);
+        }
+    }
+
+    /// Teclado con el foco en el panel de archivos: ↑/↓ (con Shift amplía la
+    /// selección), Inicio/Fin, Intro va al texto, F2 renombra.
+    fn panel_keys(&mut self, ctx: &Context) {
+        let order: Vec<usize> = self.row_order.iter().copied().filter(|&i| i < self.tabs.len()).collect();
+        if order.is_empty() {
+            return;
+        }
+        let pos = order.iter().position(|&i| i == self.active);
+        let last = order.len() - 1;
+        let mut go = None;
+        let mut shift = false;
+        ctx.input_mut(|i| {
+            for (m, key, s) in [
+                (Modifiers::SHIFT, Key::ArrowUp, true),
+                (Modifiers::SHIFT, Key::ArrowDown, true),
+                (Modifiers::NONE, Key::ArrowUp, false),
+                (Modifiers::NONE, Key::ArrowDown, false),
+                (Modifiers::NONE, Key::Home, false),
+                (Modifiers::NONE, Key::End, false),
+            ] {
+                if go.is_none() && i.consume_key(m, key) {
+                    shift = s;
+                    go = Some(match (key, pos) {
+                        (Key::Home, _) => 0,
+                        (Key::End, _) => last,
+                        (Key::ArrowUp, Some(p)) => p.saturating_sub(1),
+                        (Key::ArrowDown, Some(p)) => (p + 1).min(last),
+                        (_, None) => 0,
+                        _ => 0,
+                    });
+                }
+            }
+        });
+        if let Some(n) = go {
+            let m = if shift { Modifiers::SHIFT } else { Modifiers::NONE };
+            self.click_row(order[n], m);
+            self.reveal_row = true;
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+            self.panel_focus = false;
+            self.focus_view = true;
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2)) && self.tabs.get(self.active).is_some_and(|t| !t.untitled) {
+            self.file_action(ctx, FileAction::RenameFile(self.active));
+        }
+    }
+
+    /// Ventana «Recuperar cambios»: lo que quedó sin guardar en un cierre inesperado.
+    fn recover_window(&mut self, ctx: &Context) {
+        if self.recoverable.is_empty() {
+            return;
+        }
+        let mut pick: Option<(usize, bool)> = None;
+        let mut all: Option<bool> = None;
+        let mut later = false;
+        Modal::new(Id::NULL.with("recuperar")).show(ctx, |ui| {
+            ui.set_max_width(520.0);
+            ui.heading(t!("Recuperar cambios sin guardar"));
+            ui.add_space(4.0);
+            ui.label(t!("buscador se cerró de forma inesperada y quedaron cambios sin guardar:"));
+            ui.add_space(6.0);
+            ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for (n, (j, ok)) in self.recoverable.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.strong(&j.head.name);
+                            if !j.head.untitled {
+                                ui.weak(j.head.path.display().to_string());
+                            }
+                            ui.weak(ago(j.when));
+                            if !ok {
+                                ui.colored_label(ui.visuals().warn_fg_color, t!("El archivo cambió desde entonces: solo se recuperan las líneas editadas, en un archivo nuevo."));
+                            }
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
+                            if ui.button(t!("Descartar")).clicked() {
+                                pick = Some((n, false));
+                            }
+                            if ui.button(t!("Recuperar")).clicked() {
+                                pick = Some((n, true));
+                            }
+                        });
+                    });
+                    ui.separator();
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button(t!("Recuperar todo")).clicked() {
+                    all = Some(true);
+                }
+                if ui.button(t!("Descartar todo")).clicked() {
+                    all = Some(false);
+                }
+                if ui.button(t!("Decidir después")).on_hover_text(t!("Se volverán a ofrecer la próxima vez que abras buscador")).clicked() {
+                    later = true;
+                }
+            });
+        });
+        if later {
+            self.recoverable.clear();
+            return;
+        }
+        let chosen: Vec<(crate::recovery::Journal, bool, bool)> = match (pick, all) {
+            (Some((n, yes)), _) => {
+                let (j, ok) = self.recoverable.remove(n);
+                vec![(j, ok, yes)]
+            }
+            (None, Some(yes)) => self.recoverable.drain(..).map(|(j, ok)| (j, ok, yes)).collect(),
+            _ => Vec::new(),
+        };
+        for (j, ok, yes) in chosen {
+            if yes {
+                self.recover_journal(j, ok);
+            } else {
+                let _ = std::fs::remove_file(&j.file);
+            }
+        }
+    }
+
+    /// Abre lo recuperado: el archivo con sus cambios encima, o uno nuevo.
+    fn recover_journal(&mut self, j: crate::recovery::Journal, complete: bool) {
+        use crate::recovery::Body;
+        let at = (j.head.top, Pos::new(j.head.cursor.0, j.head.cursor.1));
+        let on_disk = !j.head.untitled && j.head.path.is_file();
+        let rec = match &j.body {
+            Body::Text(b) if on_disk => Some(Recover::Text(crate::recovery::decode(b, &j.head.encoding), at)),
+            Body::Pieces(_, p) if complete && on_disk => Some(Recover::Pieces(p.clone(), at)),
+            _ => None,
+        };
+        match rec {
+            Some(rec) => {
+                self.open(j.head.path.clone());
+                if let Some(t) = self.tabs.iter_mut().find(|t| t.doc.path == j.head.path) {
+                    if let Some(enc) = encoding_rs::Encoding::for_label(j.head.encoding.as_bytes()) {
+                        if enc != t.doc.src.encoding {
+                            t.doc.set_encoding(enc);
+                        }
+                    }
+                    t.restore = None;
+                    t.recover = Some(rec);
+                }
+            }
+            None => {
+                let partial = !matches!(j.body, Body::Text(_));
+                self.new_untitled(Some(j.edited_lines()));
+                if partial {
+                    self.msg(tf!("De {name} solo se recuperaron las líneas editadas (en un archivo nuevo)", name = j.head.name));
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&j.file);
+    }
+
+    /// Recarga del disco (descartando cambios) conservando la posición.
+    fn reload_keep(&mut self, i: usize) {
+        let Some(t) = self.tabs.get(i) else { return };
+        let at = t.restore.unwrap_or((t.top, t.cursor.unwrap_or_default()));
+        self.reload(i, true);
+        if let Some(t) = self.tabs.get_mut(i) {
+            t.goto_end = false;
+            t.restore = Some(at);
         }
     }
 
@@ -2954,8 +3391,9 @@ impl App {
         }
         std::fs::rename(&old, &new).map_err(|e| tf!("No se pudo renombrar: {e}", e = e))?;
         let t = &mut self.tabs[i];
-        t.doc.rebind(&new);
+        t.doc.renamed(&new);
         t.missing = false;
+        t.journal.written = u64::MAX; // el diario lleva la ruta: reescribirlo
         let lang = syntax::detect(&t.doc.name);
         if lang != t.lang {
             t.lang = lang;
@@ -3029,6 +3467,7 @@ impl App {
         self.picked.retain(|p| tabs.iter().any(|t| &t.doc.path == p));
         let mut order = Vec::new();
         let mut zones = Vec::new();
+        let mut active_rect = None;
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             // Primero los espacios (como carpetas) y después los archivos sueltos.
             for sp in &spaces {
@@ -3043,7 +3482,10 @@ impl App {
                         order.push(i);
                         let multi = self.multi(i);
                         let rename = self.renaming_file.as_mut().filter(|(p, _)| *p == self.tabs[i].doc.path).map(|(_, s)| s);
-                        file_row(ui, i, &self.tabs[i], i == self.active, multi, &spaces, 14.0, self.tabs.len(), rename, &mut action);
+                        let rect = file_row(ui, i, &self.tabs[i], i == self.active, multi, &spaces, 14.0, self.tabs.len(), rename, &mut action);
+                        if i == self.active {
+                            active_rect = Some(rect);
+                        }
                     }
                 }
                 let r = ui.max_rect();
@@ -3056,10 +3498,22 @@ impl App {
                 order.push(i);
                 let multi = self.multi(i);
                 let rename = self.renaming_file.as_mut().filter(|(p, _)| *p == self.tabs[i].doc.path).map(|(_, s)| s);
-                file_row(ui, i, &self.tabs[i], i == self.active, multi, &spaces, 0.0, self.tabs.len(), rename, &mut action);
+                let rect = file_row(ui, i, &self.tabs[i], i == self.active, multi, &spaces, 0.0, self.tabs.len(), rename, &mut action);
+                if i == self.active {
+                    active_rect = Some(rect);
+                }
             }
             if self.tabs.is_empty() {
                 ui.weak(t!("Sin archivos.\nUsa «Abrir…» o arrastra archivos aquí."));
+            }
+            // Con el teclado en el panel: recuadro en el archivo activo y que se vea.
+            if let Some(rect) = active_rect {
+                if self.panel_focus {
+                    ui.painter().rect_stroke(rect.shrink(0.5), ui.visuals().widgets.inactive.corner_radius, ui.visuals().selection.stroke, StrokeKind::Inside);
+                }
+                if std::mem::take(&mut self.reveal_row) {
+                    ui.scroll_to_rect(rect, None);
+                }
             }
             // El resto del panel: soltar aquí saca el archivo de su espacio.
             let rest = ui.available_rect_before_wrap();
@@ -3417,19 +3871,27 @@ impl App {
     fn confirm_dialog(&mut self, ctx: &Context) {
         let Some(c) = self.confirm else { return };
         let names: Vec<String> = match c {
-            Confirm::CloseTab(i) | Confirm::Reload(i) => self.tabs.get(i).map(|t| t.doc.name.clone()).into_iter().collect(),
+            Confirm::CloseTab(i) | Confirm::Reload(i) | Confirm::Overwrite(i) => self.tabs.get(i).map(|t| t.doc.name.clone()).into_iter().collect(),
             Confirm::Quit => self.tabs.iter().filter(|t| t.dirty() || t.save.is_some()).map(|t| t.doc.name.clone()).collect(),
         };
         let mut choice = None;
         Modal::new(Id::NULL.with("confirm")).show(ctx, |ui| {
             ui.set_max_width(420.0);
-            ui.heading(t!("Cambios sin guardar"));
-            ui.add_space(6.0);
-            ui.label(tf!("Hay cambios sin guardar en: {join}", join = names.join(", ")));
-            ui.label(t!("Si continúas se perderán. Para conservarlos, cancela y pulsa Ctrl+S."));
+            let overwrite = matches!(c, Confirm::Overwrite(_));
+            if overwrite {
+                ui.heading(t!("El archivo cambió en el disco"));
+                ui.add_space(6.0);
+                ui.label(tf!("Otro programa modificó {name} después de abrirlo aquí.", name = names.join(", ")));
+                ui.label(t!("Si guardas, tu versión reemplaza a la suya y sus cambios se pierden."));
+            } else {
+                ui.heading(t!("Cambios sin guardar"));
+                ui.add_space(6.0);
+                ui.label(tf!("Hay cambios sin guardar en: {join}", join = names.join(", ")));
+                ui.label(t!("Si continúas se perderán. Para conservarlos, cancela y pulsa Ctrl+S."));
+            }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(t!("Descartar cambios")).clicked() {
+                if ui.button(if overwrite { t!("Guardar de todos modos") } else { t!("Descartar cambios") }).clicked() {
                     choice = Some(true);
                 }
                 if ui.button(t!("Cancelar")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -3443,6 +3905,11 @@ impl App {
                 match c {
                     Confirm::CloseTab(i) => self.close_tab(i, true),
                     Confirm::Reload(i) => self.reload(i, true),
+                    Confirm::Overwrite(i) => {
+                        self.active = i.min(self.tabs.len().saturating_sub(1));
+                        self.overwrite_ok = true;
+                        self.save(false);
+                    }
                     Confirm::Quit => {
                         self.allow_quit = true;
                         ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -3673,17 +4140,46 @@ impl App {
 
 impl eframe::App for App {
     /// Pruebas: BUSCADOR_RATON='x,y;d;x,y;u;t:texto;enter' mueve el ratón, lo pulsa
-    /// (d), lo suelta (u), escribe o pulsa Enter/Escape: un paso por fotograma
-    /// desde el fotograma 30 de la captura.
+    /// (d), lo suelta (u), escribe o pulsa Enter/Escape, una tecla (k:Ctrl+S,
+    /// k:Shift+ArrowDown) o espera hasta un momento (p:2500 ms desde el
+    /// arranque): un paso por fotograma desde el fotograma 30 de la captura.
     fn raw_input_hook(&mut self, _ctx: &Context, raw: &mut RawInput) {
-        if !(30..999).contains(&self.debug_frames) {
+        if !(30..1000).contains(&self.debug_frames) {
             return;
         }
         let Ok(script) = std::env::var("BUSCADOR_RATON") else { return };
-        let Some(step) = script.split(';').nth((self.debug_frames - 30) as usize) else { return };
+        let Some(step) = script.split(';').nth(self.debug_step) else { return };
+        // «p:ms»: esperar hasta ese momento desde el arranque.
+        if let Some(ms) = step.trim().strip_prefix("p:").and_then(|v| v.parse::<f64>().ok()) {
+            if raw.time.unwrap_or(0.0) * 1000.0 < ms {
+                return;
+            }
+        }
+        self.debug_step += 1;
         let last = self.debug_mouse;
         match step.trim() {
             st if st.starts_with("t:") => raw.events.push(Event::Text(st[2..].to_string())),
+            // «k:ArrowDown», «k:Shift+ArrowDown», «k:Ctrl+S»: una tecla con modificadores.
+            st if st.starts_with("k:") => {
+                let mut modifiers = Modifiers::NONE;
+                let mut name = &st[2..];
+                loop {
+                    if let Some(n) = name.strip_prefix("Shift+") {
+                        modifiers.shift = true;
+                        name = n;
+                    } else if let Some(n) = name.strip_prefix("Ctrl+") {
+                        modifiers = modifiers | Modifiers::COMMAND;
+                        name = n;
+                    } else {
+                        break;
+                    }
+                }
+                if let Some(key) = Key::from_name(name) {
+                    for pressed in [true, false] {
+                        raw.events.push(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });
+                    }
+                }
+            }
             "enter" | "esc" => {
                 let key = if step.trim() == "enter" { Key::Enter } else { Key::Escape };
                 for pressed in [true, false] {
@@ -3702,6 +4198,11 @@ impl eframe::App for App {
 
     fn on_exit(&mut self) {
         self.save_session(true);
+        // Cierre normal (con lo no guardado ya descartado): fuera los diarios.
+        for t in &mut self.tabs {
+            t.journal.alive.store(false, Ordering::Release);
+            t.journal.remove();
+        }
         if let Some(p) = self.relaunch.take() {
             if let Err(e) = crate::update::relaunch_after_exit(&p) {
                 eprintln!("No se pudo abrir la versión nueva: {e}");
@@ -3811,7 +4312,17 @@ impl eframe::App for App {
         {
             ctx.memory_mut(|m| m.move_focus(FocusDirection::None));
         }
+        // El teclado deja el panel de archivos si algo toma el foco o se pulsa fuera.
+        if self.panel_focus {
+            let outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !self.sidebar_rect.contains(p)));
+            if outside || !self.show_sidebar || ctx.memory(|m| m.focused().is_some()) {
+                self.panel_focus = false;
+            }
+        }
         if self.confirm.is_none() {
+            if self.panel_focus && self.recoverable.is_empty() {
+                self.panel_keys(&ctx);
+            }
             self.handle_shortcuts(&ctx);
             self.escape_closes_popup(&ctx);
         }
@@ -3822,7 +4333,7 @@ impl eframe::App for App {
             ui.add_space(1.0);
         });
         if self.show_sidebar {
-            Panel::left("sidebar").resizable(true).default_size(240.0).min_size(140.0).show(ui, |ui| self.sidebar(ui));
+            self.sidebar_rect = Panel::left("sidebar").resizable(true).default_size(240.0).min_size(140.0).show(ui, |ui| self.sidebar(ui)).response.rect;
         }
         Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
 
@@ -3862,9 +4373,15 @@ impl eframe::App for App {
         let show_detail = &mut self.show_detail;
         let focus_view = std::mem::take(&mut self.focus_view);
         let mut header_action = None;
+        let mut ext_action = None;
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
             if let Some(t) = self.tabs.get(self.active).filter(|_| self.show_header) {
                 header_action = editor_header(ui, t);
+            }
+            if let Some(t) = self.tabs.get(self.active) {
+                if let Some(e) = t.ext {
+                    ext_action = ext_banner(ui, e, &t.doc.name);
+                }
             }
             if let Some(t) = self.tabs.get_mut(self.active).filter(|t| t.filter.on) {
                 message = filter_view(ui, t, &font, colors, syntax_on);
@@ -3888,6 +4405,19 @@ impl eframe::App for App {
             }
         });
         self.view_focused = view_focused;
+        match ext_action {
+            Some(true) => self.reload_keep(self.active),
+            Some(false) => {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    // Se queda con lo suyo: el estado actual del disco pasa a ser el conocido.
+                    if let Ok(now) = crate::document::Stamp::read(&t.doc.path) {
+                        t.doc.disk = now;
+                    }
+                    t.ext = None;
+                }
+            }
+            None => {}
+        }
         match header_action {
             Some(HeaderAction::Copy(text, what)) => {
                 ctx.copy_text(text.clone());
@@ -3905,7 +4435,7 @@ impl eframe::App for App {
             self.new_untitled(Some(text));
         }
         self.follow_files(&ctx);
-        self.check_missing(&ctx);
+        self.check_disk(&ctx);
         for t in &mut self.tabs {
             // Posición de la sesión anterior, en cuanto el índice llega hasta ella.
             if let Some((top, c)) = t.restore {
@@ -3921,6 +4451,9 @@ impl eframe::App for App {
                 let e = t.end_pos();
                 t.select(e, e);
             }
+            if let Some(m) = t.apply_recover() {
+                self.message = Some((m, Instant::now()));
+            }
             if t.pending_text.is_some() && t.doc.indexing_done() {
                 let text = t.pending_text.take().unwrap();
                 t.select(Pos::default(), Pos::default());
@@ -3931,7 +4464,8 @@ impl eframe::App for App {
                 t.center_on = Some(0);
             }
         }
-        if self.tabs.iter().any(|t| t.pending_text.is_some() || t.restore.is_some() || t.goto_end) {
+        self.autosave(&ctx);
+        if self.tabs.iter().any(|t| t.pending_text.is_some() || t.restore.is_some() || t.goto_end || t.recover.is_some()) {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         self.save_session(ctx.input(|i| i.viewport().close_requested()));
@@ -3944,6 +4478,7 @@ impl eframe::App for App {
         self.adv_windows(&ctx);
         self.map_window(&ctx);
         self.folder_window(&ctx);
+        self.recover_window(&ctx);
         self.confirm_dialog(&ctx);
 
         // Saltar a la primera coincidencia en cuanto aparezca.
@@ -6584,7 +7119,46 @@ struct DragFile(usize);
 /// Una fila del panel de archivos: toda la fila selecciona (salvo la ×), se
 /// puede arrastrar a un espacio o a otra posición, y tiene menú contextual.
 #[allow(clippy::too_many_arguments)]
-fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: &[Space], indent: f32, total: usize, rename: Option<&mut String>, action: &mut Option<FileAction>) {
+/// Aviso encima del texto cuando otro programa cambió el archivo que tiene
+/// cambios sin guardar. `Some(true)`: recargar; `Some(false)`: mantener los míos.
+fn ext_banner(ui: &mut Ui, e: ExtChange, name: &str) -> Option<bool> {
+    let mut out = None;
+    let v = ui.visuals();
+    Frame::NONE.fill(v.warn_fg_color.gamma_multiply(0.18)).inner_margin(Margin::symmetric(8, 4)).show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            let text = match e {
+                ExtChange::Changed => tf!("⚠ Otro programa cambió {name} en el disco. Tienes cambios sin guardar.", name = name),
+                ExtChange::InPlace => tf!("⚠ Otro programa modificó {name} directamente: las partes que no editaste pueden verse mal o vacías. Guarda con otro nombre lo que quieras conservar.", name = name),
+            };
+            ui.label(RichText::new(text).color(ui.visuals().strong_text_color()));
+            if ui.button(t!("Recargar del disco")).on_hover_text(t!("Descarta tus cambios y muestra lo que hay ahora en el disco")).clicked() {
+                out = Some(true);
+            }
+            if ui.button(t!("Mantener mis cambios")).on_hover_text(t!("Sigue con tu versión; al guardar reemplazará a la del disco")).clicked() {
+                out = Some(false);
+            }
+        });
+    });
+    out
+}
+
+/// «hace 5 min» para una fecha en segundos desde 1970.
+fn ago(when: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let s = now.saturating_sub(when);
+    if s < 60 {
+        t!("hace un momento").to_string()
+    } else if s < 3600 {
+        tf!("hace {n} min", n = s / 60)
+    } else if s < 86_400 {
+        tf!("hace {n} h", n = s / 3600)
+    } else {
+        tf!("hace {n} días", n = s / 86_400)
+    }
+}
+
+/// Devuelve el rectángulo de la fila.
+fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: &[Space], indent: f32, total: usize, rename: Option<&mut String>, action: &mut Option<FileAction>) -> Rect {
     let row = vec2(ui.available_width(), ui.spacing().interact_size.y);
     // Renombrando: un campo con el nombre (sin la extensión seleccionada).
     if let Some(text) = rename {
@@ -6596,8 +7170,9 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
             Some(false) => *action = Some(FileAction::CancelRename),
             None => {}
         }
-        return;
+        return rect;
     }
+    let full = Rect::from_min_size(ui.cursor().min, row);
     ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
         // Se registra antes que la ×, que queda encima y conserva su propio clic.
         let row_rect = ui.max_rect();
@@ -6768,6 +7343,7 @@ fn file_row(ui: &mut Ui, i: usize, t: &Tab, active: bool, multi: usize, spaces: 
         });
     });
     ui.add_space(2.0);
+    full
 }
 
 fn tab_details(t: &Tab) -> String {

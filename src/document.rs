@@ -7,7 +7,6 @@
 
 use crate::encoding::{self, Newline};
 use encoding_rs::Encoding;
-use memmap2::Mmap;
 use std::fs::File;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -21,7 +20,7 @@ pub const STRIDE: u64 = 256;
 const FLUSH_BYTES: usize = 32 << 20;
 
 pub enum Bytes {
-    Map(Mmap),
+    Map(crate::sigbus::Map),
     Empty,
 }
 
@@ -163,8 +162,33 @@ pub struct Document {
     /// Bytes ya indexados.
     pub progress: Arc<AtomicU64>,
     cancel: Arc<AtomicBool>,
-    /// Identidad del archivo abierto (dispositivo, inodo) para detectar rotaciones.
-    id: (u64, u64),
+    /// Cómo era en el disco el archivo cuyo contenido está mapeado. `None`
+    /// tras guardar encima (`rebind`): lo mapeado ya no es lo que hay en disco.
+    pub backing: Option<Stamp>,
+    /// Último estado conocido del archivo en disco (para ver si otro programa
+    /// lo cambió y para detectar rotaciones).
+    pub disk: Stamp,
+}
+
+/// Huella de un archivo en disco: identidad (dispositivo, inodo), tamaño y
+/// fecha de modificación.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Stamp {
+    pub id: (u64, u64),
+    pub len: u64,
+    /// Nanosegundos desde 1970 (0 si el sistema no la da).
+    pub mtime: u128,
+}
+
+impl Stamp {
+    pub fn of(m: &std::fs::Metadata) -> Self {
+        let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+        Stamp { id: file_id(m), len: m.len(), mtime }
+    }
+
+    pub fn read(path: &Path) -> std::io::Result<Self> {
+        std::fs::metadata(path).map(|m| Stamp::of(&m))
+    }
 }
 
 /// Qué pasó con el archivo en disco desde que se abrió (para «seguir en vivo»).
@@ -199,11 +223,10 @@ impl Document {
         let data = if len == 0 {
             Bytes::Empty
         } else {
-            // SAFETY: si otro proceso trunca el archivo mientras está mapeado,
-            // el acceso puede fallar (SIGBUS). Aceptable para un visor.
-            let m = unsafe { Mmap::map(&file)? };
-            #[cfg(unix)]
-            let _ = m.advise(memmap2::Advice::Random);
+            // Si otro proceso lo recorta mientras está mapeado, lo que falta se
+            // lee como ceros y la app lo reabre (ver sigbus.rs).
+            let m = crate::sigbus::map(&file)?;
+            m.advise_random();
             Bytes::Map(m)
         };
         let data = Arc::new(data);
@@ -219,7 +242,8 @@ impl Document {
             index: Default::default(),
             progress: Default::default(),
             cancel: Default::default(),
-            id: file_id(&meta),
+            backing: Some(Stamp::of(&meta)),
+            disk: Stamp::of(&meta),
         };
         doc.set_encoding(enc);
         Ok(doc)
@@ -257,10 +281,20 @@ impl Document {
     /// archivo, pero sigue leyendo el contenido mapeado de antes (el sistema lo
     /// mantiene mientras esté mapeado), al que se refieren las ediciones.
     pub fn rebind(&mut self, path: &Path) {
+        self.renamed(path);
+        self.backing = None;
+    }
+
+    /// El mismo archivo con otro nombre (renombrado): el contenido sigue
+    /// siendo el del disco.
+    pub fn renamed(&mut self, path: &Path) {
         self.path = path.to_path_buf();
         self.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
-        if let Ok(m) = std::fs::metadata(path) {
-            self.id = file_id(&m);
+        if let Ok(s) = Stamp::read(path) {
+            self.disk = s;
+            if self.backing.is_some_and(|b| b.id == s.id) {
+                self.backing = Some(s);
+            }
         }
     }
 
@@ -270,22 +304,27 @@ impl Document {
         let meta = std::fs::metadata(&self.path)?;
         let len = meta.len() as usize;
         let old = self.len();
-        if file_id(&meta) != self.id || len < old {
+        if file_id(&meta) != self.disk.id || len < old {
             return Ok(Change::Replaced);
         }
         if len == old || !self.indexing_done() {
             return Ok(Change::Same);
         }
         let file = File::open(&self.path)?;
-        if file_id(&file.metadata()?) != self.id {
+        let meta = file.metadata()?;
+        if file_id(&meta) != self.disk.id {
             return Ok(Change::Replaced);
         }
-        // SAFETY: igual que en `open`.
-        let m = unsafe { Mmap::map(&file)? };
-        #[cfg(unix)]
-        let _ = m.advise(memmap2::Advice::Random);
+        let m = crate::sigbus::map(&file)?;
+        m.advise_random();
         if m.len() <= old {
             return Ok(Change::Same);
+        }
+        // Lo mapeado vuelve a ser lo que hay en disco.
+        let stamp = Stamp { len: m.len() as u64, ..Stamp::of(&meta) };
+        self.disk = stamp;
+        if self.backing.is_some() {
+            self.backing = Some(stamp);
         }
         // Se reanuda en la última línea (pudo no tener salto todavía).
         let (from_line, from_byte, keep) = {

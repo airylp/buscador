@@ -166,8 +166,8 @@ fn search_file(path: &Path, re: &regex::bytes::Regex) -> Option<(Vec<Hit>, bool)
     if f.metadata().ok()?.len() == 0 {
         return Some((Vec::new(), false));
     }
-    // SAFETY: solo lectura; si otro proceso lo trunca podría haber SIGBUS (conocido).
-    let m = unsafe { memmap2::Mmap::map(&f).ok()? };
+    // Si otro proceso lo recorta mientras se lee, lo que falta se lee como ceros (sigbus.rs).
+    let m = crate::sigbus::map(&f).ok()?;
     let data = &m[..];
     // Binario: hay un byte 0 al principio.
     if memchr::memchr(0, &data[..data.len().min(8192)]).is_some() {

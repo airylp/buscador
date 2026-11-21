@@ -116,6 +116,18 @@ impl Buffer {
         b
     }
 
+    /// Buffer con estas piezas (recuperadas de un diario), sin historial y
+    /// marcado como modificado. `None` si alguna pieza no cabe en `doc`.
+    pub fn from_pieces(doc: &Document, pieces: Vec<Piece>) -> Option<Self> {
+        let n = doc.line_count();
+        if pieces.iter().any(|p| matches!(p, Piece::Orig { line, count } if *count == 0 || line + count > n)) {
+            return None;
+        }
+        let mut b = Buffer { pieces, starts: Vec::new(), total: 0, undo: Vec::new(), redo: Vec::new(), clean: None, version: 1 };
+        b.recompute();
+        Some(b)
+    }
+
     pub fn line_count(&self) -> u64 {
         self.total
     }

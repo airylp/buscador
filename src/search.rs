@@ -300,7 +300,7 @@ mod tests {
         };
         std::fs::write(&p, &bytes).unwrap();
         let f = std::fs::File::open(&p).unwrap();
-        let m = unsafe { memmap2::Mmap::map(&f).unwrap() };
+        let m = crate::sigbus::map(&f).unwrap();
         let src = Source { data: Arc::new(Bytes::Map(m)), encoding: enc, newline: Newline::for_encoding(enc), start: 0 };
         let s = Search::start(src, None, Params { query: q.into(), regex: re, case_sensitive: cs }).unwrap();
         while !s.is_done() {

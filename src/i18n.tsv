@@ -595,3 +595,30 @@ Descargando el instalador…	Downloading the installer…	Téléchargement de l�
 ⟳ Instalar y reiniciar	⟳ Install and restart	⟳ Installer et redémarrer
 no hay instalador publicado	no published installer	aucun installateur publié
 no se pudo descargar: {e}	could not download: {e}	téléchargement impossible : {e}
+Cambios recuperados en {name} (sin guardar)	Recovered changes in {name} (unsaved)	Modifications récupérées dans {name} (non enregistrées)
+De {name} solo se recuperaron las líneas editadas (en un archivo nuevo)	Only the edited lines of {name} were recovered (in a new file)	Seules les lignes modifiées de {name} ont été récupérées (dans un nouveau fichier)
+Decidir después	Decide later	Décider plus tard
+Descarta tus cambios y muestra lo que hay ahora en el disco	Discards your changes and shows what is on disk now	Abandonne vos modifications et affiche ce qui est sur le disque
+Descartar	Discard	Abandonner
+Descartar todo	Discard all	Tout abandonner
+El archivo cambió desde entonces: solo se recuperan las líneas editadas, en un archivo nuevo.	The file has changed since then: only the edited lines are recovered, in a new file.	Le fichier a changé depuis : seules les lignes modifiées sont récupérées, dans un nouveau fichier.
+El archivo cambió en el disco	The file changed on disk	Le fichier a changé sur le disque
+Guardar de todos modos	Save anyway	Enregistrer quand même
+Mantener mis cambios	Keep my changes	Garder mes modifications
+No se pudieron recuperar los cambios de {name}: el archivo no coincide	Could not recover the changes to {name}: the file does not match	Impossible de récupérer les modifications de {name} : le fichier ne correspond pas
+Otro programa modificó {name} después de abrirlo aquí.	Another program modified {name} after it was opened here.	Un autre programme a modifié {name} après son ouverture ici.
+Recuperar	Recover	Récupérer
+Recuperar cambios sin guardar	Recover unsaved changes	Récupérer les modifications non enregistrées
+Recuperar todo	Recover all	Tout récupérer
+Se volverán a ofrecer la próxima vez que abras buscador	They will be offered again the next time you open buscador	Elles seront proposées à nouveau au prochain lancement de buscador
+Si guardas, tu versión reemplaza a la suya y sus cambios se pierden.	If you save, your version replaces theirs and their changes are lost.	Si vous enregistrez, votre version remplace la sienne et ses modifications sont perdues.
+Sigue con tu versión; al guardar reemplazará a la del disco	Keep your version; saving will replace the one on disk	Garder votre version ; l'enregistrer remplacera celle du disque
+buscador se cerró de forma inesperada y quedaron cambios sin guardar:	buscador closed unexpectedly and left unsaved changes:	buscador s'est fermé de façon inattendue en laissant des modifications non enregistrées :
+hace un momento	a moment ago	il y a un instant
+hace {n} días	{n} days ago	il y a {n} jours
+hace {n} h	{n} h ago	il y a {n} h
+hace {n} min	{n} min ago	il y a {n} min
+{names} cambió en el disco y tiene cambios sin guardar	{names} changed on disk and has unsaved changes	{names} a changé sur le disque et contient des modifications non enregistrées
+{name} cambió en el disco: se volvió a cargar	{name} changed on disk: reloaded	{name} a changé sur le disque : rechargé
+⚠ Otro programa cambió {name} en el disco. Tienes cambios sin guardar.	⚠ Another program changed {name} on disk. You have unsaved changes.	⚠ Un autre programme a modifié {name} sur le disque. Vous avez des modifications non enregistrées.
+⚠ Otro programa modificó {name} directamente: las partes que no editaste pueden verse mal o vacías. Guarda con otro nombre lo que quieras conservar.	⚠ Another program modified {name} in place: the parts you did not edit may look wrong or empty. Save what you want to keep under another name.	⚠ Un autre programme a modifié {name} directement : les parties non modifiées peuvent apparaître incorrectes ou vides. Enregistrez sous un autre nom ce que vous voulez garder.

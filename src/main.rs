@@ -19,7 +19,9 @@ mod macmenu;
 #[cfg(target_os = "macos")]
 mod macopen;
 mod search;
+mod recovery;
 mod settings;
+mod sigbus;
 mod syntax;
 mod update;
 
@@ -43,6 +45,8 @@ fn main() -> eframe::Result {
     files.retain(|f| !f.to_string_lossy().starts_with("-psn_"));
     // En modo captura (pruebas) la ventana no se activa: no roba el teclado.
     let testing = std::env::var_os("BUSCADOR_SCREENSHOT").is_some();
+    // Un archivo abierto que otro programa recorta no debe tumbar la app.
+    sigbus::install();
     #[cfg(target_os = "macos")]
     macopen::install();
     let options = eframe::NativeOptions {
