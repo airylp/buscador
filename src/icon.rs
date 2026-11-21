@@ -27,9 +27,9 @@ const BG_TOP: [f32; 3] = [0xff as f32, 0xff as f32, 0xff as f32];
 const BG_BOTTOM: [f32; 3] = [0xec as f32, 0xf0 as f32, 0xf6 as f32];
 /// Opacidad del fondo (deja ver lo que hay detrás en el Dock).
 const BG_OPACITY: f32 = 0.6;
-const BLUE: [u8; 3] = [0x2f, 0x8c, 0xff];
-const BLUE_LIGHT: [u8; 3] = [0x8f, 0xcf, 0xff];
-const BLUE_DARK: [u8; 3] = [0x1d, 0x5f, 0xd6];
+const BLUE: [u8; 3] = [0x5a, 0xa8, 0xff];
+const BLUE_LIGHT: [u8; 3] = [0xb3, 0xdf, 0xff];
+const BLUE_DARK: [u8; 3] = [0x3a, 0x80, 0xec];
 const SHADOW: [u8; 3] = [0xb4, 0xc6, 0xe2];
 
 /// Color de la «B» en la celda (fila, columna) de la cuadrícula, si hay.
