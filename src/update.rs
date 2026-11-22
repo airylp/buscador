@@ -293,6 +293,14 @@ impl Updater {
     }
 }
 
+/// Instalador de Windows que quedó de una actualización anterior (si se cortó
+/// antes de borrarlo): se borra al abrir la app.
+pub fn remove_leftovers() {
+    if WINDOWS {
+        let _ = std::fs::remove_file(std::env::temp_dir().join("buscador-setup.exe"));
+    }
+}
+
 /// Abre la versión recién instalada en cuanto termine este proceso: un `sh`
 /// aparte espera a que muera el PID actual (así no conviven las dos y la sesión
 /// ya está guardada) y entonces la abre. En macOS, con `open` y sin `-n`: abrir
@@ -303,9 +311,11 @@ impl Updater {
 pub fn relaunch_after_exit(installed: &std::path::Path) -> std::io::Result<()> {
     if WINDOWS {
         let ps = format!(
-            "Wait-Process -Id {} -Timeout 30 -ErrorAction SilentlyContinue; Start-Process -FilePath '{}' -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART'",
-            std::process::id(),
-            installed.display().to_string().replace('\'', "''")
+            // Al terminar el instalador se borra (WaitForExit espera solo a él, no
+            // a la app que vuelve a abrir).
+            "Wait-Process -Id {pid} -Timeout 30 -ErrorAction SilentlyContinue; $p = Start-Process -FilePath '{f}' -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART' -PassThru; $p.WaitForExit(); Remove-Item -LiteralPath '{f}' -Force -ErrorAction SilentlyContinue",
+            pid = std::process::id(),
+            f = installed.display().to_string().replace('\'', "''")
         );
         let mut c = Command::new("powershell");
         c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", &ps]);

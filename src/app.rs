@@ -2237,7 +2237,10 @@ impl App {
             duplicating: Vec::new(),
             allow_quit: false,
             relaunch: None,
-            started: Instant::now(),
+            started: {
+                crate::update::remove_leftovers();
+                Instant::now()
+            },
             window_test: 0,
             check_updates: settings.check_updates,
             bg_update: None,

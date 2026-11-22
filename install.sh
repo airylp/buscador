@@ -227,8 +227,9 @@ DESKTOP
     case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "   $(m "Nota: $BIN_DIR no está en tu PATH; añádelo para escribir «buscador» en la terminal." "Note: $BIN_DIR is not in your PATH; add it to run “buscador” from the terminal." "Remarque : $BIN_DIR n’est pas dans votre PATH ; ajoutez-le pour lancer « buscador » depuis le terminal.")" ;; esac
 fi
 # La caché de compilación acelera las actualizaciones, pero cargo no borra lo
-# viejo: si pasa de 1 GB se vacía (la próxima compilación empieza de cero).
-if [ -d "$CACHE" ] && [ "$(du -sk "$CACHE" | cut -f1)" -gt 1048576 ]; then
-    rm -rf "$CACHE" && info "$(m 'Caché de compilación vaciada (pasaba de 1 GB)' 'Build cache emptied (it was over 1 GB)' 'Cache de compilation vidé (il dépassait 1 Go)')"
+# viejo (dependencias de versiones anteriores). Una compilación limpia ocupa
+# ~1,2 GB; si pasa de 3 GB se vacía (la próxima compilación empieza de cero).
+if [ -d "$CACHE" ] && [ "$(du -sk "$CACHE" | cut -f1)" -gt 3145728 ]; then
+    rm -rf "$CACHE" && info "$(m 'Caché de compilación vaciada (pasaba de 3 GB)' 'Build cache emptied (it was over 3 GB)' 'Cache de compilation vidé (il dépassait 3 Go)')"
 fi
 echo "   $(m 'Para actualizar más adelante: ⚙ Ajustes → «Buscar actualizaciones…», o vuelve a ejecutar este comando.' 'To update later: ⚙ Settings → “Check for updates…”, or run this command again.' 'Pour mettre à jour plus tard : ⚙ Réglages → « Rechercher des mises à jour… », ou relancez cette commande.')"
