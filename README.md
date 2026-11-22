@@ -44,6 +44,14 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 - Barra de estado: clic en «Lín X, Col Y» (o Ctrl+G) para ir a una línea; botones Resultados y Detalle
 - Panel «Detalle» para ver y copiar parte de una línea larga
 - Ir a línea (Ctrl+G), tamaño de letra (Ctrl+ / Ctrl−), arrastrar y soltar archivos
+- Ir a fecha/hora (Ctrl+G y escribir «2026-11-21 10:30», «21/11/2026», «10:30:15», «Nov 21 10:30»):
+  va por bisección a la primera línea de log que llega a ese momento
+- Logs: fondo rojo en las líneas ERROR (con sus trazas de pila) y ámbar en WARN (se quita en Ajustes)
+- Panel «Detalle»: si la línea lleva JSON, se ve embellecido y con colores
+- Convertir el archivo (clic en el encoding o en LF/CRLF de la barra de estado): otro encoding,
+  saltos LF ↔ CRLF, poner o quitar el BOM; en streaming, sirve para varios GB, y avisa en qué línea
+  hay un carácter que no se puede representar
+- «Acerca de» (ℹ en la barra de estado): versión, licencia y enlaces al proyecto en GitHub
 
 ## Instalar, actualizar y desinstalar
 
@@ -93,12 +101,12 @@ cargo build --release
 
 ## Limitaciones conocidas
 
-- Si otro proceso trunca/rota el archivo mientras está abierto, el programa puede cerrarse.
-- Guardar necesita espacio libre para una copia completa del archivo. Al guardar se
-  reinicia el historial de deshacer (así se libera la RAM de las ediciones).
-- «Reemplazar todo» admite hasta 2 M de líneas modificadas de una vez (quedan en RAM hasta guardar).
-- No sigue el archivo en vivo (`tail -f`).
-- Cada línea se pinta hasta 16 KB; el panel Detalle muestra hasta 1 MB.
+- Guardar necesita espacio libre para una copia completa del archivo, salvo cuando solo se
+  añadió texto al final de un archivo grande (entonces se escribe solo lo nuevo).
+- «Reemplazar todo» en memoria (con deshacer) admite hasta 2 M de líneas; con más, se reemplaza
+  mientras se escribe el archivo (sin RAM, pero sin deshacer).
+- Las líneas de más de 16 KB se pintan a trozos (el que se ve); fuera de UTF-8 solo se ve su principio.
+  Sin ajuste de línea se recorren enteras; con ajuste, solo los primeros 16 KB.
 
 ## Licencia
 

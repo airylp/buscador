@@ -281,6 +281,48 @@ impl Buffer {
         out
     }
 
+    /// Como `rows`, pero las líneas de más de `cap` bytes se ven desde su byte
+    /// `from` (ver `Source::decode_window`).
+    pub fn rows_at(&self, doc: &Document, first: u64, count: usize, cap: usize, from: usize) -> Vec<Row> {
+        let mut out = Vec::with_capacity(count.min(4096));
+        if first >= self.total {
+            return out;
+        }
+        let mut i = self.locate(first);
+        let mut n = first;
+        while out.len() < count && i < self.pieces.len() {
+            match &self.pieces[i] {
+                Piece::New(s) => {
+                    out.push(str_window(n, s, from, cap));
+                    n += 1;
+                }
+                Piece::Orig { line, count: c } => {
+                    let off = n - self.starts[i];
+                    let want = ((c - off) as usize).min(count - out.len());
+                    for (k, (_, s, e)) in doc.lines(line + off, want).into_iter().enumerate() {
+                        let (text, start, more) = doc.src.decode_window(s, e, from, cap);
+                        out.push(Row { n: n + k as u64, text, start, more, len: e - s });
+                    }
+                    n += want as u64;
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// Bytes de una línea, sin decodificarla (aproximado fuera de UTF-8).
+    pub fn line_bytes(&self, doc: &Document, n: u64) -> usize {
+        if n >= self.total {
+            return 0;
+        }
+        let i = self.locate(n);
+        match &self.pieces[i] {
+            Piece::New(s) => s.len(),
+            Piece::Orig { line, .. } => doc.lines(line + (n - self.starts[i]), 1).first().map_or(0, |l| l.2 - l.1),
+        }
+    }
+
     /// Texto entre dos posiciones (líneas unidas con `\n`); `None` si supera `max`.
     #[cfg(test)]
     pub fn text(&self, doc: &Document, a: Pos, b: Pos, max: usize) -> Option<String> {
@@ -324,9 +366,11 @@ impl Buffer {
             return Err(tf!("«{c}» no se puede representar en {name}", c = c, name = doc.src.encoding.name()));
         }
         drop(probe);
+        // Con líneas de muchos MB cada copia cuenta: la misma línea no se lee dos veces.
         let first = self.line(doc, a.line);
-        let last = if b.line == a.line { first.clone() } else { self.line(doc, b.line) };
-        let (ac, bc) = (floor_char(&first, a.col), floor_char(&last, b.col));
+        let other = (b.line != a.line).then(|| self.line(doc, b.line));
+        let last = other.as_deref().unwrap_or(&first);
+        let (ac, bc) = (floor_char(&first, a.col), floor_char(last, b.col));
         let suffix = &last[bc..];
         let mut joined = String::with_capacity(ac + text.len() + suffix.len());
         joined.push_str(&first[..ac]);
@@ -542,6 +586,316 @@ pub fn write_document(
     Ok(lossy)
 }
 
+/// Cambios que se aplican al escribir, en streaming, sin pasar por las piezas
+/// (para millones de líneas o para pasar el archivo entero a otro encoding).
+#[derive(Default)]
+pub struct Rewrite {
+    pub edit: Option<LineEdit>,
+    pub recode: Option<Recode>,
+}
+
+/// Reemplazo línea a línea: `find` localiza las líneas candidatas (sobre el
+/// texto decodificado, en modo multilínea) y `apply` da la línea nueva o
+/// `None` si no cambia.
+pub struct LineEdit {
+    pub find: regex::bytes::Regex,
+    pub apply: Box<dyn Fn(&str) -> Option<String> + Send + Sync>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Eol {
+    Lf,
+    Crlf,
+}
+
+/// Escribir en otro encoding, con o sin BOM y, si se pide, con otros saltos de línea.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Recode {
+    pub encoding: &'static encoding_rs::Encoding,
+    pub bom: bool,
+    /// `None` = conservar los saltos de cada línea.
+    pub eol: Option<Eol>,
+    /// Sustituir por «?» lo que no se puede representar (si no, se detiene con error).
+    pub lossy: bool,
+}
+
+/// BOM de un encoding (vacío si no tiene).
+pub fn bom_of(enc: &'static encoding_rs::Encoding) -> &'static [u8] {
+    if enc == encoding_rs::UTF_8 {
+        &[0xEF, 0xBB, 0xBF]
+    } else if enc == encoding_rs::UTF_16LE {
+        &[0xFF, 0xFE]
+    } else if enc == encoding_rs::UTF_16BE {
+        &[0xFE, 0xFF]
+    } else {
+        &[]
+    }
+}
+
+/// Resultado de una escritura.
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+pub struct Written {
+    /// Caracteres no representables que se escribieron como «?».
+    pub lossy: usize,
+    /// Líneas cambiadas por el reemplazo.
+    pub changed: u64,
+    /// El original tenía bytes no válidos en su encoding (se escribieron como �).
+    pub invalid: bool,
+    /// Solo se añadió lo nuevo al final del archivo.
+    pub appended: bool,
+}
+
+/// Bloque `[pos, ..)` de como mucho `CHUNK` bytes que acaba en fin de línea.
+fn chunk_end(src: &Source, pos: usize, end: usize) -> usize {
+    const CHUNK: usize = 8 << 20;
+    let mut e = (pos + CHUNK).min(end);
+    if e < end {
+        e = src.next_line_start(e).unwrap_or(end).min(end);
+    }
+    e
+}
+
+/// Como [`write_document`], pero aplicando `rw` (reemplazo y/o cambio de
+/// encoding) mientras se escribe. La RAM usada no depende del tamaño.
+pub fn rewrite_document(
+    pieces: &[Piece],
+    src: &Source,
+    index: &RwLock<Index>,
+    newline: &[u8],
+    w: &mut impl Write,
+    progress: &AtomicU64,
+    cancel: &AtomicBool,
+    rw: &Rewrite,
+) -> io::Result<Written> {
+    let cancelled = || io::Error::new(io::ErrorKind::Interrupted, "cancelado");
+    let data = &src.data[..];
+    let idx = index.read().unwrap();
+    let out_enc = rw.recode.map_or(src.encoding, |r| r.encoding);
+    let mut st = Written::default();
+    match rw.recode {
+        None => w.write_all(&data[..src.start])?,
+        Some(r) if r.bom => w.write_all(bom_of(r.encoding))?,
+        Some(_) => {}
+    }
+    // Salto para unir líneas nuevas (y el que falte al final de un rango).
+    let crlf_default = newline.len() > src.newline.unit();
+    let forced = rw.recode.and_then(|r| r.eol).map(|e| if e == Eol::Crlf { "\r\n" } else { "\n" });
+    let nl: Vec<u8> = match rw.recode {
+        None => newline.to_vec(),
+        Some(_) => {
+            let mut v = Vec::new();
+            let _ = encoding::encode_into(out_enc, forced.unwrap_or(if crlf_default { "\r\n" } else { "\n" }), &mut v);
+            v
+        }
+    };
+    let encode = |s: &str, line: u64, out: &mut Vec<u8>, st: &mut Written| -> io::Result<()> {
+        match rw.recode {
+            Some(r) if !r.lossy => encoding::encode_into(out_enc, s, out).map_err(|c| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    tf!("«{c}» (línea {n}) no se puede representar en {name}", c = c, n = line + 1, name = out_enc.name()),
+                )
+            }),
+            _ => {
+                st.lossy += encoding::encode_lossy_into(out_enc, s, out);
+                Ok(())
+            }
+        }
+    };
+    let edit_line = |s: &str, st: &mut Written| -> Option<String> {
+        let e = rw.edit.as_ref()?;
+        let r = (e.apply)(s)?;
+        st.changed += 1;
+        Some(r)
+    };
+    let mut done: u64 = 0;
+    let mut line_no: u64 = 0;
+    let mut out = Vec::new();
+    for (k, p) in pieces.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
+        let last_piece = k + 1 == pieces.len();
+        match p {
+            Piece::New(s) => {
+                out.clear();
+                let t = edit_line(s, &mut st);
+                encode(t.as_deref().unwrap_or(s), line_no, &mut out, &mut st)?;
+                if !last_piece {
+                    out.extend_from_slice(&nl);
+                }
+                w.write_all(&out)?;
+                line_no += 1;
+            }
+            Piece::Orig { line, count } => {
+                let s = document::line_start(src, &idx, *line);
+                let ls = document::line_start(src, &idx, line + count - 1);
+                let next = src.next_line_start(ls);
+                let (end, add_nl) = if last_piece {
+                    (src.content_end(ls, next), false)
+                } else {
+                    match next {
+                        Some(nx) => (nx, false),
+                        None => (data.len(), true),
+                    }
+                };
+                let mut pos = s;
+                let mut ln = line_no;
+                while pos < end {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(cancelled());
+                    }
+                    let ce = chunk_end(src, pos, end);
+                    let chunk = &data[pos..ce];
+                    if rw.recode.is_some() {
+                        // Todo pasa por texto: decodificar, (reemplazar), codificar.
+                        let (text, bad) = src.encoding.decode_without_bom_handling(chunk);
+                        st.invalid |= bad;
+                        out.clear();
+                        for l in text.split_inclusive('\n') {
+                            let (body, eol) = if let Some(b) = l.strip_suffix("\r\n") {
+                                (b, "\r\n")
+                            } else if let Some(b) = l.strip_suffix('\n') {
+                                (b, "\n")
+                            } else {
+                                (l, "")
+                            };
+                            let t = match &rw.edit {
+                                Some(e) if e.find.is_match(body.as_bytes()) => edit_line(body, &mut st),
+                                _ => None,
+                            };
+                            encode(t.as_deref().unwrap_or(body), ln, &mut out, &mut st)?;
+                            if !eol.is_empty() {
+                                let _ = encoding::encode_into(out_enc, forced.unwrap_or(eol), &mut out);
+                                ln += 1;
+                            }
+                        }
+                        w.write_all(&out)?;
+                    } else if let Some(e) = &rw.edit {
+                        // Mismo encoding: se copia tal cual salvo las líneas que cambian.
+                        let utf8 = src.encoding == encoding_rs::UTF_8;
+                        let hay: std::borrow::Cow<[u8]> = if utf8 {
+                            std::borrow::Cow::Borrowed(chunk)
+                        } else {
+                            std::borrow::Cow::Owned(src.encoding.decode_without_bom_handling(chunk).0.into_owned().into_bytes())
+                        };
+                        let (mut written, mut raw, mut raw_k) = (pos, pos, 0u64);
+                        let (mut counted, mut k) = (0usize, 0u64);
+                        let mut p = 0;
+                        while p <= hay.len() {
+                            let Some(m) = e.find.find_at(&hay, p) else { break };
+                            let a = memchr::memrchr(b'\n', &hay[..m.start()]).map_or(0, |i| i + 1);
+                            let b = memchr::memchr(b'\n', &hay[m.start()..]).map_or(hay.len(), |i| m.start() + i);
+                            k += memchr::memchr_iter(b'\n', &hay[counted..a]).count() as u64;
+                            counted = a;
+                            if utf8 {
+                                raw = pos + a;
+                            } else {
+                                while raw_k < k {
+                                    raw = src.next_line_start(raw).unwrap_or(ce).min(ce);
+                                    raw_k += 1;
+                                }
+                            }
+                            let body_end = if b > a && hay[b - 1] == b'\r' { b - 1 } else { b };
+                            let body = String::from_utf8_lossy(&hay[a..body_end]);
+                            if let Some(new) = edit_line(&body, &mut st) {
+                                let content_end = src.content_end(raw, src.next_line_start(raw)).min(ce);
+                                w.write_all(&data[written..raw])?;
+                                out.clear();
+                                encode(&new, ln + k, &mut out, &mut st)?;
+                                w.write_all(&out)?;
+                                written = content_end;
+                            }
+                            p = b + 1;
+                        }
+                        w.write_all(&data[written..ce])?;
+                        ln += memchr::memchr_iter(b'\n', &hay[..]).count() as u64;
+                    } else {
+                        w.write_all(chunk)?;
+                    }
+                    done += (ce - pos) as u64;
+                    progress.store(done, Ordering::Relaxed);
+                    pos = ce;
+                }
+                if add_nl {
+                    w.write_all(&nl)?;
+                }
+                line_no += count;
+            }
+        }
+        progress.store(done, Ordering::Relaxed);
+    }
+    w.flush()?;
+    Ok(st)
+}
+
+/// Si el texto de `pieces` es el contenido actual del archivo (`src`) más algo
+/// al final, devuelve los bytes que hay que añadir. Sirve para guardar sin
+/// copiar el archivo entero cuando solo se escribió al final (típico de logs).
+pub fn appended_tail(pieces: &[Piece], src: &Source, index: &RwLock<Index>, newline: &[u8]) -> Option<Vec<u8>> {
+    let idx = index.read().unwrap();
+    if !idx.done {
+        return None;
+    }
+    let total = idx.lines;
+    let data = &src.data[..];
+    let (n0, rest) = match pieces {
+        [Piece::Orig { line: 0, count }, rest @ ..] => (*count, rest),
+        _ if total == 0 && data.len() == src.start => (0, pieces),
+        _ => return None,
+    };
+    if n0 > total || rest.is_empty() || !rest.iter().all(|p| matches!(p, Piece::New(_))) {
+        return None;
+    }
+    let text = |p: &Piece| if let Piece::New(s) = p { s.clone() } else { unreachable!() };
+    // Las líneas que el archivo ya tiene después de `n0` deben coincidir, byte a
+    // byte (con su salto), con las primeras piezas nuevas.
+    let mut i = 0;
+    let mut l = n0;
+    let mut enc = Vec::new();
+    let mut ends_nl = n0 == 0 || {
+        let s = document::line_start(src, &idx, n0 - 1);
+        src.next_line_start(s).is_some()
+    };
+    while l < total {
+        let p = rest.get(i)?;
+        let s = document::line_start(src, &idx, l);
+        let next = src.next_line_start(s);
+        enc.clear();
+        encoding::encode_into(src.encoding, &text(p), &mut enc).ok()?;
+        let raw_end = next.unwrap_or(data.len());
+        if next.is_some() {
+            enc.extend_from_slice(newline);
+        }
+        if data[s..raw_end] != enc[..] {
+            return None;
+        }
+        ends_nl = next.is_some();
+        i += 1;
+        l += 1;
+    }
+    let rest = &rest[i..];
+    if rest.is_empty() {
+        return None;
+    }
+    // Lo que falta: (salto si el archivo no acababa en uno) + piezas unidas por saltos.
+    let mut tail = Vec::new();
+    if !ends_nl {
+        tail.extend_from_slice(newline);
+    }
+    for (k, p) in rest.iter().enumerate() {
+        encoding::encode_into(src.encoding, &text(p), &mut tail).ok()?;
+        if k + 1 < rest.len() {
+            tail.extend_from_slice(newline);
+        }
+    }
+    // Un archivo que ya acababa en salto con una última línea vacía: no hay nada que añadir.
+    if tail.is_empty() {
+        return None;
+    }
+    Some(tail)
+}
+
 /// Guarda en `target` de forma segura: escribe un temporal en la misma
 /// carpeta, lo sincroniza a disco y lo renombra encima del destino. El
 /// original nunca queda a medio escribir (y el `mmap` abierto sigue siendo
@@ -555,14 +909,48 @@ pub fn save_file(
     progress: &AtomicU64,
     cancel: &AtomicBool,
 ) -> Result<usize, String> {
+    save_file_with(pieces, src, index, newline, target, progress, cancel, None, None).map(|w| w.lossy)
+}
+
+/// Archivos a partir de este tamaño se guardan añadiendo solo lo nuevo si se
+/// escribió al final (los pequeños se reescriben enteros: es seguro y rápido).
+pub const APPEND_MIN: usize = 8 << 20;
+
+/// Como [`save_file`], con un reemplazo/cambio de encoding en streaming
+/// (`rw`) o, si `append` trae la huella que debe tener el archivo en disco
+/// (la del contenido mapeado) y solo se añadió texto al final, escribiendo
+/// solo eso al final del archivo.
+pub fn save_file_with(
+    pieces: &[Piece],
+    src: &Source,
+    index: &RwLock<Index>,
+    newline: &[u8],
+    target: &Path,
+    progress: &AtomicU64,
+    cancel: &AtomicBool,
+    rw: Option<&Rewrite>,
+    append: Option<document::Stamp>,
+) -> Result<Written, String> {
     let target = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+    if let (None, Some(stamp)) = (rw, append) {
+        let same = document::Stamp::read(&target).is_ok_and(|now| now == stamp && now.len == src.data.len() as u64);
+        if let Some(tail) = same.then(|| appended_tail(pieces, src, index, newline)).flatten() {
+            return append_to(&target, &tail, stamp.len).map_err(|e| e.to_string()).map(|_| {
+                progress.store(src.data.len() as u64, Ordering::Relaxed);
+                Written { appended: true, ..Default::default() }
+            });
+        }
+    }
     let dir = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let name = target.file_name().ok_or(t!("la ruta no tiene nombre de archivo"))?.to_string_lossy();
     let tmp = dir.join(format!(".{name}.buscador-tmp"));
-    let res = (|| -> io::Result<usize> {
+    let res = (|| -> io::Result<Written> {
         let f = std::fs::File::create(&tmp)?;
         let mut w = io::BufWriter::with_capacity(1 << 20, f);
-        let lossy = write_document(pieces, src, index, newline, &mut w, progress, cancel)?;
+        let written = match rw {
+            Some(rw) => rewrite_document(pieces, src, index, newline, &mut w, progress, cancel, rw)?,
+            None => Written { lossy: write_document(pieces, src, index, newline, &mut w, progress, cancel)?, ..Default::default() },
+        };
         let f = w.into_inner().map_err(|e| e.into_error())?;
         f.sync_all()?;
         drop(f);
@@ -570,12 +958,23 @@ pub fn save_file(
             std::fs::set_permissions(&tmp, m.permissions())?;
         }
         replace_file(&tmp, &target, cfg!(windows))?;
-        Ok(lossy)
+        Ok(written)
     })();
     if res.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     res.map_err(|e| e.to_string())
+}
+
+/// Añade `tail` al final de `target` (que mide `len`). Si falla a medias, lo
+/// deja como estaba.
+fn append_to(target: &Path, tail: &[u8], len: u64) -> io::Result<()> {
+    let mut f = std::fs::OpenOptions::new().append(true).open(target)?;
+    let r = f.write_all(tail).and_then(|_| f.sync_all());
+    if r.is_err() {
+        let _ = f.set_len(len);
+    }
+    r
 }
 
 /// Pone `tmp` en lugar de `target`. En Unix basta con `rename` (el `mmap`
@@ -612,6 +1011,29 @@ fn replace_aside(tmp: &Path, target: &Path) -> io::Result<()> {
     }
     let _ = std::fs::remove_file(&old);
     Ok(())
+}
+
+/// Una línea visible: si mide más que lo que se pinta, solo un trozo.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Row {
+    pub n: u64,
+    pub text: String,
+    /// Byte de la línea donde empieza `text`.
+    pub start: usize,
+    /// Hay más texto después de `text`.
+    pub more: bool,
+    /// Bytes de la línea entera.
+    pub len: usize,
+}
+
+/// Trozo de `s` desde `from` (ver `Source::decode_window`).
+pub fn str_window(n: u64, s: &str, from: usize, cap: usize) -> Row {
+    if s.len() <= cap {
+        return Row { n, text: s.to_string(), start: 0, more: false, len: s.len() };
+    }
+    let a = floor_char(s, from);
+    let b = floor_char(s, a + cap);
+    Row { n, text: s[a..b].to_string(), start: a, more: b < s.len(), len: s.len() }
 }
 
 /// `\r\n` y `\r` sueltos pasan a `\n`.
@@ -776,6 +1198,123 @@ mod tests {
         assert!(!b.is_dirty());
         b.replace(&doc, Pos::new(0, 0), Pos::new(0, 0), "€", EditKind::Typing, C).unwrap();
         assert_eq!(save(&b, &doc), b"\x80a\xF1o\n");
+    }
+
+    fn rewrite(pieces: &[Piece], doc: &Document, rw: &Rewrite) -> io::Result<(Vec<u8>, Written)> {
+        let mut out = Vec::new();
+        let w = rewrite_document(pieces, &doc.src, &doc.index, &doc.newline_bytes(), &mut out, &AtomicU64::new(0), &AtomicBool::new(false), rw)?;
+        Ok((out, w))
+    }
+
+    fn replacer(pat: &str, to: &'static str) -> Rewrite {
+        let re = regex::Regex::new(&format!("(?m){pat}")).unwrap();
+        let find = regex::bytes::Regex::new(&format!("(?m){pat}")).unwrap();
+        let apply = Box::new(move |t: &str| match re.replace_all(t, to) {
+            std::borrow::Cow::Owned(o) if o != t => Some(o),
+            _ => None,
+        });
+        Rewrite { edit: Some(LineEdit { find, apply }), recode: None }
+    }
+
+    #[test]
+    fn streaming_replace() {
+        let doc = open("srep.txt", b"a1\nb2\r\na3 a4\nc4\n\na5");
+        let rw = replacer(r"a(\d)", "Z$1");
+        let (out, w) = rewrite(&Buffer::new(&doc).pieces, &doc, &rw).unwrap();
+        assert_eq!(out, b"Z1\nb2\r\nZ3 Z4\nc4\n\nZ5");
+        assert_eq!(w.changed, 3);
+        // `^` funciona por línea y las ediciones en RAM también se reemplazan.
+        let mut b = Buffer::new(&doc);
+        b.replace(&doc, Pos::new(3, 0), Pos::new(3, 0), "a9", EditKind::Typing, C).unwrap();
+        let (out, _) = rewrite(&b.pieces, &doc, &replacer("^a", "_")).unwrap();
+        assert_eq!(out, b"_1\nb2\r\n_3 a4\n_9c4\n\n_5");
+        // Otro encoding: las líneas que no cambian se copian byte a byte.
+        let (l1, _, _) = encoding_rs::WINDOWS_1252.encode("año\nniño\nsol\n");
+        let doc = open("srep-l1.txt", &l1);
+        let (out, w) = rewrite(&Buffer::new(&doc).pieces, &doc, &replacer("ñ", "nn")).unwrap();
+        assert_eq!(out, b"anno\nninno\nsol\n");
+        assert_eq!(w.changed, 2);
+        // UTF-16: cada línea se localiza en los bytes originales.
+        let mut bytes = vec![0xFF, 0xFE];
+        for u in "uno\r\ndos\r\ntres".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        let doc = open("srep-u16.txt", &bytes);
+        let (out, _) = rewrite(&Buffer::new(&doc).pieces, &doc, &replacer("o", "0")).unwrap();
+        let u: Vec<u16> = out[2..].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(String::from_utf16(&u).unwrap(), "un0\r\nd0s\r\ntres");
+    }
+
+    #[test]
+    fn recode_streaming() {
+        let doc = open("rec.txt", "año\r\nb\nc".as_bytes());
+        let to16 = Recode { encoding: encoding_rs::UTF_16LE, bom: true, eol: Some(Eol::Lf), lossy: false };
+        let (out, _) = rewrite(&Buffer::new(&doc).pieces, &doc, &Rewrite { edit: None, recode: Some(to16) }).unwrap();
+        assert_eq!(&out[..2], &[0xFF, 0xFE]);
+        let u: Vec<u16> = out[2..].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(String::from_utf16(&u).unwrap(), "año\nb\nc");
+        // CRLF y sin BOM, con una línea editada.
+        let mut b = Buffer::new(&doc);
+        b.replace(&doc, Pos::new(1, 1), Pos::new(1, 1), "!", EditKind::Typing, C).unwrap();
+        let crlf = Recode { encoding: encoding_rs::UTF_8, bom: false, eol: Some(Eol::Crlf), lossy: false };
+        let (out, _) = rewrite(&b.pieces, &doc, &Rewrite { edit: None, recode: Some(crlf) }).unwrap();
+        assert_eq!(out, "año\r\nb!\r\nc".as_bytes());
+        // Lo que no cabe en el destino: error con la línea, o «?» si se acepta.
+        let doc = open("rec2.txt", "a\nb 日本\n".as_bytes());
+        let l1 = Recode { encoding: encoding_rs::WINDOWS_1252, bom: false, eol: None, lossy: false };
+        let e = rewrite(&Buffer::new(&doc).pieces, &doc, &Rewrite { edit: None, recode: Some(l1) }).unwrap_err();
+        assert!(e.to_string().contains('2'), "{e}");
+        let (out, w) = rewrite(&Buffer::new(&doc).pieces, &doc, &Rewrite { edit: None, recode: Some(Recode { lossy: true, ..l1 }) }).unwrap();
+        assert_eq!(out, b"a\nb ??\n");
+        assert_eq!(w.lossy, 2);
+        // Quitar el BOM.
+        let doc = open("rec3.txt", b"\xEF\xBB\xBFhola\n");
+        let nobom = Recode { encoding: encoding_rs::UTF_8, bom: false, eol: None, lossy: false };
+        let (out, _) = rewrite(&Buffer::new(&doc).pieces, &doc, &Rewrite { edit: None, recode: Some(nobom) }).unwrap();
+        assert_eq!(out, b"hola\n");
+    }
+
+    #[test]
+    fn append_only_save() {
+        let dir = std::env::temp_dir().join(format!("buscador-anadir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("log.txt");
+        std::fs::write(&p, "a\nb\n").unwrap();
+        let mut doc = Document::open(&p).unwrap();
+        while !doc.indexing_done() {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let mut b = Buffer::new(&doc);
+        let end = Pos::new(2, 0);
+        b.replace(&doc, end, end, "c\nd", EditKind::Other, C).unwrap();
+        let tail = appended_tail(&b.pieces, &doc.src, &doc.index, &doc.newline_bytes()).unwrap();
+        assert_eq!(tail, b"c\nd");
+        let w = save_file_with(&b.pieces, &doc.src, &doc.index, &doc.newline_bytes(), &p, &AtomicU64::new(0), &AtomicBool::new(false), None, doc.backing).unwrap();
+        assert!(w.appended);
+        assert_eq!(std::fs::read(&p).unwrap(), b"a\nb\nc\nd");
+        // Se vuelve a mapear y se añade otra vez (el archivo no acaba en salto).
+        assert!(matches!(doc.check_growth().unwrap(), document::Change::Grew { .. }));
+        while !doc.indexing_done() {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let end = Pos::new(3, 1);
+        b.replace(&doc, end, end, "\ne", EditKind::Other, C).unwrap();
+        assert_eq!(appended_tail(&b.pieces, &doc.src, &doc.index, &doc.newline_bytes()).unwrap(), b"\ne");
+        let w = save_file_with(&b.pieces, &doc.src, &doc.index, &doc.newline_bytes(), &p, &AtomicU64::new(0), &AtomicBool::new(false), None, doc.backing).unwrap();
+        assert!(w.appended);
+        assert_eq!(std::fs::read(&p).unwrap(), b"a\nb\nc\nd\ne");
+        // Un cambio en medio, o el archivo tocado por otro: se reescribe entero.
+        doc.check_growth().unwrap();
+        while !doc.indexing_done() {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        b.replace(&doc, Pos::new(0, 0), Pos::new(0, 0), "x", EditKind::Typing, C).unwrap();
+        assert!(appended_tail(&b.pieces, &doc.src, &doc.index, &doc.newline_bytes()).is_none());
+        let w = save_file_with(&b.pieces, &doc.src, &doc.index, &doc.newline_bytes(), &p, &AtomicU64::new(0), &AtomicBool::new(false), None, doc.backing).unwrap();
+        assert!(!w.appended);
+        assert_eq!(std::fs::read(&p).unwrap(), b"xa\nb\nc\nd\ne");
+        drop(doc);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

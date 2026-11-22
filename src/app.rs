@@ -39,6 +39,13 @@ fn show_whitespace() -> bool {
     SHOW_WS.load(Ordering::Relaxed)
 }
 
+/// Fondo de color en las líneas ERROR / WARN (ajuste `niveles=`).
+static LEVEL_COLORS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn level_colors() -> bool {
+    LEVEL_COLORS.load(Ordering::Relaxed)
+}
+
 fn tab_width() -> usize {
     TAB_WIDTH.load(Ordering::Relaxed).clamp(1, 16)
 }
@@ -52,7 +59,18 @@ struct SaveJob {
     target: PathBuf,
     progress: Arc<AtomicU64>,
     total: u64,
-    result: Arc<Mutex<Option<Result<usize, String>>>>,
+    result: Arc<Mutex<Option<Result<buffer::Written, String>>>>,
+    kind: SaveKind,
+}
+
+/// Qué hace un guardado además de escribir el texto.
+#[derive(Clone, Debug, PartialEq)]
+enum SaveKind {
+    Normal,
+    /// Reemplazar todas las coincidencias mientras se escribe (sin RAM ni deshacer).
+    Replace { repl: String, regex: bool },
+    /// Otro encoding, saltos de línea o BOM.
+    Recode(buffer::Recode),
 }
 
 pub struct Tab {
@@ -62,8 +80,13 @@ pub struct Tab {
     editable: bool,
     top: u64,
     scroll_frac: f32,
-    hscroll: f32,
-    content_width: f32,
+    /// Desplazamiento horizontal en píxeles (f64: una línea de cientos de MB
+    /// mide miles de millones de píxeles).
+    hscroll: f64,
+    content_width: f64,
+    /// Columna (en caracteres) del cursor para la barra de estado:
+    /// (línea, byte, versión, edit_gen) → columna.
+    col_cache: std::cell::Cell<Option<((u64, usize, u64, u64), usize)>>,
     anchor: Option<Pos>,
     cursor: Option<Pos>,
     /// Columna visual a mantener al subir/bajar.
@@ -83,7 +106,7 @@ pub struct Tab {
     center_on: Option<u64>,
     results_top: u64,
     visible_rows: u64,
-    detail_cache: Option<(u64, u64, String)>,
+    detail_cache: Option<DetailCache>,
     save: Option<SaveJob>,
     /// Archivo nuevo sin guardar: su `doc` es un archivo vacío temporal que se
     /// borra al guardar o al cerrar; Guardar pide dónde.
@@ -208,6 +231,7 @@ impl Tab {
             scroll_frac: 0.0,
             hscroll: 0.0,
             content_width: 0.0,
+            col_cache: Default::default(),
             anchor: None,
             cursor: None,
             goal: None,
@@ -277,6 +301,52 @@ impl Tab {
 
     fn line_len(&self, n: u64) -> usize {
         self.line(n).len()
+    }
+
+    /// Bytes de una línea sin decodificarla (para saber si es muy larga).
+    fn line_bytes(&self, n: u64) -> usize {
+        match &self.buf {
+            Some(b) => b.line_bytes(&self.doc, n),
+            None => self.doc.lines(n, 1).first().map_or(0, |l| l.2 - l.1),
+        }
+    }
+
+    /// Como `rows`, pero de las líneas de más de `cap` bytes solo el trozo que
+    /// empieza en su byte `from` (para ver cualquier parte de una línea de MB).
+    fn rows_at(&self, first: u64, count: usize, cap: usize, from: usize) -> Vec<buffer::Row> {
+        let utf8 = self.doc.src.encoding == encoding_rs::UTF_8;
+        let mut rows = match &self.buf {
+            Some(b) => b.rows_at(&self.doc, first, count, cap, from),
+            None => self
+                .doc
+                .lines(first, count)
+                .into_iter()
+                .map(|(n, s, e)| {
+                    let (text, start, more) = self.doc.src.decode_window(s, e, from, cap);
+                    buffer::Row { n, text, start, more, len: e - s }
+                })
+                .collect(),
+        };
+        if !utf8 {
+            // Fuera de UTF-8 no se trocea (ver `decode_window`): se ve el principio.
+            for r in rows.iter_mut().filter(|r| r.start == 0 && r.more) {
+                r.len = r.text.len();
+            }
+        }
+        rows
+    }
+
+    /// Columna (en caracteres, desde 1) de una posición; se recuerda la última.
+    fn char_col(&self, c: Pos) -> usize {
+        let key = (c.line, c.col, self.version(), self.edit_gen);
+        if let Some((k, v)) = self.col_cache.get().filter(|(k, _)| *k == key) {
+            let _ = k;
+            return v;
+        }
+        let line = self.rows(c.line, 1, c.col.max(1)).into_iter().next().map(|r| r.1).unwrap_or_default();
+        let col = line[..buffer::floor_char(&line, c.col)].chars().count() + 1;
+        self.col_cache.set(Some((key, col)));
+        col
     }
 
     /// Líneas visibles: (nº, texto recortado a `cap` bytes, recortada).
@@ -349,6 +419,21 @@ impl Tab {
         self.cursor = Some(b);
         self.goal = None;
         self.reveal = true;
+    }
+
+    /// Va a la primera línea cuya fecha/hora llega a `ts` (bisección).
+    fn goto_time(&mut self, ts: &crate::timestamp::Stamp) -> String {
+        if !self.doc.indexing_done() && self.buf.is_none() {
+            return t!("Espera a que termine de indexar").into();
+        }
+        let found = crate::timestamp::seek(ts, self.total(), |n| self.rows(n, 1, 160).into_iter().next().map(|r| r.1).unwrap_or_default());
+        match found {
+            Some((n, at)) => {
+                self.goto_line(n);
+                tf!("Línea {n} · {at}", n = fmt_num(n + 1), at = at.show())
+            }
+            None => t!("No se encontraron fechas ni horas al principio de las líneas").into(),
+        }
     }
 
     fn goto_line(&mut self, line: u64) {
@@ -700,6 +785,14 @@ impl Tab {
         Ok(())
     }
 
+    /// Hay demasiadas coincidencias para reemplazarlas en memoria: se ofrece
+    /// hacerlo mientras se escribe el archivo.
+    fn replace_needs_stream(&self) -> bool {
+        self.search.as_ref().is_some_and(|s| {
+            s.is_done() && !self.search_stale && (s.truncated.load(Ordering::Relaxed) || s.count() > MAX_REPLACE_LINES)
+        })
+    }
+
     fn replace_all(&mut self, repl: &str, regex_mode: bool) -> Result<String, String> {
         let Some(s) = &self.search else { return Err(t!("Busca algo primero").into()) };
         if !s.is_done() {
@@ -735,12 +828,17 @@ impl Tab {
     // ---- Guardar ----
 
     fn start_save(&mut self, target: PathBuf) -> Result<(), String> {
+        self.start_save_with(target, SaveKind::Normal)
+    }
+
+    fn start_save_with(&mut self, target: PathBuf, kind: SaveKind) -> Result<(), String> {
         if self.save.is_some() {
             return Err(t!("Ya se está guardando").into());
         }
         let same = target == self.doc.path;
+        let normal = kind == SaveKind::Normal;
         if self.buf.is_none() {
-            if same {
+            if same && normal {
                 return Err(t!("No hay cambios que guardar").into());
             }
             if !self.doc.indexing_done() {
@@ -749,21 +847,49 @@ impl Tab {
             self.buf = Some(Buffer::new(&self.doc));
         }
         let buf = self.buf.as_ref().unwrap();
-        if same && !buf.is_dirty() {
+        if same && normal && !buf.is_dirty() {
             return Err(t!("No hay cambios que guardar").into());
         }
+        let rewrite = match &kind {
+            SaveKind::Normal => None,
+            SaveKind::Replace { repl, regex } => {
+                let s = self.search.as_ref().ok_or(t!("Busca algo primero"))?;
+                let mut probe = Vec::new();
+                if let Err(c) = encoding::encode_into(self.doc.src.encoding, repl, &mut probe) {
+                    return Err(tf!("«{c}» no se puede representar en {name}", c = c, name = self.doc.src.encoding.name()));
+                }
+                let find = s.params.bytes_regex().map_err(|e| e.to_string())?;
+                let (re, repl, regex) = (s.highlight.clone(), repl.clone(), *regex);
+                let apply = Box::new(move |t: &str| {
+                    let r = if regex { re.replace_all(t, repl.as_str()) } else { re.replace_all(t, regex::NoExpand(&repl)) };
+                    match r {
+                        Cow::Owned(o) if o != t => Some(o),
+                        _ => None,
+                    }
+                });
+                Some(buffer::Rewrite { edit: Some(buffer::LineEdit { find, apply }), recode: None })
+            }
+            SaveKind::Recode(r) => Some(buffer::Rewrite { edit: None, recode: Some(*r) }),
+        };
+        // Solo se escribió al final de un archivo grande que nadie más tocó:
+        // basta con añadir lo nuevo.
+        let append = (normal && same && !self.untitled && self.doc.len() >= buffer::APPEND_MIN)
+            .then_some(self.doc.backing)
+            .flatten()
+            .filter(|b| *b == self.doc.disk);
         let (pieces, src, index, nl) = (buf.snapshot(), self.doc.src.clone(), self.doc.index.clone(), self.doc.newline_bytes());
         let job = SaveJob {
             target: target.clone(),
             progress: Default::default(),
             total: self.doc.len() as u64,
             result: Default::default(),
+            kind,
         };
         let (progress, result) = (job.progress.clone(), job.result.clone());
         std::thread::Builder::new()
             .name("save".into())
             .spawn(move || {
-                let r = buffer::save_file(&pieces, &src, &index, &nl, &target, &progress, &AtomicBool::new(false));
+                let r = buffer::save_file_with(&pieces, &src, &index, &nl, &target, &progress, &AtomicBool::new(false), rewrite.as_ref(), append);
                 *result.lock().unwrap() = Some(r);
             })
             .map_err(|e| e.to_string())?;
@@ -779,17 +905,30 @@ impl Tab {
         let job = self.save.as_ref()?;
         let r = job.result.lock().unwrap().take()?;
         let target = job.target.clone();
-        self.save = None;
-        let lossy = match r {
-            Ok(l) => l,
+        let kind = self.save.take().unwrap().kind;
+        let w = match r {
+            Ok(w) => w,
             Err(e) => return Some(tf!("Error al guardar: {e}", e = e)),
         };
         let size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
         self.ext = None;
         let ram = self.buf.as_ref().map_or(0, |b| b.memory().1);
-        let keep = !self.follow && ram < (64 << 20) && self.buf.is_some();
+        // Tras reemplazar o convertir en streaming, lo editado ya no describe el
+        // archivo: hay que reabrirlo.
+        let keep = kind == SaveKind::Normal && !self.follow && ram < (64 << 20) && self.buf.is_some();
         let old_name = self.doc.name.clone();
-        let mut m = if keep {
+        let mut m = if keep && w.appended {
+            // Solo se añadió al final: se vuelve a mapear el archivo (ya es lo
+            // que hay en disco) y se sigue indexando desde la última línea. Lo
+            // editado describe el mismo texto, así que se conserva el deshacer.
+            if let Ok(crate::document::Change::Grew { from_line, from_byte }) = self.doc.check_growth() {
+                self.grew(from_line, from_byte);
+            } else {
+                self.doc.rebind(&target);
+            }
+            self.buf.as_mut().unwrap().mark_saved();
+            tf!("Guardado {name}: solo se añadió lo nuevo al final ({len})", name = self.doc.name, len = human_size(size))
+        } else if keep {
             let old_path = self.doc.path.clone();
             self.doc.rebind(&target);
             if std::mem::take(&mut self.untitled) {
@@ -799,7 +938,10 @@ impl Tab {
             self.buf.as_mut().unwrap().mark_saved();
             tf!("Guardado {name} ({len})", name = self.doc.name, len = human_size(size))
         } else {
-            let enc = self.doc.src.encoding;
+            let enc = match &kind {
+                SaveKind::Recode(r) => r.encoding,
+                _ => self.doc.src.encoding,
+            };
             match Document::open(&target) {
                 Ok(mut doc) => {
                     if doc.src.encoding != enc {
@@ -812,7 +954,33 @@ impl Tab {
                     }
                     self.buf = None;
                     self.minimap_cache = None;
-                    tf!("Guardado {name} ({len}) · el deshacer se reinició", name = self.doc.name, len = human_size(size))
+                    self.syntax_cache = None;
+                    self.edit_gen += 1;
+                    if kind != SaveKind::Normal {
+                        // El texto cambió: repetir la búsqueda sobre el archivo nuevo.
+                        if let Some(s) = &self.search {
+                            self.search = Search::start(self.doc.src.clone(), None, s.params.clone()).ok();
+                        }
+                        self.search_stale = false;
+                        self.current = None;
+                    }
+                    match &kind {
+                        SaveKind::Replace { .. } => tf!(
+                            "Reemplazado en {n} líneas y guardado {name} ({len}) · el deshacer se reinició",
+                            n = fmt_num(w.changed),
+                            name = self.doc.name,
+                            len = human_size(size)
+                        ),
+                        SaveKind::Recode(r) => tf!(
+                            "Convertido a {enc} y guardado {name} ({len})",
+                            enc = encoding::label(r.encoding),
+                            name = self.doc.name,
+                            len = human_size(size)
+                        ),
+                        SaveKind::Normal => {
+                            tf!("Guardado {name} ({len}) · el deshacer se reinició", name = self.doc.name, len = human_size(size))
+                        }
+                    }
                 }
                 Err(e) => return Some(tf!("Guardado, pero no se pudo reabrir: {e}", e = e)),
             }
@@ -821,8 +989,11 @@ impl Tab {
             self.lang = syntax::detect(&self.doc.name);
         }
         self.detail_cache = None;
-        if lossy > 0 {
-            m += &tf!(" · {lossy} caracteres no representables se guardaron como «?»", lossy = lossy);
+        if w.lossy > 0 {
+            m += &tf!(" · {lossy} caracteres no representables se guardaron como «?»", lossy = w.lossy);
+        }
+        if w.invalid {
+            m += t!(" · había bytes no válidos en el original: se escribieron como «�»");
         }
         Some(m)
     }
@@ -1519,6 +1690,19 @@ enum DialogKind {
     SaveAs(PathBuf),
     /// Guardar los bytes decodificados en «Convertir».
     SaveBytes,
+    /// Guardar como, reemplazando o convirtiendo mientras se escribe.
+    SaveAsWith(PathBuf, SaveKind),
+}
+
+/// Opciones de «Convertir el archivo».
+struct RecodeWin {
+    /// Ruta de la pestaña (la identifica).
+    path: PathBuf,
+    encoding: &'static encoding_rs::Encoding,
+    /// `None` = conservar los saltos.
+    eol: Option<buffer::Eol>,
+    bom: bool,
+    lossy: bool,
 }
 
 /// Diálogo de archivo asíncrono esperando en un hilo; `result` = Some(respuesta)
@@ -1698,6 +1882,29 @@ pub(crate) fn reveal_label() -> &'static str {
     }
 }
 
+/// Cuenta y repositorio del proyecto en GitHub (datos públicos del perfil).
+const GITHUB_USER: &str = "airylp";
+const GITHUB_NAME: &str = "Airy";
+const GITHUB_REPO: &str = "buscador";
+const GITHUB_BLOG: &str = "https://decodigo.com";
+
+fn repo_url(rest: &str) -> String {
+    format!("https://github.com/{GITHUB_USER}/{GITHUB_REPO}{rest}")
+}
+
+/// Abre un enlace en el navegador.
+fn open_url(url: &str) {
+    use std::process::Command;
+    let r = if MAC {
+        Command::new("open").arg(url).spawn()
+    } else if cfg!(windows) {
+        Command::new("explorer").arg(url).spawn()
+    } else {
+        Command::new("xdg-open").arg(url).spawn()
+    };
+    let _ = r;
+}
+
 /// Abre el gestor de archivos con el archivo seleccionado (o su carpeta en Linux).
 fn reveal_in_file_manager(path: &std::path::Path) -> std::io::Result<()> {
     use std::process::Command;
@@ -1810,6 +2017,15 @@ pub struct App {
     folder: crate::foldersearch::FolderSearch,
     /// Ventana «Convertir» (Base64 / hexadecimal).
     convert: crate::convert::Convert,
+    /// «Reemplazar todo» con demasiadas líneas para la RAM: (pestaña, reemplazo, regex).
+    stream_replace: Option<(usize, String, bool)>,
+    /// Ventana «Convertir el archivo» (encoding, saltos, BOM).
+    recode_win: Option<RecodeWin>,
+    /// Detalle: ver la línea tal cual aunque lleve JSON.
+    detail_raw: bool,
+    /// Ventana «Acerca de» abierta (y su ícono, creado al abrirla).
+    show_about: bool,
+    about_icon: Option<TextureHandle>,
     tabs: Vec<Tab>,
     active: usize,
     show_sidebar: bool,
@@ -1924,6 +2140,7 @@ impl App {
         TAB_WIDTH.store(settings.tab_width, Ordering::Relaxed);
         buffer::set_max_undo(settings.undo_steps);
         SHOW_WS.store(settings.show_ws || std::env::var("BUSCADOR_ESPACIOS_VER").is_ok(), Ordering::Relaxed);
+        LEVEL_COLORS.store(settings.levels, Ordering::Relaxed);
         // Idioma: el elegido (ajustes o instalador), si no el del sistema, si no español.
         let chosen = settings.lang.as_deref().and_then(crate::i18n::Lang::from_code);
         crate::i18n::set(chosen.or_else(crate::i18n::system).unwrap_or(crate::i18n::Lang::Es));
@@ -1995,6 +2212,11 @@ impl App {
             map: Default::default(),
             folder: Default::default(),
             convert: Default::default(),
+            stream_replace: None,
+            recode_win: None,
+            detail_raw: false,
+            show_about: false,
+            about_icon: None,
             view_focused: false,
             advs: Vec::new(),
             next_adv: 1,
@@ -2250,6 +2472,14 @@ impl App {
                     self.msg(e);
                 }
             }
+            DialogKind::SaveAsWith(src, kind) => {
+                let (Some(target), Some(t)) = (paths.into_iter().next(), self.tabs.iter_mut().find(|t| t.doc.path == src)) else {
+                    return;
+                };
+                if let Err(e) = t.start_save_with(target, kind) {
+                    self.msg(e);
+                }
+            }
         }
     }
 
@@ -2273,6 +2503,7 @@ impl App {
             header: self.show_header,
             tab_width: tab_width(),
             show_ws: show_whitespace(),
+            levels: level_colors(),
             undo_steps: buffer::max_undo(),
         };
         if let Err(e) = st.save() {
@@ -3012,7 +3243,13 @@ impl App {
                     }
                 }
                 if ui.button(t!("Reemplazar todo")).on_hover_text(t!("En todas las líneas encontradas · se deshace con Ctrl+Z")).clicked() {
-                    if let Some(r) = self.tab().map(|t| t.replace_all(&repl, re)) {
+                    if let Some(t) = self.tabs.get(self.active).filter(|t| t.replace_needs_stream()) {
+                        if t.editable {
+                            self.stream_replace = Some((self.active, repl, re));
+                        } else {
+                            self.msg(t!("Solo lectura: pulsa «Editar» (Ctrl+E) para modificar"));
+                        }
+                    } else if let Some(r) = self.tab().map(|t| t.replace_all(&repl, re)) {
                         self.msg(r.unwrap_or_else(|e| e));
                     }
                 }
@@ -3030,6 +3267,8 @@ impl App {
         for c in self.menu.poll() {
             match c {
                 Cmd::Settings => self.show_settings = true,
+                Cmd::Recode => self.open_recode(),
+                Cmd::About => self.show_about = true,
                 Cmd::Update => self.open_updater(ctx),
                 Cmd::ToggleResults => self.show_results = !self.show_results,
                 Cmd::ToggleDetail => self.show_detail = !self.show_detail,
@@ -3759,11 +3998,13 @@ impl App {
         let full = ui.available_rect_before_wrap();
         let full = Rect::from_min_size(full.min, vec2(full.width(), h));
         ui.allocate_rect(full, Sense::hover());
-        let right_w = 470.0_f32.min(full.width() * 0.55);
+        let right_w = 700.0_f32.min(full.width() * 0.6);
         let right = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
-        let left = Rect::from_min_max(full.min, pos2(right.left() - 6.0, full.bottom()));
 
-        ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)), |ui| {
+        let used = ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)), |ui| {
+            if ui.add(Button::new(RichText::new("ℹ").small()).small().selected(self.show_about)).on_hover_text(t!("Acerca de buscador")).clicked() {
+                self.show_about = !self.show_about;
+            }
             if ui
                 .add(Button::new(RichText::new("?").small().strong()).small().selected(self.show_keys))
                 .on_hover_text(t!("Atajos de teclado (F1)"))
@@ -3833,11 +4074,15 @@ impl App {
                 .on_hover_text(t!("Panel con la lista de líneas encontradas"));
         });
 
+        // Lo de la izquierda llega hasta donde empiezan los botones de la derecha.
+        let left = Rect::from_min_max(full.min, pos2(used.response.rect.left().min(right.right()) - 6.0, full.bottom()));
         ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.set_clip_rect(left.intersect(ui.clip_rect()));
             let mut goto_line = None;
+            let mut goto_time = None;
             let mut set_lang = None;
             let mut copied = false;
+            let mut open_recode = false;
             if let Some(t) = self.tabs.get(self.active) {
                 let d = &t.doc;
                 ui.label(RichText::new(if t.editable { t!("EDICIÓN") } else { t!("SOLO LECTURA") }).small().strong());
@@ -3845,21 +4090,25 @@ impl App {
                 // Cursor / ir a línea.
                 if self.goto_open {
                     ui.label(RichText::new(t!("Ir a línea:")).small());
-                    let r = ui.add(TextEdit::singleline(&mut self.goto).desired_width(90.0).hint_text(t!("nº de línea")));
+                    let r = ui
+                        .add(TextEdit::singleline(&mut self.goto).desired_width(150.0).hint_text(t!("nº de línea o fecha/hora")))
+                        .on_hover_text(t!("Un número va a esa línea. Una fecha u hora («2026-11-21 10:30», «21/11/2026», «10:30:15», «Nov 21 10:30») va a la primera línea de log que llega a ese momento."));
                     if std::mem::take(&mut self.focus_goto) {
                         r.request_focus();
                     }
                     if r.lost_focus() {
                         if ui.input(|i| i.key_pressed(Key::Enter)) {
-                            goto_line = self.goto.trim().replace(['.', ',', '_'], "").parse::<u64>().ok();
+                            match crate::timestamp::parse_query(&self.goto) {
+                                Some(ts) => goto_time = Some(ts),
+                                None => goto_line = self.goto.trim().replace(['.', ',', '_'], "").parse::<u64>().ok(),
+                            }
                         }
                         self.goto_open = false;
                     }
                 } else {
                     let mut s = match t.cursor {
                         Some(c) => {
-                            let line = t.rows(c.line, 1, c.col.max(1)).into_iter().next().map(|r| r.1).unwrap_or_default();
-                            let col = line[..buffer::floor_char(&line, c.col)].chars().count() + 1;
+                            let col = t.char_col(c);
                             tf!("Lín {line_1}, Col {fmt_num}", line_1 = fmt_num(c.line + 1), fmt_num = fmt_num(col as u64))
                         }
                         None => t!("Ir a línea…").to_string(),
@@ -3874,7 +4123,7 @@ impl App {
                             tf!(" · {line_1} líneas seleccionadas", line_1 = fmt_num(b.line - a.line + 1))
                         };
                     }
-                    if ui.add(Button::new(RichText::new(s).small()).frame(false)).on_hover_text(t!("Ir a línea (Ctrl+G)")).clicked() {
+                    if ui.add(Button::new(RichText::new(s).small()).frame(false)).on_hover_text(t!("Ir a línea o a una fecha/hora (Ctrl+G)")).clicked() {
                         self.goto_open = true;
                         self.focus_goto = true;
                     }
@@ -3890,7 +4139,16 @@ impl App {
                 ui.separator();
                 ui.label(RichText::new(human_size(d.len() as u64)).small());
                 ui.separator();
-                ui.label(RichText::new(encoding::label(d.src.encoding)).small()).on_hover_text(tf!("Detectado por: {detect_reason}", detect_reason = d.detect_reason));
+                let bom = if d.src.start > 0 { " BOM" } else { "" };
+                let r = ui.add(Button::new(RichText::new(format!("{}{bom}", encoding::label(d.src.encoding))).small()).frame(false));
+                if r.on_hover_text(tf!("Detectado por: {detect_reason} · clic: convertir a otro encoding, saltos de línea o BOM", detect_reason = d.detect_reason)).clicked() {
+                    open_recode = true;
+                }
+                ui.separator();
+                let r = ui.add(Button::new(RichText::new(if newline_is_crlf(d) { "CRLF" } else { "LF" }).small()).frame(false));
+                if r.on_hover_text(t!("Saltos de línea (según la primera línea) · clic: convertir a LF o CRLF")).clicked() {
+                    open_recode = true;
+                }
                 if self.syntax_on {
                     ui.separator();
                     let mut lang = t.lang;
@@ -3952,6 +4210,9 @@ impl App {
             if copied {
                 self.msg(t!("Ruta copiada"));
             }
+            if open_recode {
+                self.open_recode();
+            }
             if let (Some(l), Some(t)) = (set_lang, self.tabs.get_mut(self.active)) {
                 t.lang = l;
                 t.syntax_cache = None;
@@ -3959,6 +4220,11 @@ impl App {
             if let (Some(n), Some(t)) = (goto_line, self.tabs.get_mut(self.active)) {
                 let last = t.total().saturating_sub(1);
                 t.goto_line(n.saturating_sub(1).min(last));
+                self.focus_view = true;
+            }
+            if let (Some(ts), Some(t)) = (goto_time, self.tabs.get_mut(self.active)) {
+                let m = t.goto_time(&ts);
+                self.msg(m);
                 self.focus_view = true;
             }
         });
@@ -4024,6 +4290,260 @@ impl App {
 }
 
 impl App {
+    /// Diálogo «Guardar como» que al elegir ruta guarda con `kind`.
+    fn save_as_with(&mut self, i: usize, kind: SaveKind) {
+        let Some(t) = self.tabs.get(i) else { return };
+        if self.dialog.is_some() {
+            return;
+        }
+        let name = if t.untitled { format!("{}.txt", t.doc.name) } else { t.doc.name.clone() };
+        let mut d = rfd::AsyncFileDialog::new().set_title(t!("Guardar como")).set_file_name(name);
+        if let Some(dir) = t.doc.path.parent().filter(|_| !t.untitled) {
+            d = d.set_directory(dir);
+        }
+        let fut = d.save_file();
+        let kind = DialogKind::SaveAsWith(t.doc.path.clone(), kind);
+        self.dialog = Some(PendingDialog::spawn(&self.ctx, kind, async move { fut.await.map(|h| vec![h.path().to_path_buf()]) }));
+    }
+
+    /// Guarda la pestaña `i` encima de su archivo con `kind` (reemplazar o
+    /// convertir), salvo que otro programa lo haya cambiado.
+    fn save_in_place_with(&mut self, i: usize, kind: SaveKind) {
+        let Some(t) = self.tabs.get_mut(i) else { return };
+        let changed = t.ext.is_some() || crate::document::Stamp::read(&t.doc.path).is_ok_and(|now| now != t.doc.disk);
+        let r = if changed {
+            Err(t!("El archivo cambió en el disco: recárgalo (⟳) o usa «Guardar como…»").to_string())
+        } else {
+            let target = t.doc.path.clone();
+            t.start_save_with(target, kind)
+        };
+        if let Err(e) = r {
+            self.msg(e);
+        }
+    }
+
+    /// «Acerca de»: versión, licencia y enlaces al proyecto en GitHub.
+    fn about_window(&mut self, ctx: &Context) {
+        if !self.show_about {
+            return;
+        }
+        let icon = self
+            .about_icon
+            .get_or_insert_with(|| {
+                let n = 128;
+                let img = ColorImage::from_rgba_unmultiplied([n, n], &crate::icon::rgba(n));
+                ctx.load_texture("acerca-icono", img, TextureOptions::LINEAR)
+            })
+            .clone();
+        let mut close = false;
+        let mut update = false;
+        let link = |ui: &mut Ui, text: &str, url: &str| {
+            let r = ui.link(text).on_hover_text(url);
+            if r.clicked() {
+                open_url(url);
+            }
+        };
+        let modal = Modal::new(Id::NULL.with("about")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.horizontal(|ui| {
+                ui.add(Image::new(&icon).fit_to_exact_size(vec2(64.0, 64.0)));
+                ui.vertical(|ui| {
+                    ui.heading("buscador");
+                    ui.label(tf!("Versión {v}", v = crate::update::version_label()));
+                    ui.label(RichText::new(t!("Visor y editor de archivos de varios GB")).weak());
+                });
+            });
+            ui.add_space(8.0);
+            ui.separator();
+            Grid::new("about-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                ui.label(RichText::new(t!("Autor")).strong());
+                ui.horizontal(|ui| {
+                    ui.label(GITHUB_NAME);
+                    link(ui, &format!("@{GITHUB_USER}"), &format!("https://github.com/{GITHUB_USER}"));
+                });
+                ui.end_row();
+                ui.label(RichText::new("GitHub").strong());
+                link(ui, &format!("github.com/{GITHUB_USER}/{GITHUB_REPO}"), &repo_url(""));
+                ui.end_row();
+                ui.label(RichText::new(t!("Sitio web")).strong());
+                link(ui, GITHUB_BLOG.trim_start_matches("https://"), GITHUB_BLOG);
+                ui.end_row();
+                ui.label(RichText::new(t!("Licencia")).strong());
+                ui.horizontal(|ui| {
+                    ui.label(tf!("MIT · © 2026 {user}", user = GITHUB_USER));
+                    link(ui, t!("ver"), &repo_url("/blob/main/LICENSE"));
+                });
+                ui.end_row();
+                ui.label(RichText::new(t!("Hecho con")).strong());
+                ui.label("Rust · egui / eframe");
+                ui.end_row();
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                link(ui, t!("Versiones"), &repo_url("/releases"));
+                ui.label("·");
+                link(ui, t!("Reportar un problema"), &repo_url("/issues/new"));
+                ui.label("·");
+                link(ui, t!("Código fuente"), &repo_url(""));
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(t!("Buscar actualizaciones…")).clicked() {
+                    update = true;
+                    close = true;
+                }
+                if ui.button(t!("Cerrar")).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close || modal.should_close() {
+            self.show_about = false;
+        }
+        if update {
+            self.open_updater(ctx);
+        }
+    }
+
+    /// «Reemplazar todo» con más líneas de las que caben en memoria.
+    fn stream_replace_dialog(&mut self, ctx: &Context) {
+        let Some((i, repl, re)) = self.stream_replace.clone() else { return };
+        let Some(t) = self.tabs.get(i) else {
+            self.stream_replace = None;
+            return;
+        };
+        let n = t.search.as_ref().map_or(0, |s| s.count());
+        let more = t.search.as_ref().is_some_and(|s| s.truncated.load(Ordering::Relaxed));
+        let (untitled, dirty) = (t.untitled, t.dirty());
+        let mut choice = None;
+        Modal::new(Id::NULL.with("stream-replace")).show(ctx, |ui| {
+            ui.set_max_width(460.0);
+            let count = if more { tf!("más de {n}", n = fmt_num(n as u64)) } else { fmt_num(n as u64) };
+            ui.heading(tf!("Reemplazar en {count} líneas", count = count));
+            ui.add_space(6.0);
+            ui.label(tf!(
+                "Son demasiadas para hacerlo en memoria (máx. {max}). Se puede reemplazar mientras se escribe el archivo: no usa RAM, pero se guarda al terminar y no se puede deshacer.",
+                max = fmt_num(MAX_REPLACE_LINES as u64)
+            ));
+            if dirty {
+                ui.label(t!("Los cambios sin guardar también se guardan."));
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!untitled, Button::new(t!("Reemplazar y guardar"))).clicked() {
+                    choice = Some(1);
+                }
+                if ui.button(t!("Guardar en otro archivo…")).on_hover_text(t!("El original no se toca")).clicked() {
+                    choice = Some(2);
+                }
+                if ui.button(t!("Cancelar")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                    choice = Some(0);
+                }
+            });
+        });
+        let Some(c) = choice else { return };
+        self.stream_replace = None;
+        let kind = SaveKind::Replace { repl, regex: re };
+        match c {
+            1 => self.save_in_place_with(i, kind),
+            2 => self.save_as_with(i, kind),
+            _ => {}
+        }
+    }
+
+    /// Abre «Convertir el archivo» para la pestaña activa.
+    fn open_recode(&mut self) {
+        let Some(t) = self.tabs.get(self.active) else { return };
+        let d = &t.doc;
+        self.recode_win = Some(RecodeWin {
+            path: d.path.clone(),
+            encoding: d.src.encoding,
+            eol: None,
+            bom: d.src.start > 0,
+            lossy: false,
+        });
+    }
+
+    /// «Convertir el archivo»: otro encoding, saltos LF/CRLF, poner o quitar el BOM.
+    fn recode_window(&mut self, ctx: &Context) {
+        let Some(w) = &mut self.recode_win else { return };
+        let Some(i) = self.tabs.iter().position(|t| t.doc.path == w.path) else {
+            self.recode_win = None;
+            return;
+        };
+        let t = &self.tabs[i];
+        let d = &t.doc;
+        let crlf_now = newline_is_crlf(d);
+        let has_bom = d.src.start > 0;
+        let mut choice = None;
+        Modal::new(Id::NULL.with("recode")).show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            ui.heading(t!("Convertir el archivo"));
+            ui.add_space(4.0);
+            ui.label(RichText::new(tf!(
+                "Ahora: {enc} · {nl}{bom}",
+                enc = encoding::label(d.src.encoding),
+                nl = if crlf_now { "CRLF" } else { "LF" },
+                bom = if has_bom { t!(" · con BOM") } else { "" }
+            )).weak());
+            ui.add_space(6.0);
+            Grid::new("recode-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                ui.label(t!("Encoding:"));
+                ComboBox::from_id_salt("recode-enc").selected_text(encoding::label(w.encoding)).width(220.0).show_ui(ui, |ui| {
+                    for e in encoding::available() {
+                        if ui.selectable_label(e == w.encoding, encoding::label(e)).clicked() {
+                            w.encoding = e;
+                            w.bom = w.bom && !buffer::bom_of(e).is_empty();
+                        }
+                    }
+                });
+                ui.end_row();
+                ui.label(t!("Saltos de línea:"));
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut w.eol, None, t!("Mantener"));
+                    ui.radio_value(&mut w.eol, Some(buffer::Eol::Lf), t!("LF (Linux, macOS)"));
+                    ui.radio_value(&mut w.eol, Some(buffer::Eol::Crlf), t!("CRLF (Windows)"));
+                });
+                ui.end_row();
+                ui.label("BOM:");
+                let can_bom = !buffer::bom_of(w.encoding).is_empty();
+                ui.add_enabled(can_bom, Checkbox::new(&mut w.bom, t!("Escribir la marca de orden de bytes (BOM) al principio")))
+                    .on_disabled_hover_text(t!("Este encoding no tiene BOM"));
+                ui.end_row();
+                ui.label("");
+                ui.checkbox(&mut w.lossy, t!("Escribir «?» en lo que no se pueda representar"))
+                    .on_hover_text(t!("Si no se marca, la conversión se detiene en el primer carácter que no cabe y dice en qué línea está"));
+                ui.end_row();
+            });
+            ui.add_space(6.0);
+            ui.label(RichText::new(t!("Se reescribe el archivo entero por partes (sirve para archivos de varios GB). Los cambios sin guardar también se incluyen y el deshacer se reinicia.")).small().weak());
+            ui.add_space(8.0);
+            let same = w.encoding == d.src.encoding && w.bom == has_bom && w.eol.is_none_or(|e| (e == buffer::Eol::Crlf) == crlf_now);
+            ui.horizontal(|ui| {
+                let ok = !same && !t.untitled && t.save.is_none();
+                if ui.add_enabled(ok, Button::new(t!("Convertir y guardar"))).on_disabled_hover_text(t!("No cambia nada (o el archivo aún no está en disco)")).clicked() {
+                    choice = Some(1);
+                }
+                if ui.add_enabled(t.save.is_none(), Button::new(t!("Guardar como…"))).clicked() {
+                    choice = Some(2);
+                }
+                if ui.button(t!("Cancelar")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                    choice = Some(0);
+                }
+            });
+        });
+        let Some(c) = choice else { return };
+        let w = self.recode_win.take().unwrap();
+        let kind = SaveKind::Recode(buffer::Recode { encoding: w.encoding, bom: w.bom, eol: w.eol, lossy: w.lossy });
+        match c {
+            1 => self.save_in_place_with(i, kind),
+            2 => self.save_as_with(i, kind),
+            _ => {}
+        }
+    }
+}
+
+impl App {
     /// Depuración: BUSCADOR_SCREENSHOT=ruta.rgba [BUSCADOR_QUERY=texto]
     /// [BUSCADOR_TYPE=texto a teclear en la línea 2] guarda una captura cruda
     /// (ancho, alto u32 LE + RGBA) cuando todo está listo y sale.
@@ -4043,6 +4563,16 @@ impl App {
                 self.open_updater(ctx);
             }
             self.show_replace = std::env::var("BUSCADOR_REPLACE").is_ok();
+            self.show_about = std::env::var("BUSCADOR_ACERCA").is_ok();
+            if std::env::var("BUSCADOR_DETALLE").is_ok() {
+                self.show_detail = true;
+            }
+            if std::env::var("BUSCADOR_CONVERTIR_ARCHIVO").is_ok() {
+                self.open_recode();
+            }
+            if let Ok(r) = std::env::var("BUSCADOR_REEMPLAZO") {
+                self.replacement = r;
+            }
             if let Ok(c) = std::env::var("BUSCADOR_COLORES") {
                 // «#fondo,#letra»
                 let hexc = |h: &str| u32::from_str_radix(h.trim().trim_start_matches('#'), 16).ok().map(|n| Color32::from_rgb((n >> 16) as u8, (n >> 8) as u8, n as u8));
@@ -4465,7 +4995,7 @@ impl eframe::App for App {
         if self.show_detail && !self.tabs.is_empty() {
             Panel::bottom("detail").resizable(true).default_size(90.0).min_size(40.0).show(ui, |ui| {
                 if let Some(t) = self.tabs.get_mut(self.active) {
-                    detail_view(ui, t, &font, colors);
+                    detail_view(ui, t, &font, colors, &mut self.detail_raw);
                 }
             });
         }
@@ -4608,6 +5138,9 @@ impl eframe::App for App {
         self.folder_window(&ctx);
         self.convert_window(&ctx);
         self.recover_window(&ctx);
+        self.stream_replace_dialog(&ctx);
+        self.about_window(&ctx);
+        self.recode_window(&ctx);
         self.confirm_dialog(&ctx);
 
         // Saltar a la primera coincidencia en cuanto aparezca.
@@ -4679,8 +5212,10 @@ fn log_view(
     // Líneas por pantalla: con ajuste, las que cupieron enteras la última vez.
     let page = if wrapping { tab.lines_shown.clamp(1, visible) } else { visible };
 
-    // Teclado (antes de medir: puede cambiar el número de líneas).
-    if resp.has_focus() {
+    // Teclado (antes de medir: puede cambiar el número de líneas). Se mira el
+    // foco guardado y no `has_focus`, que además exige la ventana activa (con
+    // la ventana inactiva no llegan teclas; así funcionan las pruebas).
+    if ui.memory(|m| m.has_focus(id)) {
         ui.memory_mut(|m| {
             m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true })
         });
@@ -4703,6 +5238,20 @@ fn log_view(
     };
     if wrap == Wrap::Window {
         tab.hscroll = 0.0;
+    }
+    // Las líneas de más de MAX_DISPLAY_BYTES se pintan a trozos: el que toca
+    // según el desplazamiento horizontal (sin ajuste de línea).
+    let cw = char_w as f64;
+    let win_from = |hs: f64| -> usize { if wrapping { 0 } else { ((hs / cw) as usize).saturating_sub(4096) / 4096 * 4096 } };
+    if tab.reveal && !wrapping {
+        if let Some(c) = tab.cursor.filter(|c| tab.line_bytes(c.line) > MAX_DISPLAY_BYTES) {
+            let x = c.col as f64 * cw;
+            if x < tab.hscroll {
+                tab.hscroll = (x - cw * 8.0).max(0.0);
+            } else if x > tab.hscroll + view_w as f64 - cw * 2.0 {
+                tab.hscroll = x - view_w as f64 + cw * 8.0;
+            }
+        }
     }
 
     if let Some(l) = tab.center_on.take() {
@@ -4727,7 +5276,7 @@ fn log_view(
         let whole = tab.scroll_frac.trunc();
         tab.scroll_frac -= whole;
         tab.top = add_signed(tab.top, whole as i64);
-        tab.hscroll = (tab.hscroll - d.x).max(0.0);
+        tab.hscroll = (tab.hscroll - d.x as f64).max(0.0);
     }
 
     // Ratón: cursor por carácter; en el margen de números, líneas completas.
@@ -4750,14 +5299,17 @@ fn log_view(
     };
     let pos_at = |tab: &Tab, top: u64, p: Pos2| -> Pos {
         let line = row_at(top, p.y);
-        let (t, _) = cap_line(tab.line(line));
-        let g = ui.painter().layout_job(plain_job(&t, font, wrap_w));
+        let Some(r) = tab.rows_at(line, 1, MAX_DISPLAY_BYTES, win_from(tab.hscroll)).into_iter().next() else {
+            return Pos::new(line, 0);
+        };
+        let g = ui.painter().layout_job(plain_job(&r.text, font, wrap_w));
         let in_y = if wrapping { map_at(p.y).filter(|m| m.0 == line).map_or(row_h / 2.0, |m| m.1) } else { row_h / 2.0 };
-        let idx = g.cursor_from_pos(vec2(p.x - text_x + tab.hscroll, in_y)).index.0;
-        Pos::new(line, col_from_disp(&t, idx))
+        let x0 = row_origin(text_x, tab.hscroll, cw, r.start, r.len, &r.text, &g);
+        let idx = g.cursor_from_pos(vec2(p.x - x0, in_y)).index.0;
+        Pos::new(line, r.start + col_from_disp(&r.text, idx))
     };
     // Columna visual bajo el puntero (puede pasar del final de la línea).
-    let vcol_at = |tab: &Tab, x: f32| -> usize { ((x - text_x + tab.hscroll) / char_w).round().max(0.0) as usize };
+    let vcol_at = |tab: &Tab, x: f32| -> usize { (((x - text_x) as f64 + tab.hscroll) / cw).round().max(0.0) as usize };
     if total > 0 {
         let shift = ui.input(|i| i.modifiers.shift);
         // Modo bloque, o Opción/Alt+arrastrar para un bloque puntual.
@@ -4823,9 +5375,9 @@ fn log_view(
                     tab.top += 1 + ((p.y - text_area.bottom()) / row_h) as u64;
                 }
                 if p.x > text_area.right() {
-                    tab.hscroll += char_w * 2.0;
+                    tab.hscroll += cw * 2.0;
                 } else if p.x < text_x && tab.hscroll > 0.0 && p.x > text_area.left() + gutter_w {
-                    tab.hscroll = (tab.hscroll - char_w * 2.0).max(0.0);
+                    tab.hscroll = (tab.hscroll - cw * 2.0).max(0.0);
                 }
                 tab.top = tab.top.min(max_top);
                 let clamped = pos2(p.x.max(text_x), p.y.clamp(text_area.top(), text_area.bottom() - 1.0));
@@ -4951,13 +5503,28 @@ fn log_view(
     // línea puede ocupar varias filas.
     let mut y_acc = 0.0f32;
     let mut lines_shown = 0u64;
-    let mut rows: Vec<(u64, String, Arc<Galley>, f32, f32)> = Vec::new();
-    for (n, t, tr) in tab.rows(tab.top, visible as usize + 1, MAX_DISPLAY_BYTES) {
+    // (línea, texto, maquetación, y, alto, byte donde empieza el texto, bytes de la línea)
+    let mut rows: Vec<(u64, String, Arc<Galley>, f32, f32, usize, usize)> = Vec::new();
+    let hs_layout = tab.hscroll;
+    // Fondo por nivel (logs): las trazas de pila siguen el nivel de la línea de arriba.
+    let levels = lang == syntax::Lang::Log && level_colors();
+    let mut tints: Vec<Option<Color32>> = Vec::new();
+    let mut level: Option<syntax::Kind> = None;
+    for buffer::Row { n, text: t, start, more: tr, len } in tab.rows_at(tab.top, visible as usize + 1, MAX_DISPLAY_BYTES, win_from(hs_layout)) {
         if y_acc >= text_area.height() {
             break;
         }
         spans.clear();
         st = syntax::highlight(lang, &t, st, &mut spans);
+        if levels {
+            level = match syntax::line_level(&t, &spans) {
+                syntax::LineLevel::Level(k) => Some(k),
+                syntax::LineLevel::Continuation if rows.is_empty() => level_above(tab, n),
+                syntax::LineLevel::Continuation => level,
+                syntax::LineLevel::Other => None,
+            };
+            tints.push(level.and_then(|k| syntax::level_tint(k, dark)));
+        }
         let mut job = line_job(&t, tr, font, visuals.text_color(), highlight, &spans, dark);
         job.wrap.max_width = wrap_w;
         let g = ui.painter().layout_job(job);
@@ -4965,7 +5532,7 @@ fn log_view(
         if y_acc + h <= text_area.height() + 0.5 {
             lines_shown += 1;
         }
-        rows.push((n, t, g, y_acc, h));
+        rows.push((n, t, g, y_acc, h, start, len));
         y_acc += h;
     }
     tab.lines_shown = lines_shown.max(1);
@@ -4974,18 +5541,24 @@ fn log_view(
     let pos_of = |t: &str, g: &Galley, col: usize| g.pos_from_cursor(CCursor::new(disp_col(t, col)));
     let x_of = |t: &str, g: &Galley, col: usize| pos_of(t, g, col).min.x;
 
-    // Desplazamiento horizontal para que se vea el cursor.
+    // Desplazamiento horizontal para que se vea el cursor (las líneas largas
+    // ya se trataron antes de maquetar).
     if std::mem::take(&mut tab.reveal) {
         if let Some(c) = tab.cursor {
-            if let Some((_, t, g, _, _)) = rows.iter().find(|r| r.0 == c.line).filter(|_| wrap != Wrap::Window) {
-                let x = x_of(t, g, c.col);
+            let short = |r: &&(u64, String, Arc<Galley>, f32, f32, usize, usize)| r.0 == c.line && r.6 <= MAX_DISPLAY_BYTES;
+            if let Some((_, t, g, ..)) = rows.iter().find(short).filter(|_| wrap != Wrap::Window) {
+                let x = x_of(t, g, c.col) as f64;
+                let vw = view_w as f64;
                 if x < tab.hscroll {
-                    tab.hscroll = (x - char_w * 8.0).max(0.0);
-                } else if x > tab.hscroll + view_w - char_w * 2.0 {
-                    tab.hscroll = x - view_w + char_w * 8.0;
+                    tab.hscroll = (x - cw * 8.0).max(0.0);
+                } else if x > tab.hscroll + vw - cw * 2.0 {
+                    tab.hscroll = x - vw + cw * 8.0;
                 }
             }
         }
+    }
+    if tab.hscroll != hs_layout && rows.iter().any(|r| r.6 > MAX_DISPLAY_BYTES) {
+        ctx.request_repaint(); // el trozo pintado de las líneas largas cambia
     }
 
     // Pintado.
@@ -5002,14 +5575,19 @@ fn log_view(
     let cur_line_color = visuals.faint_bg_color.gamma_multiply(1.5);
     let match_line_color = Color32::from_rgba_unmultiplied(255, 180, 0, 40);
     let mark_color = Color32::from_rgb(230, 160, 0);
-    let ox = text_x - tab.hscroll;
-    let mut max_w: f32 = 0.0;
+    let mut max_w: f64 = 0.0;
     let mut caret_rect = None;
 
-    for (n, t, galley, y_rel, h) in &rows {
-        let n = *n;
+    for (k, (n, t, galley, y_rel, h, start, len)) in rows.iter().enumerate() {
+        let (n, start) = (*n, *start);
+        // x de donde empieza el texto pintado (el trozo, en las líneas largas).
+        let ox = row_origin(text_x, tab.hscroll, cw, start, *len, t, galley);
+        let rel = |col: usize| col.saturating_sub(start).min(t.len());
         let y = text_area.top() + y_rel;
         let row = Rect::from_min_size(pos2(text_area.left(), y), vec2(text_area.width(), *h));
+        if let Some(c) = tints.get(k).copied().flatten() {
+            painter.rect_filled(row, 0.0, c);
+        }
         if tab.current == Some(n) {
             painter.rect_filled(row, 0.0, match_line_color);
         } else if tab.cursor.is_some_and(|c| c.line == n) && sel.is_none() {
@@ -5020,8 +5598,8 @@ fn log_view(
         }
         // Selección: un rectángulo por cada fila (con ajuste, varias por línea).
         if let Some((a, b)) = sel.filter(|(a, b)| a.line <= n && n <= b.line) {
-            let d0 = if n == a.line { disp_col(t, a.col) } else { 0 };
-            let d1 = if n == b.line { disp_col(t, b.col) } else { usize::MAX };
+            let d0 = if n == a.line { disp_col(t, rel(a.col)) } else { 0 };
+            let d1 = if n == b.line { disp_col(t, rel(b.col)) } else { usize::MAX };
             for r in selection_rects(galley, d0, d1, n < b.line, char_w * 0.6, row_h) {
                 text_painter.rect_filled(r.translate(vec2(ox, y)), 0.0, sel_color);
             }
@@ -5029,8 +5607,9 @@ fn log_view(
         // Selección en bloque: el rectángulo entero, aunque pase del final de la línea.
         if let Some(cs) = tab.colsel.filter(|c| (c.lines().0..=c.lines().1).contains(&n)) {
             let (c0, c1) = cs.cols();
-            let (x0, x1) = (c0 as f32 * char_w, (c1 as f32 * char_w).max(c0 as f32 * char_w + 1.5));
-            text_painter.rect_filled(Rect::from_min_max(pos2(ox + x0, y), pos2(ox + x1, y + row_h)), 0.0, sel_color);
+            let xc = |c: usize| (text_x as f64 + c as f64 * cw - tab.hscroll) as f32;
+            let (x0, x1) = (xc(c0), xc(c1).max(xc(c0) + 1.5));
+            text_painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + row_h)), 0.0, sel_color);
         }
         painter.text(
             pos2(text_area.left() + gutter_w - 6.0, y),
@@ -5039,12 +5618,12 @@ fn log_view(
             font.clone(),
             visuals.weak_text_color(),
         );
-        max_w = max_w.max(galley.size().x);
+        max_w = max_w.max(if *len > MAX_DISPLAY_BYTES { *len as f64 * cw } else { galley.size().x as f64 });
         text_painter.galley(pos2(ox, y), galley.clone(), visuals.text_color());
 
         // Cursor (y texto en composición del IME).
-        if let Some(c) = tab.cursor.filter(|c| c.line == n) {
-            let cr = pos_of(t, galley, c.col);
+        if let Some(c) = tab.cursor.filter(|c| c.line == n && c.col >= start && c.col <= start + t.len()) {
+            let cr = pos_of(t, galley, c.col - start);
             let x = ox + cr.min.x;
             // Con ajuste, el cursor va en su fila dentro de la línea.
             let y = if wrapping { y + (cr.min.y / row_h).round().min((galley.rows.len().max(1) - 1) as f32) * row_h } else { y };
@@ -5066,7 +5645,7 @@ fn log_view(
             caret_rect = Some(Rect::from_min_size(pos2(caret_x, y), vec2(1.0, row_h)));
         }
     }
-    tab.content_width = if wrap == Wrap::Window { view_w } else { tab.content_width.max(max_w) };
+    tab.content_width = if wrap == Wrap::Window { view_w as f64 } else { tab.content_width.max(max_w) };
 
     // Permitir el IME (acentos, CJK…) cuando se puede escribir.
     if resp.has_focus() && tab.editable {
@@ -5096,8 +5675,8 @@ fn log_view(
     vscrollbar(ui, vsb, id.with("vsb"), &mut top, total, if wrapping { 1 } else { visible });
     tab.top = top;
     // Con ajuste a la ventana no hay nada que desplazar en horizontal.
-    let content = if wrap == Wrap::Window { view_w } else { tab.content_width + 40.0 };
-    hscrollbar(ui, hsb, id.with("hsb"), &mut tab.hscroll, content, view_w);
+    let content = if wrap == Wrap::Window { view_w as f64 } else { tab.content_width + 40.0 };
+    hscrollbar(ui, hsb, id.with("hsb"), &mut tab.hscroll, content, view_w as f64);
     let note = if !tab.doc.indexing_done() {
         Some(t!("indexando…"))
     } else if !tab.editable {
@@ -5131,12 +5710,41 @@ fn apply_text_colors(ui: &mut Ui, colors: Option<(Color32, Color32)>) {
 }
 
 /// Recorta una línea muy larga para maquetarla (igual que al pintarla).
-fn cap_line(t: String) -> (String, bool) {
-    if t.len() <= MAX_DISPLAY_BYTES {
-        return (t, false);
+/// x en pantalla del principio del texto de una fila. En las líneas largas
+/// (pintadas a trozos) el desplazamiento horizontal cuenta bytes: el byte
+/// `hs / cw` queda en el borde izquierdo y el trozo se coloca a partir de él
+/// (con caracteres de varios bytes, contar desde el principio del trozo lo
+/// desplazaría).
+fn row_origin(text_x: f32, hs: f64, cw: f64, start: usize, len: usize, t: &str, g: &Galley) -> f32 {
+    if len <= MAX_DISPLAY_BYTES {
+        return (text_x as f64 - hs) as f32;
     }
-    let cut = buffer::floor_char(&t, MAX_DISPLAY_BYTES);
-    (t[..cut].to_string(), true)
+    let vb = hs / cw;
+    let v = (vb as usize).clamp(start, start + t.len());
+    let vx = g.pos_from_cursor(CCursor::new(disp_col(t, v - start))).min.x as f64;
+    (text_x as f64 - vx - (vb - v as f64) * cw) as f32
+}
+
+/// Nivel de la primera línea con nivel por encima de `n` (para una traza de
+/// pila que empieza arriba del todo de la vista). Mira como mucho 50 líneas.
+fn level_above(tab: &Tab, n: u64) -> Option<syntax::Kind> {
+    let from = n.saturating_sub(50);
+    let mut spans = Vec::new();
+    for (_, t, _) in tab.rows(from, (n - from) as usize, 512).iter().rev() {
+        spans.clear();
+        syntax::highlight(syntax::Lang::Log, t, syntax::State::Normal, &mut spans);
+        match syntax::line_level(t, &spans) {
+            syntax::LineLevel::Level(k) => return Some(k),
+            syntax::LineLevel::Continuation => {}
+            syntax::LineLevel::Other => return None,
+        }
+    }
+    None
+}
+
+/// ¿Las líneas del archivo acaban en CRLF? (mira la primera)
+fn newline_is_crlf(d: &Document) -> bool {
+    d.newline_bytes().len() > d.src.newline.unit()
 }
 
 fn plain_job(txt: &str, font: &FontId, wrap_w: f32) -> LayoutJob {
@@ -5592,6 +6200,7 @@ impl App {
         let mut borders = self.borders;
         let mut tabw = tab_width();
         let mut show_ws = show_whitespace();
+        let mut levels = level_colors();
         let mut show_header = self.show_header;
         let mut undo_steps = buffer::max_undo();
         let mut lang_change = None;
@@ -5684,6 +6293,10 @@ impl App {
 
                     ui.strong(t!("Espacios"));
                     ui.checkbox(&mut show_ws, t!("Mostrar espacios y tabuladores (· y →)"));
+                    ui.end_row();
+
+                    ui.strong(t!("Logs"));
+                    ui.checkbox(&mut levels, t!("Fondo de color en las líneas ERROR y WARN (y sus trazas de pila)"));
                     ui.end_row();
 
                     ui.strong(t!("Encabezado"));
@@ -5833,6 +6446,10 @@ impl App {
         }
         if show_ws != show_whitespace() {
             SHOW_WS.store(show_ws, Ordering::Relaxed);
+            self.persist();
+        }
+        if levels != level_colors() {
+            LEVEL_COLORS.store(levels, Ordering::Relaxed);
             self.persist();
         }
         if tabw != tab_width() {
@@ -7111,31 +7728,119 @@ fn results_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color
     }
 }
 
+/// Lo que muestra el panel Detalle para una línea (se calcula una vez).
+struct DetailCache {
+    line: u64,
+    version: u64,
+    /// Byte de la línea desde el que se muestra (líneas de más de 1 MB).
+    from: usize,
+    text: String,
+    /// JSON dentro de la línea: (inicio, fin, embellecido).
+    json: Option<(usize, usize, String)>,
+    /// Maquetación con colores del JSON (tema oscuro, letra).
+    galley: Option<(bool, FontId, Arc<Galley>)>,
+}
+
 /// Línea actual completa en un cuadro de texto seleccionable (copia parcial).
-fn detail_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color32, Color32)>) {
+/// Si lleva un objeto o lista JSON, se ve embellecido y con colores.
+fn detail_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color32, Color32)>, raw: &mut bool) {
     apply_text_colors(ui, colors);
-    let Some(line) = tab.cursor.map(|c| c.line) else {
+    let Some(cur) = tab.cursor else {
         ui.weak(t!("Selecciona una línea para verla completa aquí."));
         return;
     };
+    let line = cur.line;
     let version = tab.version();
-    if tab.detail_cache.as_ref().map(|c| (c.0, c.1)) != Some((line, version)) {
-        let text = match tab.rows(line, 1, MAX_DETAIL_BYTES).into_iter().next() {
-            Some((_, mut t, tr)) => {
-                if tr {
-                    t += t!("\n…[truncado: la línea mide más de 1 MB]");
+    // En una línea de más de 1 MB se ve el MB que rodea al cursor.
+    let from = cur.col.saturating_sub(MAX_DETAIL_BYTES / 2) / (MAX_DETAIL_BYTES / 4) * (MAX_DETAIL_BYTES / 4);
+    let fresh = |c: &DetailCache| c.line == line && c.version == version && (c.from == from || c.from == 0 && c.text.len() < MAX_DETAIL_BYTES);
+    if !tab.detail_cache.as_ref().is_some_and(fresh) {
+        let (text, json) = match tab.rows_at(line, 1, MAX_DETAIL_BYTES, from).into_iter().next() {
+            Some(r) => {
+                let cut = r.more || r.start > 0;
+                let json = if cut { None } else { crate::beautify::embedded_json(&r.text, "  ") };
+                let mut t = r.text;
+                if cut {
+                    t = tf!(
+                        "…[la línea mide {size}: se ve desde el byte {a} hasta el {b}]\n",
+                        size = human_size(r.len as u64),
+                        a = fmt_num(r.start as u64 + 1),
+                        b = fmt_num((r.start + t.len()) as u64)
+                    ) + &t;
                 }
-                t
+                (t, json)
             }
-            None => String::new(),
+            None => (String::new(), None),
         };
-        tab.detail_cache = Some((line, version, text));
+        tab.detail_cache = Some(DetailCache { line, version, from, text, json, galley: None });
     }
-    let text = &tab.detail_cache.as_ref().unwrap().2;
-    ui.label(RichText::new(tf!("Línea {fmt_num}", fmt_num = fmt_num(line + 1))).small().weak());
+    let has_json = tab.detail_cache.as_ref().is_some_and(|c| c.json.is_some());
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tf!("Línea {fmt_num}", fmt_num = fmt_num(line + 1))).small().weak());
+        if has_json {
+            let r = ui.selectable_label(!*raw, RichText::new(t!("{ } JSON")).small());
+            if r.on_hover_text(t!("La línea lleva JSON: verlo embellecido o la línea tal cual")).clicked() {
+                *raw = !*raw;
+            }
+        }
+    });
+    let dark = is_dark(ui.visuals().extreme_bg_color);
+    let text_color = ui.visuals().text_color();
+    let c = tab.detail_cache.as_mut().unwrap();
+    if has_json && !*raw {
+        if c.galley.as_ref().is_none_or(|g| g.0 != dark || g.1 != *font) {
+            let (a, b, pretty) = c.json.as_ref().unwrap();
+            let job = json_detail_job(&c.text[..*a], pretty, &c.text[*b..], font, text_color, dark);
+            c.galley = Some((dark, font.clone(), ui.fonts_mut(|f| f.layout_job(job))));
+        }
+        let g = c.galley.as_ref().unwrap().2.clone();
+        ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+            ui.add(Label::new(g).selectable(true).extend());
+        });
+        return;
+    }
+    let text = &c.text;
     ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
         ui.add(TextEdit::multiline(&mut text.as_str()).font(font.clone()).desired_width(f32::INFINITY));
     });
+}
+
+/// Texto del Detalle con el JSON embellecido y coloreado entre lo de antes
+/// y lo de después (si hay).
+fn json_detail_job(before: &str, pretty: &str, after: &str, font: &FontId, color: Color32, dark: bool) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = f32::INFINITY;
+    let fmt = |c: Color32| TextFormat { font_id: font.clone(), color: c, ..Default::default() };
+    let weak = color.gamma_multiply(0.6);
+    let (before, after) = (before.trim(), after.trim());
+    if !before.is_empty() {
+        job.append(&sanitize(before), 0.0, fmt(weak));
+        job.append("\n", 0.0, fmt(weak));
+    }
+    let mut spans = Vec::new();
+    for (k, l) in pretty.lines().enumerate() {
+        if k > 0 {
+            job.append("\n", 0.0, fmt(color));
+        }
+        spans.clear();
+        syntax::highlight(syntax::Lang::Json, l, syntax::State::Normal, &mut spans);
+        let mut at = 0;
+        for sp in &spans {
+            if sp.start > at {
+                job.append(&l[at..sp.start], 0.0, fmt(color));
+            }
+            job.append(&l[sp.start..sp.end], 0.0, fmt(syntax::color(sp.kind, dark)));
+            at = sp.end;
+        }
+        if at < l.len() {
+            job.append(&l[at..], 0.0, fmt(color));
+        }
+    }
+    if !after.is_empty() {
+        job.append("\n", 0.0, fmt(weak));
+        job.append(&sanitize(after), 0.0, fmt(weak));
+    }
+    job
 }
 
 /// Barra vertical con precisión de u64 (las de egui usan f32 y no sirven
@@ -7164,7 +7869,7 @@ pub(crate) fn vscrollbar(ui: &mut Ui, rect: Rect, id: Id, top: &mut u64, total: 
     painter.rect_filled(thumb, 3.0, c);
 }
 
-fn hscrollbar(ui: &mut Ui, rect: Rect, id: Id, offset: &mut f32, content: f32, view: f32) {
+fn hscrollbar(ui: &mut Ui, rect: Rect, id: Id, offset: &mut f64, content: f64, view: f64) {
     let resp = ui.interact(rect, id, Sense::click_and_drag());
     let vis = ui.visuals();
     let painter = ui.painter_at(rect);
@@ -7175,14 +7880,14 @@ fn hscrollbar(ui: &mut Ui, rect: Rect, id: Id, offset: &mut f32, content: f32, v
         return;
     }
     let track = rect.shrink(2.0);
-    let thumb_w = (track.width() * view / content).clamp(24.0_f32.min(track.width()), track.width());
+    let thumb_w = (track.width() * (view / content) as f32).clamp(24.0_f32.min(track.width()), track.width());
     let free = (track.width() - thumb_w).max(1.0);
     if resp.is_pointer_button_down_on() {
         if let Some(p) = resp.interact_pointer_pos() {
-            *offset = ((p.x - track.left() - thumb_w / 2.0) / free).clamp(0.0, 1.0) * max_off;
+            *offset = ((p.x - track.left() - thumb_w / 2.0) / free).clamp(0.0, 1.0) as f64 * max_off;
         }
     }
-    let x = track.left() + free * (*offset / max_off);
+    let x = track.left() + free * (*offset / max_off) as f32;
     let thumb = Rect::from_min_size(pos2(x, track.top()), vec2(thumb_w, track.height()));
     let c = if resp.hovered() || resp.dragged() { vis.widgets.active.bg_fill } else { vis.widgets.inactive.bg_fill };
     painter.rect_filled(thumb, 3.0, c);

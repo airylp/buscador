@@ -26,6 +26,11 @@ impl Params {
         if self.regex { self.query.clone() } else { regex::escape(&self.query) }
     }
 
+    /// La misma regex sobre bytes (para recorrer el archivo sin decodificarlo).
+    pub fn bytes_regex(&self) -> Result<regex::bytes::Regex, regex::Error> {
+        RegexBuilder::new(&self.pattern()).case_insensitive(!self.case_sensitive).multi_line(true).build()
+    }
+
     /// Regex para resaltar coincidencias en el texto ya decodificado.
     pub fn highlighter(&self) -> Result<regex::Regex, regex::Error> {
         regex::RegexBuilder::new(&self.pattern())

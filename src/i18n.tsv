@@ -712,3 +712,55 @@ Rosa	Pink	Rose
 Sin color	No color	Sans couleur
 Turquesa	Teal	Turquoise
 Verde	Green	Vert
+ · con BOM	 · with BOM	 · avec BOM
+ · había bytes no válidos en el original: se escribieron como «�»	 · the original had invalid bytes: they were written as «�»	 · l’original contenait des octets non valides : écrits comme «�»
+Ahora: {enc} · {nl}{bom}	Now: {enc} · {nl}{bom}	Actuellement : {enc} · {nl}{bom}
+CRLF (Windows)	CRLF (Windows)	CRLF (Windows)
+Convertido a {enc} y guardado {name} ({len})	Converted to {enc} and saved {name} ({len})	Converti en {enc} et enregistré {name} ({len})
+Convertir el archivo	Convert the file	Convertir le fichier
+Convertir el archivo (encoding, saltos, BOM)…	Convert the file (encoding, line endings, BOM)…	Convertir le fichier (encodage, fins de ligne, BOM)…
+Convertir y guardar	Convert and save	Convertir et enregistrer
+Detectado por: {detect_reason} · clic: convertir a otro encoding, saltos de línea o BOM	Detected by: {detect_reason} · click: convert to another encoding, line endings or BOM	Détecté par : {detect_reason} · clic : convertir vers un autre encodage, fins de ligne ou BOM
+El archivo cambió en el disco: recárgalo (⟳) o usa «Guardar como…»	The file changed on disk: reload it (⟳) or use «Save as…»	Le fichier a changé sur le disque : rechargez-le (⟳) ou utilisez « Enregistrer sous… »
+El original no se toca	The original is left untouched	L’original n’est pas modifié
+Encoding:	Encoding:	Encodage :
+Escribir la marca de orden de bytes (BOM) al principio	Write the byte order mark (BOM) at the start	Écrire la marque d’ordre des octets (BOM) au début
+Escribir «?» en lo que no se pueda representar	Write «?» for anything that can’t be represented	Écrire « ? » pour ce qui ne peut pas être représenté
+Este encoding no tiene BOM	This encoding has no BOM	Cet encodage n’a pas de BOM
+Fondo de color en las líneas ERROR y WARN (y sus trazas de pila)	Colored background on ERROR and WARN lines (and their stack traces)	Fond coloré sur les lignes ERROR et WARN (et leurs traces de pile)
+Guardado {name}: solo se añadió lo nuevo al final ({len})	Saved {name}: only the new text was appended at the end ({len})	{name} enregistré : seul le nouveau texte a été ajouté à la fin ({len})
+Guardar como	Save as	Enregistrer sous
+Guardar en otro archivo…	Save to another file…	Enregistrer dans un autre fichier…
+Ir a línea o a una fecha/hora (Ctrl+G)	Go to line or to a date/time (Ctrl+G)	Aller à la ligne ou à une date/heure (Ctrl+G)
+LF (Linux, macOS)	LF (Linux, macOS)	LF (Linux, macOS)
+La línea lleva JSON: verlo embellecido o la línea tal cual	The line contains JSON: view it formatted or the line as is	La ligne contient du JSON : le voir formaté ou la ligne telle quelle
+Logs	Logs	Journaux
+Los cambios sin guardar también se guardan.	Unsaved changes are saved too.	Les modifications non enregistrées sont aussi enregistrées.
+Mantener	Keep	Conserver
+No cambia nada (o el archivo aún no está en disco)	Nothing changes (or the file isn’t on disk yet)	Rien ne change (ou le fichier n’est pas encore sur le disque)
+No se encontraron fechas ni horas al principio de las líneas	No dates or times found at the start of the lines	Aucune date ni heure trouvée au début des lignes
+Reemplazado en {n} líneas y guardado {name} ({len}) · el deshacer se reinició	Replaced in {n} lines and saved {name} ({len}) · undo history was reset	Remplacé dans {n} lignes et {name} enregistré ({len}) · l’historique d’annulation a été réinitialisé
+Reemplazar en {count} líneas	Replace in {count} lines	Remplacer dans {count} lignes
+Reemplazar y guardar	Replace and save	Remplacer et enregistrer
+Saltos de línea (según la primera línea) · clic: convertir a LF o CRLF	Line endings (from the first line) · click: convert to LF or CRLF	Fins de ligne (d’après la première ligne) · clic : convertir en LF ou CRLF
+Saltos de línea:	Line endings:	Fins de ligne :
+Se reescribe el archivo entero por partes (sirve para archivos de varios GB). Los cambios sin guardar también se incluyen y el deshacer se reinicia.	The whole file is rewritten piece by piece (works for multi-GB files). Unsaved changes are included and undo history is reset.	Le fichier entier est réécrit par morceaux (convient aux fichiers de plusieurs Go). Les modifications non enregistrées sont incluses et l’historique d’annulation est réinitialisé.
+Si no se marca, la conversión se detiene en el primer carácter que no cabe y dice en qué línea está	If unchecked, the conversion stops at the first character that doesn’t fit and tells you which line it is on	Si non coché, la conversion s’arrête au premier caractère impossible et indique sa ligne
+Son demasiadas para hacerlo en memoria (máx. {max}). Se puede reemplazar mientras se escribe el archivo: no usa RAM, pero se guarda al terminar y no se puede deshacer.	Too many to do in memory (max. {max}). It can be replaced while the file is written: it uses no RAM, but it is saved when done and can’t be undone.	Trop nombreuses pour le faire en mémoire (max. {max}). On peut remplacer pendant l’écriture du fichier : cela n’utilise pas de RAM, mais le fichier est enregistré à la fin et ne peut pas être annulé.
+Un número va a esa línea. Una fecha u hora («2026-11-21 10:30», «21/11/2026», «10:30:15», «Nov 21 10:30») va a la primera línea de log que llega a ese momento.	A number goes to that line. A date or time («2026-11-21 10:30», «21/11/2026», «10:30:15», «Nov 21 10:30») goes to the first log line at or after that moment.	Un nombre va à cette ligne. Une date ou une heure (« 2026-11-21 10:30 », « 21/11/2026 », « 10:30:15 », « Nov 21 10:30 ») va à la première ligne du journal à partir de ce moment.
+más de {n}	more than {n}	plus de {n}
+nº de línea o fecha/hora	line no. or date/time	nº de ligne ou date/heure
+{ } JSON	{ } JSON	{ } JSON
+Línea {n} · {at}	Line {n} · {at}	Ligne {n} · {at}
+«{c}» (línea {n}) no se puede representar en {name}	«{c}» (line {n}) can’t be represented in {name}	« {c} » (ligne {n}) ne peut pas être représenté en {name}
+…[la línea mide {size}: se ve desde el byte {a} hasta el {b}]\n	…[the line is {size}: showing from byte {a} to {b}]\n	…[la ligne fait {size} : affichage de l’octet {a} à {b}]\n
+Autor	Author	Auteur
+Código fuente	Source code	Code source
+Hecho con	Made with	Fait avec
+Licencia	License	Licence
+MIT · © 2026 {user}	MIT · © 2026 {user}	MIT · © 2026 {user}
+Reportar un problema	Report a problem	Signaler un problème
+Sitio web	Website	Site web
+Versiones	Releases	Versions
+Versión {v}	Version {v}	Version {v}
+ver	view	voir

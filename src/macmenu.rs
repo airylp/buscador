@@ -7,7 +7,7 @@
 
 use eframe::egui::{Context, Event, Key, Modifiers, ViewportCommand};
 use muda::accelerator::Accelerator;
-use muda::{AboutMetadata, CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use std::sync::mpsc::{Receiver, channel};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -24,6 +24,10 @@ pub enum Cmd {
     Update,
     OpenRecent(usize),
     ClearRecent,
+    /// «Convertir el archivo» (encoding, saltos, BOM).
+    Recode,
+    /// Ventana «Acerca de».
+    About,
 }
 
 pub struct MacMenu {
@@ -67,15 +71,7 @@ impl MacMenu {
         let settings = item(t!("Ajustes…"), "Cmd+,", Cmd::Settings);
         let update = item(t!("Buscar actualizaciones…"), "", Cmd::Update);
         let quit = item(t!("Salir de buscador"), "Cmd+Q", Cmd::Key(Modifiers::COMMAND, Key::Q));
-        let about = PredefinedMenuItem::about(
-            Some(t!("Acerca de buscador")),
-            Some(AboutMetadata {
-                name: Some("buscador".into()),
-                version: Some(env!("CARGO_PKG_VERSION").into()),
-                comments: Some(t!("Visor y editor de archivos de varios GB").into()),
-                ..Default::default()
-            }),
-        );
+        let about = item(t!("Acerca de buscador"), "", Cmd::About);
         let app = Submenu::with_items(
             "buscador",
             true,
@@ -101,12 +97,13 @@ impl MacMenu {
         let save = item(t!("Guardar"), "Cmd+S", cmd(Key::S));
         let save_as = item(t!("Guardar como…"), "Cmd+Shift+S", cmd_shift(Key::S));
         let reload = item(t!("Recargar del disco"), "Cmd+R", cmd(Key::R));
+        let recode = item(t!("Convertir el archivo (encoding, saltos, BOM)…"), "", Cmd::Recode);
         let in_folder = item(t!("Buscar en carpeta…"), "Cmd+Shift+O", cmd_shift(Key::O));
         let recent = Submenu::new(t!("Abrir recientes"), true);
         let close = item(t!("Cerrar archivo"), "Cmd+W", cmd(Key::W));
         let next = item(t!("Siguiente archivo"), "Ctrl+Tab", Cmd::Key(Modifiers::CTRL, Key::Tab));
         let prev = item(t!("Archivo anterior"), "Ctrl+Shift+Tab", Cmd::Key(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab));
-        let file = Submenu::with_items(t!("Archivo"), true, &[&new, &open, &recent, &in_folder, &sep(), &save, &save_as, &sep(), &reload, &sep(), &next, &prev, &close]).unwrap();
+        let file = Submenu::with_items(t!("Archivo"), true, &[&new, &open, &recent, &in_folder, &sep(), &save, &save_as, &recode, &sep(), &reload, &sep(), &next, &prev, &close]).unwrap();
 
         let undo = item(t!("Deshacer"), "Cmd+Z", cmd(Key::Z));
         let redo = item(t!("Rehacer"), "Cmd+Shift+Z", cmd_shift(Key::Z));
@@ -255,6 +252,6 @@ pub fn inject(ctx: &Context, c: Cmd) {
         Cmd::Copy => ctx.input_mut(|i| i.events.push(Event::Copy)),
         Cmd::Cut => ctx.input_mut(|i| i.events.push(Event::Cut)),
         Cmd::Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
-        Cmd::ToggleResults | Cmd::ToggleDetail | Cmd::ToggleHeader | Cmd::Settings | Cmd::Update | Cmd::OpenRecent(_) | Cmd::ClearRecent => {}
+        Cmd::ToggleResults | Cmd::ToggleDetail | Cmd::ToggleHeader | Cmd::Settings | Cmd::Update | Cmd::OpenRecent(_) | Cmd::ClearRecent | Cmd::Recode | Cmd::About => {}
     }
 }

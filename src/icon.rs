@@ -109,6 +109,11 @@ fn render(size: usize) -> Vec<u8> {
     rgba
 }
 
+/// Píxeles RGBA del ícono a `size`×`size` (para la ventana «Acerca de»).
+pub fn rgba(size: usize) -> Vec<u8> {
+    render(size)
+}
+
 pub fn app_icon() -> IconData {
     let size = SIZE;
     IconData { rgba: render(size), width: size as u32, height: size as u32 }

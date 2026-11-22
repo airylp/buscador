@@ -236,12 +236,17 @@ mod tests {
     /// (con `\n` escrito, igual que en el TSV).
     fn literals(src: &str) -> Vec<String> {
         let mut out = Vec::new();
-        for m in ["t!(\"", "tf!(\""] {
+        for m in ["t!(", "tf!("] {
             let mut rest = src;
             while let Some(i) = rest.find(m) {
                 // Evitar coincidir dentro de otras palabras (p. ej. «assert!(»).
                 let prev = rest[..i].chars().last();
-                let s = &rest[i + m.len()..];
+                // El texto puede ir en la línea siguiente (`tf!(\n    "…"`).
+                let after = rest[i + m.len()..].trim_start();
+                let Some(s) = after.strip_prefix('"') else {
+                    rest = &rest[i + m.len()..];
+                    continue;
+                };
                 let mut end = 0;
                 let b = s.as_bytes();
                 while end < b.len() && !(b[end] == b'"' && (end == 0 || b[end - 1] != b'\\')) {

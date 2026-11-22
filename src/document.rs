@@ -85,6 +85,31 @@ impl Source {
         s.into_owned()
     }
 
+    /// Trozo de la línea `[s, e)` de como mucho `cap` bytes desde el byte `from`
+    /// de la línea: (texto, byte de la línea donde empieza, quedan más). Solo en
+    /// UTF-8 los bytes del archivo son los del texto y se puede empezar en
+    /// cualquier sitio; en otros encodings se ve siempre el principio.
+    pub fn decode_window(&self, s: usize, e: usize, from: usize, cap: usize) -> (String, usize, bool) {
+        if e - s <= cap {
+            return (self.decode(s, e), 0, false);
+        }
+        if from == 0 || self.encoding != encoding_rs::UTF_8 {
+            let (t, tr) = self.decode_capped(s, e, cap);
+            return (t, 0, tr);
+        }
+        let d = &self.data[..];
+        let cont = |i: usize| i < e && (d[i] & 0xC0) == 0x80;
+        let mut a = (s + from).min(e);
+        while a > s && cont(a) {
+            a -= 1;
+        }
+        let mut b = (a + cap).min(e);
+        while b > a && cont(b) {
+            b -= 1;
+        }
+        (self.decode(a, b), a - s, b < e)
+    }
+
     /// Decodifica como mucho `max_bytes` (para no pintar líneas de megas).
     pub fn decode_capped(&self, start: usize, end: usize, max_bytes: usize) -> (String, bool) {
         if end - start <= max_bytes {

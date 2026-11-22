@@ -208,6 +208,32 @@ pub fn format_json(s: &str, indent: &str) -> Result<String, FormatError> {
     Ok(p.out)
 }
 
+/// Primer objeto o lista JSON dentro de una línea (p. ej. un log
+/// «12:00 INFO {"a":1}»): (inicio, fin, texto embellecido). Se ignoran
+/// cosas como `[INFO]` o `[]` que no son JSON útil.
+pub fn embedded_json(s: &str, indent: &str) -> Option<(usize, usize, String)> {
+    let b = s.as_bytes();
+    let mut from = 0;
+    for _ in 0..32 {
+        let st = from + s[from..].find(['{', '['])?;
+        let mut p = Json { s, b, i: st, out: String::new(), indent };
+        if p.value(0).is_ok() {
+            let raw = &s[st..p.i];
+            let useful = if b[st] == b'{' { raw.contains(':') } else { raw.contains(['{', ',', '"']) };
+            if useful {
+                return Some((st, p.i, p.out));
+            }
+            from = p.i;
+        } else {
+            from = st + 1;
+        }
+        if from >= s.len() {
+            return None;
+        }
+    }
+    None
+}
+
 // ------------------------------------------------------------------ XML / HTML
 
 #[derive(Debug)]
@@ -457,6 +483,16 @@ pub fn format_xml(s: &str, indent: &str, html: bool) -> Result<String, FormatErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_inside_a_line() {
+        let l = r#"2026-11-21 10:00:01 [INFO] petición {"id": 7, "tags": ["a","b"]} ok"#;
+        let (a, b, pretty) = embedded_json(l, "  ").unwrap();
+        assert_eq!(&l[a..b], r#"{"id": 7, "tags": ["a","b"]}"#);
+        assert!(pretty.starts_with("{\n  \"id\": 7,"), "{pretty}");
+        assert!(embedded_json("[INFO] nada [1] {} []", "  ").is_none());
+        assert_eq!(embedded_json(r#"x [{"a":1}]"#, "  ").map(|r| r.0), Some(2));
+    }
 
     #[test]
     fn json_pretty_keeps_values() {

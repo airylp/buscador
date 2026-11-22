@@ -792,6 +792,48 @@ fn scan_md(s: &str, st: State, out: &mut Vec<Span>) -> State {
 
 // ------------------------------------------------------------------ logs
 
+/// Nivel de una línea de log (para pintar su fondo).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum LineLevel {
+    Level(Kind),
+    /// Sangrada (traza de pila…): sigue el nivel de la anterior.
+    Continuation,
+    Other,
+}
+
+/// Nivel de una línea ya coloreada con `scan_log`: la primera palabra de nivel
+/// (ERROR, WARN…); si no hay, una excepción cuenta como error.
+pub fn line_level(s: &str, spans: &[Span]) -> LineLevel {
+    let mut exception = false;
+    for sp in spans {
+        if matches!(sp.kind, Kind::Error | Kind::Warn | Kind::Info | Kind::Debug) {
+            if s.get(sp.start..sp.end).and_then(level).is_some() {
+                return LineLevel::Level(sp.kind);
+            }
+            exception |= sp.kind == Kind::Error;
+        }
+    }
+    if s.starts_with([' ', '\t']) {
+        LineLevel::Continuation
+    } else if exception {
+        LineLevel::Level(Kind::Error)
+    } else {
+        LineLevel::Other
+    }
+}
+
+/// Fondo de una línea según su nivel (solo errores y avisos).
+pub fn level_tint(kind: Kind, dark: bool) -> Option<Color32> {
+    let (r, g, b, a) = match (kind, dark) {
+        (Kind::Error, true) => (244, 71, 71, 30),
+        (Kind::Error, false) => (211, 47, 47, 24),
+        (Kind::Warn, true) => (229, 192, 123, 24),
+        (Kind::Warn, false) => (214, 140, 0, 30),
+        _ => return None,
+    };
+    Some(Color32::from_rgba_unmultiplied(r, g, b, a))
+}
+
 fn level(w: &str) -> Option<Kind> {
     Some(match w {
         "ERROR" | "ERR" | "FATAL" | "SEVERE" | "CRITICAL" | "CRIT" | "EMERG" | "ALERT" | "FAIL" | "FAILED" | "PANIC" => Kind::Error,
@@ -912,6 +954,17 @@ mod tests {
         assert!(v.contains(&("\"x\"".into(), Kind::String)));
         assert_eq!(spans(Lang::Log, "    at com.a.B.c(B.java:12)")[0].1, Kind::Comment);
         assert!(spans(Lang::Log, "un error menor").is_empty(), "solo niveles en mayúsculas");
+        let lv = |s: &str| {
+            let mut out = Vec::new();
+            highlight(Lang::Log, s, State::Normal, &mut out);
+            line_level(s, &out)
+        };
+        assert_eq!(lv("12:00 INFO reintento tras IOException"), LineLevel::Level(Kind::Info));
+        assert_eq!(lv("12:00 [WARN] lento"), LineLevel::Level(Kind::Warn));
+        assert_eq!(lv("java.lang.IllegalStateException: x"), LineLevel::Level(Kind::Error));
+        assert_eq!(lv("Caused by: java.io.IOException"), LineLevel::Level(Kind::Error));
+        assert_eq!(lv("\tat com.a.B.c(B.java:12)"), LineLevel::Continuation);
+        assert_eq!(lv("hola"), LineLevel::Other);
     }
 
     #[test]

@@ -25,6 +25,7 @@ mod recovery;
 mod settings;
 mod sigbus;
 mod syntax;
+mod timestamp;
 mod update;
 
 use std::path::PathBuf;
