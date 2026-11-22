@@ -1,0 +1,7 @@
+# Windows: mete el runtime de C (VCRUNTIME140.dll) dentro del .exe; un Windows
+# recién instalado no trae el «Visual C++ Redistributable» y buscador no abriría.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
