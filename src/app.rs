@@ -2112,6 +2112,10 @@ pub struct App {
     allow_quit: bool,
     /// «Reiniciar ahora»: versión nueva que se abre cuando esta termine (`on_exit`).
     relaunch: Option<PathBuf>,
+    /// Pruebas de la posición de la ventana: BUSCADOR_MOVER='x,y' la mueve y
+    /// BUSCADOR_CERRAR_TRAS=ms la cierra normalmente (así se guarda).
+    started: Instant,
+    window_test: u8,
     debug_frames: u64,
     debug_mouse: Pos2,
     debug_typed: bool,
@@ -2229,6 +2233,8 @@ impl App {
             duplicating: Vec::new(),
             allow_quit: false,
             relaunch: None,
+            started: Instant::now(),
+            window_test: 0,
             debug_frames: 0,
             debug_mouse: Pos2::ZERO,
             debug_typed: false,
@@ -4322,6 +4328,33 @@ impl App {
         }
     }
 
+    /// Ver `started`: mover y cerrar la ventana en las pruebas.
+    fn window_test(&mut self, ctx: &Context) {
+        if self.window_test >= 2 {
+            return;
+        }
+        let ms = self.started.elapsed().as_millis() as u64;
+        if self.window_test == 0 && ms > 800 {
+            self.window_test = 1;
+            let pos = std::env::var("BUSCADOR_MOVER").ok().and_then(|v| {
+                let (x, y) = v.split_once(',')?;
+                Some(pos2(x.trim().parse().ok()?, y.trim().parse().ok()?))
+            });
+            if let Some(p) = pos {
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(p));
+            }
+        }
+        match std::env::var("BUSCADOR_CERRAR_TRAS").ok().and_then(|v| v.parse::<u64>().ok()) {
+            Some(close) if ms > close => {
+                self.window_test = 2;
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+            Some(_) => ctx.request_repaint_after(Duration::from_millis(100)),
+            None if self.window_test == 1 => self.window_test = 2,
+            None => ctx.request_repaint_after(Duration::from_millis(100)),
+        }
+    }
+
     /// «Acerca de»: versión, licencia y enlaces al proyecto en GitHub.
     fn about_window(&mut self, ctx: &Context) {
         if !self.show_about {
@@ -4778,6 +4811,12 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Se guarda solo la ventana (posición, tamaño, monitor: ver main.rs), no
+    /// el estado interno de egui (paneles, ventanas internas).
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     /// Pruebas: BUSCADOR_RATON='x,y;d;x,y;u;t:texto;enter' mueve el ratón, lo pulsa
     /// (d), lo suelta (u), escribe o pulsa Enter/Escape, una tecla (k:Ctrl+S,
     /// k:Shift+ArrowDown) o espera hasta un momento (p:2500 ms desde el
@@ -4857,6 +4896,7 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.window_test(&ctx);
 
         // Cerrar la ventana con cambios sin guardar pide confirmación.
         if ctx.input(|i| i.viewport().close_requested()) {

@@ -6,7 +6,7 @@ license = "MIT"
 
 [dependencies]
 chardetng = "1.0.0"
-eframe = "0.37"
+eframe = { version = "0.37", features = ["persistence"] }
 encoding_rs = "0.8.44"
 memchr = "2.8.3"
 memmap2 = "0.9.12"

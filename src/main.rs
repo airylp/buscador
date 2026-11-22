@@ -61,6 +61,11 @@ fn main() -> eframe::Result {
             .with_min_inner_size([960.0, 480.0])
             .with_drag_and_drop(true)
             .with_icon(std::sync::Arc::new(icon::app_icon())),
+        // Posición, tamaño y monitor de la ventana: se guardan al cerrar y se
+        // recuperan al abrir (también tras actualizar o reiniciar). Si ese monitor
+        // ya no está conectado, eframe la pone en uno que exista. No en pruebas ni
+        // en «Abrir en ventana nueva» (se pondría encima de la principal).
+        persist_window: !testing && !files.iter().any(|f| f.as_os_str() == "--sin-sesion"),
         ..Default::default()
     };
     eframe::run_native(

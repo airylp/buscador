@@ -131,9 +131,10 @@ if [ "$ACCION" = "desinstalar" ] || [ "$ACCION" = "--desinstalar" ]; then
             fi
         done
     else
-        for f in "$BIN_DIR/buscador" "$DATA/applications/buscador.desktop" "$DATA/icons/hicolor/256x256/apps/buscador.png"; do
+        for f in "$BIN_DIR/buscador" "$DATA/applications/buscador.desktop" "$DATA/icons/hicolor/256x256/apps/buscador.png" "$DATA/buscador/app.ron"; do
             if [ -e "$f" ]; then rm -f "$f" && info "$(m "Quitado $f" "Removed $f" "Supprimé : $f")"; fi
         done
+        rmdir "$DATA/buscador" 2>/dev/null || true # posición de la ventana (eframe)
         command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" 2>/dev/null || true
     fi
     rm -rf "$CACHE" "${TMPDIR:-/tmp}/buscador-nuevos" "${TMPDIR:-/tmp}/buscador-actualizar"
