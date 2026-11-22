@@ -764,3 +764,7 @@ Sitio web	Website	Site web
 Versiones	Releases	Versions
 Versión {v}	Version {v}	Version {v}
 ver	view	voir
+Actualizaciones	Updates	Mises à jour
+Avisar de versiones nuevas (punto verde en ⬇; mira GitHub al abrir y cada 6 horas)	Notify about new versions (green dot on ⬇; checks GitHub at startup and every 6 hours)	Signaler les nouvelles versions (point vert sur ⬇ ; consulte GitHub au démarrage et toutes les 6 heures)
+Buscar actualizaciones · versión {v}	Check for updates · version {v}	Rechercher des mises à jour · version {v}
+Hay una versión nueva ({v}): clic para actualizar	A new version is available ({v}): click to update	Une nouvelle version est disponible ({v}) : cliquez pour mettre à jour

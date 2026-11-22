@@ -32,11 +32,13 @@ pub struct Settings {
     pub undo_steps: usize,
     /// Fondo de color en las líneas ERROR / WARN de los logs.
     pub levels: bool,
+    /// Comprobar en segundo plano si hay una versión nueva.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0, lang: None, minimap: false, tab_width: 4, show_ws: false, undo_steps: 100, header: true, levels: true }
+        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0, lang: None, minimap: false, tab_width: 4, show_ws: false, undo_steps: 100, header: true, levels: true, check_updates: true }
     }
 }
 
@@ -189,6 +191,7 @@ impl Settings {
                 ("ver_espacios", v) => s.show_ws = v == "si",
                 ("cabecera", v) => s.header = v != "no",
                 ("niveles", v) => s.levels = v != "no",
+                ("buscar_actualizaciones", v) => s.check_updates = v != "no",
                 ("deshacer", v) => s.undo_steps = v.parse::<usize>().unwrap_or(100).clamp(1, 10_000),
                 ("tabulador", v) => s.tab_width = v.parse::<usize>().unwrap_or(4).clamp(1, 16),
                 ("fondo", v) => bg = parse_hex(v),
@@ -239,6 +242,9 @@ impl Settings {
         }
         if !self.levels {
             text += "niveles=no\n";
+        }
+        if !self.check_updates {
+            text += "buscar_actualizaciones=no\n";
         }
         if self.show_ws {
             text += "ver_espacios=si\n";

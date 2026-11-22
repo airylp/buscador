@@ -2116,6 +2116,10 @@ pub struct App {
     /// BUSCADOR_CERRAR_TRAS=ms la cierra normalmente (así se guarda).
     started: Instant,
     window_test: u8,
+    /// Comprobación de versión nueva en segundo plano (botón ⬇ de la barra).
+    check_updates: bool,
+    bg_update: Option<crate::update::Updater>,
+    bg_update_at: Option<Instant>,
     debug_frames: u64,
     debug_mouse: Pos2,
     debug_typed: bool,
@@ -2235,6 +2239,9 @@ impl App {
             relaunch: None,
             started: Instant::now(),
             window_test: 0,
+            check_updates: settings.check_updates,
+            bg_update: None,
+            bg_update_at: None,
             debug_frames: 0,
             debug_mouse: Pos2::ZERO,
             debug_typed: false,
@@ -2510,6 +2517,7 @@ impl App {
             tab_width: tab_width(),
             show_ws: show_whitespace(),
             levels: level_colors(),
+            check_updates: self.check_updates,
             undo_steps: buffer::max_undo(),
         };
         if let Err(e) = st.save() {
@@ -2950,7 +2958,7 @@ impl App {
         let full = Rect::from_min_size(full.min, vec2(full.width(), h));
         ui.allocate_rect(full, Sense::hover());
         let narrow = full.width() < 1150.0;
-        let right_w = if narrow { 235.0 } else { 400.0 };
+        let right_w = if narrow { 265.0 } else { 430.0 };
         let enc_w = if narrow { 60.0 } else { 150.0 };
         let right = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
         let left = Rect::from_min_max(full.min, pos2(right.left() - 8.0, full.bottom()));
@@ -2962,6 +2970,23 @@ impl App {
                 .clicked()
             {
                 self.show_settings = !self.show_settings;
+            }
+            if crate::update::SUPPORTED {
+                let new = self.new_version();
+                let hint = match &new {
+                    Some(v) => tf!("Hay una versión nueva ({v}): clic para actualizar", v = v),
+                    None => tf!("Buscar actualizaciones · versión {v}", v = crate::update::version_label()),
+                };
+                let r = ui.selectable_label(self.updater.is_some(), "⬇").on_hover_text(hint);
+                if new.is_some() {
+                    // Punto verde en la esquina: hay versión nueva.
+                    let c = r.rect.right_top() + vec2(-4.0, 4.0);
+                    ui.painter().circle_filled(c, 3.5, Color32::from_rgb(40, 190, 80));
+                }
+                if r.clicked() {
+                    let ctx = ui.ctx().clone();
+                    self.open_updater(&ctx);
+                }
             }
             let mut msg = None;
             if let Some(t) = self.tabs.get_mut(self.active) {
@@ -4328,6 +4353,40 @@ impl App {
         }
     }
 
+    /// Mira en GitHub si hay versión nueva: unos segundos después de abrir y
+    /// luego cada 6 horas (en un hilo; ver `update::Updater::check`). Solo si
+    /// se sabe qué versión es esta (las compilaciones locales no lo saben).
+    fn background_update_check(&mut self, ctx: &Context) {
+        const FIRST: Duration = Duration::from_secs(5);
+        const EVERY: Duration = Duration::from_secs(6 * 3600);
+        let known = crate::update::current_commit().is_some() || crate::update::current_version().is_some();
+        let testing = std::env::var_os("BUSCADOR_SCREENSHOT").is_some() && std::env::var_os("BUSCADOR_HAY_VERSION").is_none();
+        if !crate::update::SUPPORTED || !self.check_updates || !known || testing {
+            return;
+        }
+        let due = match self.bg_update_at {
+            None => self.started.elapsed() >= FIRST,
+            Some(t) => t.elapsed() >= EVERY,
+        };
+        if due {
+            self.bg_update_at = Some(Instant::now());
+            self.bg_update = Some(crate::update::Updater::check(ctx.clone()));
+        } else if self.bg_update_at.is_none() {
+            ctx.request_repaint_after(FIRST.saturating_sub(self.started.elapsed()) + Duration::from_millis(50));
+        }
+    }
+
+    /// Versión nueva encontrada en segundo plano (o en la ventana de actualizar).
+    fn new_version(&self) -> Option<String> {
+        if let Ok(v) = std::env::var("BUSCADOR_HAY_VERSION") {
+            return Some(v);
+        }
+        [self.updater.as_ref(), self.bg_update.as_ref()].into_iter().flatten().find_map(|u| match u.stage() {
+            crate::update::Stage::Available(v) => Some(v),
+            _ => None,
+        })
+    }
+
     /// Ver `started`: mover y cerrar la ventana en las pruebas.
     fn window_test(&mut self, ctx: &Context) {
         if self.window_test >= 2 {
@@ -4897,6 +4956,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.window_test(&ctx);
+        self.background_update_check(&ctx);
 
         // Cerrar la ventana con cambios sin guardar pide confirmación.
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -6241,6 +6301,7 @@ impl App {
         let mut tabw = tab_width();
         let mut show_ws = show_whitespace();
         let mut levels = level_colors();
+        let mut check_updates = self.check_updates;
         let mut show_header = self.show_header;
         let mut undo_steps = buffer::max_undo();
         let mut lang_change = None;
@@ -6338,6 +6399,12 @@ impl App {
                     ui.strong(t!("Logs"));
                     ui.checkbox(&mut levels, t!("Fondo de color en las líneas ERROR y WARN (y sus trazas de pila)"));
                     ui.end_row();
+
+                    if crate::update::SUPPORTED {
+                        ui.strong(t!("Actualizaciones"));
+                        ui.checkbox(&mut check_updates, t!("Avisar de versiones nuevas (punto verde en ⬇; mira GitHub al abrir y cada 6 horas)"));
+                        ui.end_row();
+                    }
 
                     ui.strong(t!("Encabezado"));
                     ui.checkbox(&mut show_header, t!("Mostrar el nombre y la ruta del archivo encima del texto"));
@@ -6486,6 +6553,13 @@ impl App {
         }
         if show_ws != show_whitespace() {
             SHOW_WS.store(show_ws, Ordering::Relaxed);
+            self.persist();
+        }
+        if check_updates != self.check_updates {
+            self.check_updates = check_updates;
+            if !check_updates {
+                self.bg_update = None;
+            }
             self.persist();
         }
         if levels != level_colors() {
