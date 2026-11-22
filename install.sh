@@ -131,9 +131,10 @@ if [ "$ACCION" = "desinstalar" ] || [ "$ACCION" = "--desinstalar" ]; then
             fi
         done
     else
-        for f in "$BIN_DIR/buscador" "$DATA/applications/buscador.desktop" "$DATA/icons/hicolor/256x256/apps/buscador.png" "$DATA/buscador/app.ron"; do
+        for f in "$BIN_DIR/buscador" "$DATA/applications/buscador.desktop" "$DATA/icons/hicolor/"*/apps/buscador.png "$DATA/buscador/app.ron"; do
             if [ -e "$f" ]; then rm -f "$f" && info "$(m "Quitado $f" "Removed $f" "Supprimé : $f")"; fi
         done
+        [ -d "$DATA/icons/hicolor" ] && touch "$DATA/icons/hicolor"
         rmdir "$DATA/buscador" 2>/dev/null || true # posición de la ventana (eframe)
         command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" 2>/dev/null || true
     fi
@@ -201,12 +202,20 @@ if [ "$OS" = "Darwin" ]; then
 else
     info "$(m 'Compilando (la primera vez tarda unos minutos)' 'Building (the first time takes a few minutes)' 'Compilation (la première fois prend quelques minutes)')"
     (cd "$TMP" && cargo build --release --locked)
-    mkdir -p "$BIN_DIR" "$DATA/applications" "$DATA/icons/hicolor/256x256/apps"
+    mkdir -p "$BIN_DIR" "$DATA/applications"
     # Copia y renombra: el ejecutable en uso sigue funcionando hasta reiniciarlo.
     cp "$CACHE/release/buscador" "$BIN_DIR/.buscador.nuevo"
     chmod +x "$BIN_DIR/.buscador.nuevo"
     mv -f "$BIN_DIR/.buscador.nuevo" "$BIN_DIR/buscador"
-    "$BIN_DIR/buscador" --iconset "$TMP/iconos" && cp "$TMP/iconos/icon_256x256.png" "$DATA/icons/hicolor/256x256/apps/buscador.png"
+    if "$BIN_DIR/buscador" --iconset "$TMP/iconos"; then
+        for s in 16 32 128 256 512; do
+            mkdir -p "$DATA/icons/hicolor/${s}x${s}/apps"
+            cp "$TMP/iconos/icon_${s}x${s}.png" "$DATA/icons/hicolor/${s}x${s}/apps/buscador.png"
+        done
+        # GNOME/GTK solo vuelve a leer los íconos si cambia la fecha de la carpeta del tema
+        # (no la de sus subcarpetas): sin esto el ícono no aparece hasta cerrar sesión.
+        touch "$DATA/icons/hicolor"
+    fi
     cat > "$DATA/applications/buscador.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
