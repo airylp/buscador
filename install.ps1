@@ -27,7 +27,10 @@ Invoke-WebRequest -UseBasicParsing $asset.browser_download_url -OutFile $file
 
 Write-Host (m '==> Abriendo el instalador...' '==> Opening the installer...' "==> Ouverture de l'installateur...")
 try {
-    $p = Start-Process -FilePath $file -PassThru -Wait
+    # -Wait esperaría también a buscador, que el instalador abre al terminar: se espera solo al instalador.
+    $p = Start-Process -FilePath $file -PassThru
+    $null = $p.Handle  # sin esto ExitCode puede quedar vacío
+    $p.WaitForExit()
     if ($p.ExitCode -eq 0) {
         Write-Host (m "==> buscador $($rel.tag_name) instalado." "==> buscador $($rel.tag_name) installed." "==> buscador $($rel.tag_name) installé.")
     }
