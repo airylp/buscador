@@ -51,6 +51,9 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 - Convertir el archivo (clic en el encoding o en LF/CRLF de la barra de estado): otro encoding,
   saltos LF ↔ CRLF, poner o quitar el BOM; en streaming, sirve para varios GB, y avisa en qué línea
   hay un carácter que no se puede representar
+- HTML: «Navegador» abre la página en el navegador (si hay cambios sin guardar, una copia temporal que
+  mantiene las imágenes y el CSS relativos) y «Lectura» la muestra formateada junto al código (títulos,
+  listas, tablas, enlaces; sin CSS ni JavaScript), se actualiza al editar y un clic lleva a la línea
 - «Acerca de» (ℹ en la barra de estado): versión, licencia y enlaces al proyecto en GitHub
 
 ## Instalar, actualizar y desinstalar

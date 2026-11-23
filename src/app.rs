@@ -159,6 +159,10 @@ pub struct Tab {
     recover: Option<Recover>,
     /// Vista hexadecimal (en lugar del texto).
     hex: crate::hexview::Hex,
+    /// Vista de lectura de HTML.
+    html: crate::htmlview::HtmlView,
+    /// ¿Es HTML? (se mira una vez: extensión o el principio del archivo).
+    html_sniff: std::cell::Cell<Option<bool>>,
     /// Petición del menú contextual: abrir «Convertir» con este texto.
     convert_request: Option<String>,
 }
@@ -272,6 +276,8 @@ impl Tab {
             journal: Default::default(),
             recover: None,
             hex: Default::default(),
+            html: Default::default(),
+            html_sniff: Default::default(),
             convert_request: None,
         }
     }
@@ -364,6 +370,21 @@ impl Tab {
                 })
                 .collect(),
         }
+    }
+
+    /// HTML por la extensión o, si es XML/HTML sin ella, por el principio del archivo.
+    fn is_html(&self) -> bool {
+        if let Some(v) = self.html_sniff.get() {
+            return v;
+        }
+        let ext = self.doc.name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+        let v = matches!(ext.as_str(), "html" | "htm" | "xhtml" | "xht") || {
+            let d: &[u8] = &self.doc.src.data;
+            let head = String::from_utf8_lossy(&d[..d.len().min(2048)]).to_ascii_lowercase();
+            self.lang == syntax::Lang::Xml && (head.contains("<!doctype html") || head.contains("<html"))
+        };
+        self.html_sniff.set(Some(v));
+        v
     }
 
     fn end_pos(&self) -> Pos {
@@ -1894,6 +1915,22 @@ fn repo_url(rest: &str) -> String {
 }
 
 /// Abre un enlace en el navegador.
+/// Carpeta de las copias temporales para ver HTML en el navegador.
+fn html_preview_dir() -> PathBuf {
+    std::env::temp_dir().join("buscador-vista")
+}
+
+/// Borra copias temporales de HTML de más de un día.
+fn clean_html_previews() {
+    let Ok(rd) = std::fs::read_dir(html_preview_dir()) else { return };
+    for e in rd.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d > Duration::from_secs(86400));
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 fn open_url(url: &str) {
     use std::process::Command;
     let r = if MAC {
@@ -2241,6 +2278,7 @@ impl App {
             relaunch: None,
             started: {
                 crate::update::remove_leftovers();
+                clean_html_previews();
                 Instant::now()
             },
             window_test: 0,
@@ -4048,6 +4086,52 @@ impl App {
 
     /// Barra de estado: información del archivo y del cursor a la izquierda
     /// («Lín X» sirve para ir a una línea); Resultados, Detalle y «?» a la derecha.
+    /// Abre el HTML activo en el navegador: el archivo si está guardado tal cual;
+    /// si no, una copia temporal con `<base href>` a su carpeta.
+    /// Enlace de la vista de lectura: web/correo → navegador; ruta relativa →
+    /// el archivo junto al HTML (si existe); `#ancla` → nada.
+    fn open_html_link(&mut self, href: &str) {
+        let h = href.trim();
+        let lower = h.to_ascii_lowercase();
+        if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:") || lower.starts_with("file:") {
+            open_url(h);
+            return;
+        }
+        if h.is_empty() || h.starts_with('#') || lower.starts_with("javascript:") {
+            return;
+        }
+        let rel = h.split(['#', '?']).next().unwrap_or(h);
+        let base = self.tabs.get(self.active).and_then(|t| t.doc.path.parent().map(Path::to_path_buf));
+        match base.map(|b| b.join(rel)).filter(|p| p.exists()) {
+            Some(p) => open_url(&p.to_string_lossy()),
+            None => self.msg(tf!("No se encontró «{rel}» junto al archivo", rel = rel)),
+        }
+    }
+
+    fn html_in_browser(&mut self) {
+        let Some(t) = self.tabs.get(self.active) else { return };
+        let ext = t.doc.name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+        if !t.dirty() && !t.untitled && matches!(ext.as_str(), "html" | "htm") {
+            open_url(&t.doc.path.to_string_lossy());
+            return;
+        }
+        let Some(text) = t.text(Pos::default(), t.end_pos(), MAX_COPY_BYTES) else {
+            self.msg(tf!("Demasiado grande (máx. {human_size})", human_size = human_size(MAX_COPY_BYTES as u64)));
+            return;
+        };
+        let html = match t.doc.path.parent().filter(|_| !t.untitled) {
+            Some(dir) => crate::htmlview::with_base(&text, dir),
+            None => text,
+        };
+        let stem = t.doc.name.rsplit_once('.').map_or(t.doc.name.as_str(), |(a, _)| a).to_string();
+        let dir = html_preview_dir();
+        let file = dir.join(format!("{stem}.html"));
+        match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, html)) {
+            Ok(()) => open_url(&file.to_string_lossy()),
+            Err(e) => self.msg(tf!("No se pudo crear la copia temporal: {e}", e = e)),
+        }
+    }
+
     fn status_bar(&mut self, ui: &mut Ui) {
         let h = ui.spacing().interact_size.y;
         let full = ui.available_rect_before_wrap();
@@ -4056,6 +4140,7 @@ impl App {
         let right_w = 700.0_f32.min(full.width() * 0.6);
         let right = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
 
+        let mut open_html = false;
         let used = ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)), |ui| {
             if ui.add(IconButton::new(Icon::Info, Tone::Neutral).small().selected(self.show_about)).on_hover_text(t!("Acerca de buscador")).clicked() {
                 self.show_about = !self.show_about;
@@ -4122,6 +4207,22 @@ impl App {
                     t.hex.toggle();
                     self.focus_view = !t.hex.on;
                 }
+                if t.is_html() {
+                    if ui
+                        .add(IconButton::new(Icon::Globe, Tone::File).label(t!("Navegador")).small())
+                        .on_hover_text(t!("Ver la página en el navegador (con CSS, imágenes y JavaScript). Con cambios sin guardar se abre una copia temporal."))
+                        .clicked()
+                    {
+                        open_html = true;
+                    }
+                    if ui
+                        .add(IconButton::new(Icon::Eye, Tone::File).label(t!("Lectura")).small().selected(t.html.on))
+                        .on_hover_text(t!("Vista de lectura: el HTML formateado (títulos, párrafos, listas, tablas, enlaces) junto al código, sin CSS ni JavaScript. Se actualiza al editar; clic en un bloque lleva a su línea."))
+                        .clicked()
+                    {
+                        t.html.toggle();
+                    }
+                }
             }
             if ui
                 .add(IconButton::new(Icon::Detail, Tone::Search).label(t!("Detalle")).small().selected(self.show_detail))
@@ -4139,6 +4240,9 @@ impl App {
             }
         });
 
+        if open_html {
+            self.html_in_browser();
+        }
         // Lo de la izquierda llega hasta donde empiezan los botones de la derecha.
         let left = Rect::from_min_max(full.min, pos2(used.response.rect.left().min(right.right()) - 6.0, full.bottom()));
         ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
@@ -4724,6 +4828,12 @@ impl App {
                     t.hex.toggle();
                 }
             }
+            // BUSCADOR_LECTURA=1: abre la vista de lectura de HTML.
+            if std::env::var("BUSCADOR_LECTURA").is_ok() {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.html.toggle();
+                }
+            }
             if let Ok(txt) = std::env::var("BUSCADOR_NUEVO") {
                 self.new_untitled(Some(txt.replace("\\n", "\n")));
             }
@@ -5139,6 +5249,41 @@ impl eframe::App for App {
             if t.filter.poll(&doc.src, || buf.as_ref().map(|b| (b.snapshot(), doc.index.clone())), t.edit_gen) {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
+        }
+        // Vista de lectura de HTML: panel a la derecha del texto.
+        let mut html_act = None;
+        if let Some(t) = self.tabs.get_mut(self.active).filter(|t| t.html.on && !t.hex.on) {
+            let v = t.edit_gen;
+            if t.html.wants(v) {
+                if t.doc.indexing_done() {
+                    let text = t.text(Pos::default(), t.end_pos(), crate::htmlview::MAX_BYTES);
+                    t.html.start(v, text);
+                } else {
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                }
+            }
+            if t.html.poll() {
+                ctx.request_repaint_after(Duration::from_millis(60));
+            }
+            let w = ui.available_width();
+            let base = (self.font_size + 2.0).max(13.0);
+            html_act = Panel::right("html_view")
+                .resizable(true)
+                .default_size(w * 0.45)
+                .min_size(220.0)
+                .max_size(w - 200.0)
+                .show(ui, |ui| crate::htmlview::show(ui, &t.html, base))
+                .inner;
+        }
+        match html_act {
+            Some(crate::htmlview::Action::Goto(l)) => {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.goto_line(l);
+                }
+                self.focus_view = true;
+            }
+            Some(crate::htmlview::Action::Open(href)) => self.open_html_link(&href),
+            None => {}
         }
         let mut message = None;
         let mut view_focused = false;

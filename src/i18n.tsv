@@ -777,3 +777,14 @@ Minimapa	Minimap	Minicarte
 Ajuste	Wrap	Retour
 Espacio	Space	Espace
 Buscar…  (Ctrl+F, Enter)	Search…  (Ctrl+F, Enter)	Rechercher…  (Ctrl+F, Entrée)
+Navegador	Browser	Navigateur
+Lectura	Reading	Lecture
+Ver la página en el navegador (con CSS, imágenes y JavaScript). Con cambios sin guardar se abre una copia temporal.	Open the page in the browser (with CSS, images and JavaScript). With unsaved changes a temporary copy is opened.	Voir la page dans le navigateur (avec CSS, images et JavaScript). Avec des modifications non enregistrées, une copie temporaire est ouverte.
+Vista de lectura: el HTML formateado (títulos, párrafos, listas, tablas, enlaces) junto al código, sin CSS ni JavaScript. Se actualiza al editar; clic en un bloque lleva a su línea.	Reading view: the formatted HTML (headings, paragraphs, lists, tables, links) next to the code, without CSS or JavaScript. Updates as you edit; click a block to go to its line.	Vue lecture : le HTML mis en forme (titres, paragraphes, listes, tableaux, liens) à côté du code, sans CSS ni JavaScript. Se met à jour pendant l'édition ; un clic sur un bloc mène à sa ligne.
+Demasiado grande (máx. {human_size})	Too large (max. {human_size})	Trop volumineux (max. {human_size})
+No se pudo crear la copia temporal: {e}	Could not create the temporary copy: {e}	Impossible de créer la copie temporaire : {e}
+No se encontró «{rel}» junto al archivo	“{rel}” was not found next to the file	« {rel} » introuvable à côté du fichier
+imagen	image	image
+Demasiado grande para la vista de lectura: usa «Navegador».	Too large for the reading view: use “Browser”.	Trop volumineux pour la vue lecture : utilisez « Navigateur ».
+(sin contenido visible)	(no visible content)	(aucun contenu visible)
+… y {n} bloques más (vista recortada)	… and {n} more blocks (view truncated)	… et {n} blocs de plus (vue tronquée)

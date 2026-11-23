@@ -15,6 +15,7 @@ mod foldersearch;
 mod encoding;
 mod fonts;
 mod hexview;
+mod htmlview;
 mod icon;
 mod icons;
 #[cfg(target_os = "macos")]

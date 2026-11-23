@@ -43,6 +43,8 @@ pub enum Icon {
     Plus,
     Collapse,
     Search,
+    Eye,
+    Globe,
 }
 
 /// Familia de colores (discretos) de cada grupo de botones.
@@ -174,6 +176,21 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(10.6, 2.6), (13.2, 5.2), (10.6, 7.8)]);
             line(&[(13.8, 10.8), (2.8, 10.8)]);
             line(&[(5.4, 8.2), (2.8, 10.8), (5.4, 13.4)]);
+        }
+        Icon::Eye => {
+            let up: Vec<(f32, f32)> = (0..=16).map(|i| i as f32 / 16.0).map(|t| (1.5 + 13.0 * t, 8.0 - 4.6 * (PI * t).sin())).collect();
+            let down: Vec<(f32, f32)> = up.iter().map(|&(x, y)| (x, 16.0 - y)).collect();
+            line(&up);
+            line(&down);
+            circle(8.0, 8.0, 2.2);
+        }
+        Icon::Globe => {
+            circle(8.0, 8.0, 6.0);
+            let ell: Vec<(f32, f32)> = (0..=24).map(|i| i as f32 * TAU / 24.0).map(|a| (8.0 + 2.6 * a.cos(), 8.0 + 6.0 * a.sin())).collect();
+            line(&ell);
+            line(&[(2.0, 8.0), (14.0, 8.0)]);
+            line(&[(3.2, 4.8), (12.8, 4.8)]);
+            line(&[(3.2, 11.2), (12.8, 11.2)]);
         }
         Icon::Search => {
             circle(6.8, 6.8, 4.3);
