@@ -7,6 +7,7 @@ use crate::blocks::{Block, BlockParams, BlockSearch, MAX_BLOCKS};
 use crate::search::{MAX_RESULTS, Params, Search};
 use crate::settings::Settings;
 use crate::syntax;
+use crate::icons::{Icon, IconButton, Tone};
 use eframe::egui::{
     text::{CCursor, LayoutJob},
     *,
@@ -2161,6 +2162,7 @@ impl App {
         cc.egui_ctx.set_fonts(crate::fonts::build(&settings.font, &fallbacks).0);
         cc.egui_ctx.set_theme(settings.theme);
         apply_borders(&cc.egui_ctx, settings.borders);
+        apply_style(&cc.egui_ctx);
         let mut app = App {
             tabs: Vec::new(),
             active: 0,
@@ -2961,14 +2963,14 @@ impl App {
         let full = Rect::from_min_size(full.min, vec2(full.width(), h));
         ui.allocate_rect(full, Sense::hover());
         let narrow = full.width() < 1150.0;
-        let right_w = if narrow { 265.0 } else { 430.0 };
+        let right_w = if narrow { 275.0 } else { 470.0 };
         let enc_w = if narrow { 60.0 } else { 150.0 };
         let right = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
         let left = Rect::from_min_max(full.min, pos2(right.left() - 8.0, full.bottom()));
         // --- A la derecha (se reserva primero): encoding y ajustes ---
         ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)), |ui| {
             if ui
-                .selectable_label(self.show_settings, "⚙")
+                .add(IconButton::new(Icon::Gear, Tone::Neutral).selected(self.show_settings))
                 .on_hover_text(if MAC { t!("Ajustes: tema y tamaño de letra (Cmd+,)") } else { t!("Ajustes: tema y tamaño de letra") })
                 .clicked()
             {
@@ -2980,11 +2982,10 @@ impl App {
                     Some(v) => tf!("Hay una versión nueva ({v}): clic para actualizar", v = v),
                     None => tf!("Buscar actualizaciones · versión {v}", v = crate::update::version_label()),
                 };
-                let r = ui.selectable_label(self.updater.is_some(), "⬇").on_hover_text(hint);
+                let r = ui.add(IconButton::new(Icon::Download, Tone::Neutral).selected(self.updater.is_some())).on_hover_text(hint);
                 if new.is_some() {
                     // Punto verde en la esquina: hay versión nueva.
-                    let c = r.rect.right_top() + vec2(-4.0, 4.0);
-                    ui.painter().circle_filled(c, 3.5, Color32::from_rgb(40, 190, 80));
+                    crate::icons::badge(ui, &r, Color32::from_rgb(40, 190, 80));
                 }
                 if r.clicked() {
                     let ctx = ui.ctx().clone();
@@ -3024,12 +3025,12 @@ impl App {
             // Tamaño y tipo de letra del texto.
             ui.separator();
             let mut size = self.font_size;
-            if !narrow && ui.small_button("A+").on_hover_text(t!("Letra más grande (Ctrl++)")).clicked() {
+            if !narrow && ui.add(IconButton::text_only("A+", Tone::Neutral)).on_hover_text(t!("Letra más grande (Ctrl++)")).clicked() {
                 size += 1.0;
             }
             ui.add(DragValue::new(&mut size).range(7.0..=40.0).speed(0.2).max_decimals(0))
                 .on_hover_text(t!("Tamaño de letra del texto (arrastra o escribe)"));
-            if !narrow && ui.small_button("A−").on_hover_text(t!("Letra más pequeña (Ctrl+-)")).clicked() {
+            if !narrow && ui.add(IconButton::text_only("A−", Tone::Neutral)).on_hover_text(t!("Letra más pequeña (Ctrl+-)")).clicked() {
                 size -= 1.0;
             }
             let size = size.round().clamp(7.0, 40.0);
@@ -3061,24 +3062,31 @@ impl App {
         });
         // Con poco espacio, los botones muestran solo el ícono (el texto queda en el tooltip).
         let compact = full.width() < 1480.0;
-        let lb = |icon: &str, text: &str| if compact { icon.to_string() } else { format!("{icon} {text}") };
+        let lb = |text: &str| if compact { String::new() } else { text.to_string() };
         ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.set_clip_rect(left.intersect(ui.clip_rect()));
+            if narrow {
+                ui.spacing_mut().button_padding.x = 3.0;
+                ui.spacing_mut().item_spacing.x = 4.0;
+            }
             // --- Archivo y edición ---
-            if ui.selectable_label(self.show_sidebar, "☰").on_hover_text(t!("Panel de archivos (Ctrl+B)")).clicked() {
+            if ui.add(IconButton::new(Icon::Sidebar, Tone::Neutral).selected(self.show_sidebar)).on_hover_text(t!("Panel de archivos (Ctrl+B)")).clicked() {
                 self.show_sidebar = !self.show_sidebar;
             }
-            if ui.button(lb("📝", t!("Nuevo"))).on_hover_text(t!("Archivo nuevo, por ejemplo para pegar lo copiado (Ctrl+N)")).clicked() {
+            if ui.add(IconButton::new(Icon::New, Tone::File).label(lb(t!("Nuevo")))).on_hover_text(t!("Archivo nuevo, por ejemplo para pegar lo copiado (Ctrl+N)")).clicked() {
                 self.new_untitled(None);
             }
-            if ui.button(lb("📂", t!("Abrir"))).on_hover_text(t!("Abrir archivos (Ctrl+O) · también puedes arrastrarlos")).clicked() {
+            if ui.add(IconButton::new(Icon::Open, Tone::File).label(lb(t!("Abrir")))).on_hover_text(t!("Abrir archivos (Ctrl+O) · también puedes arrastrarlos")).clicked() {
                 self.open_dialog();
             }
             // Recientes: desplegable pegado a «Abrir».
             let gap = ui.spacing().item_spacing.x;
             ui.spacing_mut().item_spacing.x = 1.0;
             let mut pick = None;
-            let r = ui.menu_button("▾", |ui| pick = recent_menu(ui, &self.recent)).response.on_hover_text(t!("Abrir recientes"));
+            let r = eframe::egui::containers::menu::MenuButton::from_button(Button::new(RichText::new("▾").color(Tone::File.color(ui))).frame(false).min_size(vec2(14.0, 0.0)))
+                .ui(ui, |ui| pick = recent_menu(ui, &self.recent))
+                .0
+                .on_hover_text(t!("Abrir recientes"));
             // Pruebas: BUSCADOR_RECIENTES_VER=1 lo deja abierto para la captura.
             if self.debug_frames == 3 && std::env::var_os("BUSCADOR_RECIENTES_VER").is_some() {
                 eframe::egui::Popup::open_id(ui.ctx(), eframe::egui::Popup::default_response_id(&r));
@@ -3099,21 +3107,21 @@ impl App {
                 )
             });
             let untitled = self.tabs.get(self.active).is_some_and(|t| t.untitled);
-            if ui.add_enabled(dirty || untitled, Button::new(lb("💾", t!("Guardar")))).on_hover_text(t!("Guardar (Ctrl+S) · Guardar como: Ctrl+Shift+S")).clicked() {
+            if ui.add_enabled(dirty || untitled, IconButton::new(Icon::Save, Tone::File).label(lb(t!("Guardar")))).on_hover_text(t!("Guardar (Ctrl+S) · Guardar como: Ctrl+Shift+S")).clicked() {
                 self.save(false);
             }
-            if ui.add_enabled(can_undo && editable, Button::new("↶")).on_hover_text(t!("Deshacer (Ctrl+Z)")).clicked() {
+            if ui.add_enabled(can_undo && editable, IconButton::new(Icon::Undo, Tone::Edit)).on_hover_text(t!("Deshacer (Ctrl+Z)")).clicked() {
                 if let Some(Err(e)) = self.tab().map(|t| t.undo_redo(false)) {
                     self.msg(e);
                 }
             }
-            if ui.add_enabled(can_redo && editable, Button::new("↷")).on_hover_text(t!("Rehacer (Ctrl+Shift+Z)")).clicked() {
+            if ui.add_enabled(can_redo && editable, IconButton::new(Icon::Redo, Tone::Edit)).on_hover_text(t!("Rehacer (Ctrl+Shift+Z)")).clicked() {
                 if let Some(Err(e)) = self.tab().map(|t| t.undo_redo(true)) {
                     self.msg(e);
                 }
             }
             if ui
-                .add_enabled(has_tab, Button::selectable(editable, lb("✏", t!("Editar"))))
+                .add_enabled(has_tab, IconButton::new(Icon::Edit, Tone::Edit).label(lb(t!("Editar"))).selected(editable))
                 .on_hover_text(t!("Activar/desactivar edición (Ctrl+E)"))
                 .clicked()
             {
@@ -3128,7 +3136,7 @@ impl App {
                 t!("La selección en bloque necesita una letra monoespaciada (⚙ Ajustes)")
             };
             if ui
-                .add_enabled(mono && has_tab, Button::selectable(self.column_mode && mono, "▦".to_string()))
+                .add_enabled(mono && has_tab, IconButton::new(Icon::Block, Tone::Edit).selected(self.column_mode && mono))
                 .on_hover_text(block_hint)
                 .on_disabled_hover_text(block_hint)
                 .clicked()
@@ -3147,7 +3155,7 @@ impl App {
                 None => t!("Embellecer: disponible para JSON y XML/HTML").to_string(),
             };
             if ui
-                .add_enabled(beaut.is_some(), Button::new("✨"))
+                .add_enabled(beaut.is_some(), IconButton::new(Icon::Sparkle, Tone::Edit))
                 .on_hover_text(&bhint)
                 .on_disabled_hover_text(&bhint)
                 .clicked()
@@ -3162,9 +3170,12 @@ impl App {
             let r = ui.add(
                 TextEdit::singleline(&mut self.query)
                     .desired_width(search_w)
-                    .hint_text(t!("🔍 Buscar…  (Ctrl+F, Enter)"))
+                    .hint_text(t!("Buscar…  (Ctrl+F, Enter)"))
+                    .margin(eframe::egui::Margin { left: 24, right: 6, top: 3, bottom: 3 })
                     .font(TextStyle::Monospace),
             );
+            let lupa = Rect::from_center_size(pos2(r.rect.left() + 13.0, r.rect.center().y), vec2(14.0, 14.0));
+            crate::icons::paint(ui.painter(), lupa, Icon::Search, ui.visuals().weak_text_color());
             if self.focus_search {
                 r.request_focus();
                 self.focus_search = false;
@@ -3179,14 +3190,18 @@ impl App {
                 }
                 r.request_focus();
             }
-            ui.toggle_value(&mut self.case_sensitive, "Aa").on_hover_text(t!("Distinguir mayúsculas"));
-            ui.toggle_value(&mut self.use_regex, ".*").on_hover_text(t!("Expresión regular"));
-            if ui.add_enabled(has_tab, Button::new("◀")).on_hover_text(t!("Anterior (Shift+Enter, Shift+F3)")).clicked() {
+            if ui.add(IconButton::text_only("Aa", Tone::Search).selected(self.case_sensitive)).on_hover_text(t!("Distinguir mayúsculas")).clicked() {
+                self.case_sensitive = !self.case_sensitive;
+            }
+            if ui.add(IconButton::text_only(".*", Tone::Search).selected(self.use_regex)).on_hover_text(t!("Expresión regular")).clicked() {
+                self.use_regex = !self.use_regex;
+            }
+            if ui.add_enabled(has_tab, IconButton::new(Icon::Prev, Tone::Search)).on_hover_text(t!("Anterior (Shift+Enter, Shift+F3)")).clicked() {
                 if let Some(t) = self.tab() {
                     t.prev_match();
                 }
             }
-            if ui.add_enabled(has_tab, Button::new("▶")).on_hover_text(t!("Siguiente (Enter, F3)")).clicked() {
+            if ui.add_enabled(has_tab, IconButton::new(Icon::Next, Tone::Search)).on_hover_text(t!("Siguiente (Enter, F3)")).clicked() {
                 if self.tabs.get(self.active).is_some_and(|t| t.search.is_some()) {
                     if let Some(t) = self.tab() {
                         t.next_match();
@@ -3225,21 +3240,27 @@ impl App {
 
             // --- Reemplazar y avanzada ---
             let rk = if MAC { "Cmd+Opción+F" } else { "Ctrl+H" };
-            ui.toggle_value(&mut self.show_replace, "🔁").on_hover_text(tf!("Reemplazar ({rk})", rk = rk));
+            if ui.add(IconButton::new(Icon::Replace, Tone::Tool).selected(self.show_replace)).on_hover_text(tf!("Reemplazar ({rk})", rk = rk)).clicked() {
+                self.show_replace = !self.show_replace;
+            }
             let n_adv = self.advs.len();
-            let adv_label = if n_adv > 0 { format!("🔎 {n_adv}") } else { "🔎".to_string() };
+            let adv_label = if n_adv > 0 { n_adv.to_string() } else { String::new() };
             if ui
-                .selectable_label(n_adv > 0, adv_label)
+                .add(IconButton::new(Icon::Advanced, Tone::Tool).label(adv_label).selected(n_adv > 0))
                 .on_hover_text(t!("Búsqueda avanzada: nueva ventana de búsqueda por bloques (desde… hasta…, multilínea), con minimapa y copia en varias líneas (Ctrl+Shift+F). Puedes abrir varias."))
                 .clicked()
             {
                 self.new_adv_window();
             }
-            ui.toggle_value(&mut self.map.open, "🗺").on_hover_text(
-                t!("Mapa de disco: qué ocupa cada carpeta y archivo de una carpeta, y búsqueda de texto en sus archivos (se resaltan en verde)"),
-            );
+            if ui
+                .add(IconButton::new(Icon::Map, Tone::Tool).selected(self.map.open))
+                .on_hover_text(t!("Mapa de disco: qué ocupa cada carpeta y archivo de una carpeta, y búsqueda de texto en sus archivos (se resaltan en verde)"))
+                .clicked()
+            {
+                self.map.open = !self.map.open;
+            }
             let fk = if MAC { "Cmd+Shift+O" } else { "Ctrl+Shift+O" };
-            if ui.selectable_label(self.folder.open, "📁").on_hover_text(tf!("Buscar en carpeta: el texto en todos los archivos de una carpeta ({fk})", fk = fk)).clicked() {
+            if ui.add(IconButton::new(Icon::FolderSearch, Tone::Tool).selected(self.folder.open)).on_hover_text(tf!("Buscar en carpeta: el texto en todos los archivos de una carpeta ({fk})", fk = fk)).clicked() {
                 if self.folder.open {
                     self.folder.open = false;
                 } else {
@@ -3247,7 +3268,7 @@ impl App {
                 }
             }
             let ck = if MAC { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
-            if ui.selectable_label(self.convert.open, "⇄").on_hover_text(tf!("Convertir Base64 / hexadecimal: decodificar o codificar la selección o un texto ({ck})", ck = ck)).clicked() {
+            if ui.add(IconButton::new(Icon::Convert, Tone::Tool).selected(self.convert.open)).on_hover_text(tf!("Convertir Base64 / hexadecimal: decodificar o codificar la selección o un texto ({ck})", ck = ck)).clicked() {
                 if self.convert.open {
                     self.convert.open = false;
                 } else {
@@ -3800,14 +3821,14 @@ impl App {
         ui.horizontal(|ui| {
             ui.strong(t!("Archivos")).on_hover_text(t!("Archivos abiertos"));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("«").on_hover_text(t!("Ocultar (Ctrl+B)")).clicked() {
+                if ui.add(IconButton::new(Icon::Collapse, Tone::Neutral).small()).on_hover_text(t!("Ocultar (Ctrl+B)")).clicked() {
                     self.show_sidebar = false;
                 }
-                if ui.add(Button::new(RichText::new(t!("+ Espacio")).small()).small()).on_hover_text(t!("Crear un espacio: un grupo de archivos que se abre y cierra como una carpeta.\nArrastra archivos encima o usa su menú (clic derecho).")).clicked() {
+                if ui.add(IconButton::new(Icon::Plus, Tone::File).label(t!("Espacio")).small()).on_hover_text(t!("Crear un espacio: un grupo de archivos que se abre y cierra como una carpeta.\nArrastra archivos encima o usa su menú (clic derecho).")).clicked() {
                     self.file_action(ui.ctx(), FileAction::NewSpace(None));
                 }
                 let on = self.cur_wrap() != Wrap::Off;
-                let r = ui.add_enabled(!self.tabs.is_empty(), Button::new(RichText::new(t!("↩ Ajuste")).small()).small().selected(on));
+                let r = ui.add_enabled(!self.tabs.is_empty(), IconButton::new(Icon::Wrap, Tone::Tool).label(t!("Ajuste")).small().selected(on));
                 if r.on_hover_text(t!("Ajuste de línea del archivo seleccionado (Ctrl+Alt+Z)")).clicked() {
                     self.toggle_wrap();
                 }
@@ -4036,11 +4057,11 @@ impl App {
         let right = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
 
         let used = ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)), |ui| {
-            if ui.add(Button::new(RichText::new("ℹ").small()).small().selected(self.show_about)).on_hover_text(t!("Acerca de buscador")).clicked() {
+            if ui.add(IconButton::new(Icon::Info, Tone::Neutral).small().selected(self.show_about)).on_hover_text(t!("Acerca de buscador")).clicked() {
                 self.show_about = !self.show_about;
             }
             if ui
-                .add(Button::new(RichText::new("?").small().strong()).small().selected(self.show_keys))
+                .add(IconButton::new(Icon::Help, Tone::Neutral).small().selected(self.show_keys))
                 .on_hover_text(t!("Atajos de teclado (F1)"))
                 .clicked()
             {
@@ -4051,11 +4072,11 @@ impl App {
                     Wrap::Columns(n) => tf!("a {n} columnas", n = n),
                     _ => t!("al ancho de la ventana").into(),
                 });
-            if ui.selectable_label(self.cur_wrap() != Wrap::Off, RichText::new(t!("↩ Ajuste")).small()).on_hover_text(wrap_hint).clicked() {
+            if ui.add(IconButton::new(Icon::Wrap, Tone::Tool).label(t!("Ajuste")).small().selected(self.cur_wrap() != Wrap::Off)).on_hover_text(wrap_hint).clicked() {
                 self.toggle_wrap();
             }
             if ui
-                .selectable_label(self.show_minimap, RichText::new(t!("▤ Minimapa")).small())
+                .add(IconButton::new(Icon::Minimap, Tone::Tool).label(t!("Minimapa")).small().selected(self.show_minimap))
                 .on_hover_text(t!("Minimapa del texto a la derecha: vista en miniatura con las coincidencias; clic o arrastrar para moverse"))
                 .clicked()
             {
@@ -4065,7 +4086,7 @@ impl App {
             let can_reload = self.tabs.get(self.active).is_some_and(|t| !t.untitled);
             let rk = if MAC { "Cmd+R" } else { "Ctrl+R" };
             if ui
-                .add_enabled(can_reload, Button::new(RichText::new(t!("⟳ Recargar")).small()).frame(false))
+                .add_enabled(can_reload, IconButton::new(Icon::Reload, Tone::File).label(t!("Recargar")).small())
                 .on_hover_text(tf!("Volver a leer el archivo del disco y poner el cursor al final ({rk})", rk = rk))
                 .clicked()
             {
@@ -4080,8 +4101,8 @@ impl App {
                     t!("En vivo: muestra lo que se va añadiendo al archivo (como tail -f) y baja hasta el final.\nSi el archivo se trunca o rota, se vuelve a abrir.").to_string()
                 };
                 let paused = t.dirty();
-                let label = if t.follow && paused { t!("⏸ En vivo") } else { t!("⏵ En vivo") };
-                let r = ui.add_enabled(!t.untitled, Button::selectable(t.follow, RichText::new(label).small()));
+                let icon = if t.follow && paused { Icon::Pause } else { Icon::Live };
+                let r = ui.add_enabled(!t.untitled, IconButton::new(icon, Tone::Live).label(t!("En vivo")).small().selected(t.follow));
                 if r.on_hover_text(&hint).on_disabled_hover_text(&hint).clicked() {
                     t.follow = !t.follow;
                     if t.follow {
@@ -4091,21 +4112,31 @@ impl App {
                     }
                 }
                 let n = t.filter.rules.iter().filter(|r| !r.text.is_empty()).count();
-                let flabel = if n > 0 { tf!("⚟ Filtro ({n})", n = n) } else { t!("⚟ Filtro").to_string() };
-                let r = ui.add(Button::selectable(t.filter.on, RichText::new(flabel).small()));
+                let flabel = if n > 0 { tf!("Filtro ({n})", n = n) } else { t!("Filtro").to_string() };
+                let r = ui.add(IconButton::new(Icon::Filter, Tone::Search).label(flabel).small().selected(t.filter.on));
                 if r.on_hover_text(t!("Vista filtrada: solo las líneas que cumplen las reglas (incluir / excluir), sin tocar el archivo (Ctrl+Shift+L)")).clicked() {
                     toggle_filter(t, &self.query, self.use_regex, self.case_sensitive);
                 }
-                let r = ui.add(Button::selectable(t.hex.on, RichText::new(t!("⬡ Hex")).small()));
+                let r = ui.add(IconButton::new(Icon::Hex, Tone::Tool).label(t!("Hex")).small().selected(t.hex.on));
                 if r.on_hover_text(t!("Vista hexadecimal: los bytes del archivo en disco, con desplazamientos, búsqueda de bytes y valores (Ctrl+Shift+H)")).clicked() {
                     t.hex.toggle();
                     self.focus_view = !t.hex.on;
                 }
             }
-            ui.toggle_value(&mut self.show_detail, RichText::new(t!("📄 Detalle")).small())
-                .on_hover_text(t!("Panel con la línea actual completa, seleccionable"));
-            ui.toggle_value(&mut self.show_results, RichText::new(t!("📋 Resultados")).small())
-                .on_hover_text(t!("Panel con la lista de líneas encontradas"));
+            if ui
+                .add(IconButton::new(Icon::Detail, Tone::Search).label(t!("Detalle")).small().selected(self.show_detail))
+                .on_hover_text(t!("Panel con la línea actual completa, seleccionable"))
+                .clicked()
+            {
+                self.show_detail = !self.show_detail;
+            }
+            if ui
+                .add(IconButton::new(Icon::Results, Tone::Search).label(t!("Resultados")).small().selected(self.show_results))
+                .on_hover_text(t!("Panel con la lista de líneas encontradas"))
+                .clicked()
+            {
+                self.show_results = !self.show_results;
+            }
         });
 
         // Lo de la izquierda llega hasta donde empiezan los botones de la derecha.
@@ -6270,6 +6301,22 @@ fn apply_borders(ctx: &Context, level: u8) {
             let stroke = |def: Stroke| gray.map_or(def, |g| Stroke::new(width, Color32::from_gray(g)));
             s.visuals.widgets.noninteractive.bg_stroke = stroke(base.widgets.noninteractive.bg_stroke);
             s.visuals.window_stroke = stroke(base.window_stroke);
+        });
+    }
+}
+
+/// Retoques de presentación comunes a los dos temas: esquinas algo más
+/// redondeadas y botones con un poco más de aire.
+fn apply_style(ctx: &Context) {
+    for theme in [Theme::Dark, Theme::Light] {
+        ctx.style_mut_of(theme, |s| {
+            let w = &mut s.visuals.widgets;
+            for st in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+                st.corner_radius = CornerRadius::same(5);
+            }
+            s.visuals.window_corner_radius = CornerRadius::same(10);
+            s.visuals.menu_corner_radius = CornerRadius::same(8);
+            s.spacing.button_padding = vec2(6.0, 2.0);
         });
     }
 }

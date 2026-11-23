@@ -16,6 +16,7 @@ mod encoding;
 mod fonts;
 mod hexview;
 mod icon;
+mod icons;
 #[cfg(target_os = "macos")]
 mod macmenu;
 #[cfg(target_os = "macos")]
