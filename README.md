@@ -53,7 +53,9 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
   hay un carácter que no se puede representar
 - HTML: «Navegador» abre la página en el navegador (si hay cambios sin guardar, una copia temporal que
   mantiene las imágenes y el CSS relativos) y «Lectura» la muestra formateada junto al código (títulos,
-  listas, tablas, enlaces; sin CSS ni JavaScript), se actualiza al editar y un clic lleva a la línea
+  listas, tablas, imágenes locales, colores y alineación de `style`; sin hojas de estilo ni JavaScript), se
+  actualiza al editar, un clic lleva a la línea, resalta el bloque del cursor, tiene índice y puede ir en una
+  ventana aparte (otra pantalla)
 - «Acerca de» (ℹ en la barra de estado): versión, licencia y enlaces al proyecto en GitHub
 
 ## Instalar, actualizar y desinstalar

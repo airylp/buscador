@@ -788,3 +788,11 @@ imagen	image	image
 Demasiado grande para la vista de lectura: usa «Navegador».	Too large for the reading view: use “Browser”.	Trop volumineux pour la vue lecture : utilisez « Navigateur ».
 (sin contenido visible)	(no visible content)	(aucun contenu visible)
 … y {n} bloques más (vista recortada)	… and {n} more blocks (view truncated)	… et {n} blocs de plus (vue tronquée)
+Cerrar la vista de lectura	Close the reading view	Fermer la vue lecture
+Ir a un encabezado del documento	Go to a heading of the document	Aller à un titre du document
+Lectura — {name}	Reading — {name}	Lecture — {name}
+Resaltar y mantener a la vista el bloque donde está el cursor del editor	Highlight and keep in view the block where the editor cursor is	Surligner et garder visible le bloc où se trouve le curseur de l'éditeur
+Seguir cursor	Follow cursor	Suivre le curseur
+Ver en una ventana aparte (se puede llevar a otra pantalla)	Show in a separate window (can be moved to another screen)	Afficher dans une fenêtre séparée (peut aller sur un autre écran)
+Volver a ponerla junto al texto	Put it back next to the text	La remettre à côté du texte
+Índice	Contents	Sommaire

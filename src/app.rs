@@ -4829,9 +4829,11 @@ impl App {
                 }
             }
             // BUSCADOR_LECTURA=1: abre la vista de lectura de HTML.
-            if std::env::var("BUSCADOR_LECTURA").is_ok() {
+            // (=aparte: en una ventana aparte).
+            if let Ok(v) = std::env::var("BUSCADOR_LECTURA") {
                 if let Some(t) = self.tabs.get_mut(self.active) {
                     t.html.toggle();
+                    t.html.detached = v == "aparte";
                 }
             }
             if let Ok(txt) = std::env::var("BUSCADOR_NUEVO") {
@@ -5250,30 +5252,47 @@ impl eframe::App for App {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
         }
-        // Vista de lectura de HTML: panel a la derecha del texto.
+        // Vista de lectura de HTML: panel a la derecha del texto o ventana aparte.
         let mut html_act = None;
+        let base = (self.font_size + 2.0).max(13.0);
         if let Some(t) = self.tabs.get_mut(self.active).filter(|t| t.html.on && !t.hex.on) {
             let v = t.edit_gen;
             if t.html.wants(v) {
                 if t.doc.indexing_done() {
                     let text = t.text(Pos::default(), t.end_pos(), crate::htmlview::MAX_BYTES);
-                    t.html.start(v, text);
+                    let dir = t.doc.path.parent().filter(|_| !t.untitled).map(Path::to_path_buf);
+                    t.html.start(v, text, dir);
                 } else {
                     ctx.request_repaint_after(Duration::from_millis(100));
                 }
             }
-            if t.html.poll() {
+            if t.html.poll(&ctx) {
                 ctx.request_repaint_after(Duration::from_millis(60));
             }
-            let w = ui.available_width();
-            let base = (self.font_size + 2.0).max(13.0);
-            html_act = Panel::right("html_view")
-                .resizable(true)
-                .default_size(w * 0.45)
-                .min_size(220.0)
-                .max_size(w - 200.0)
-                .show(ui, |ui| crate::htmlview::show(ui, &t.html, base))
-                .inner;
+            let cursor = t.cursor.map(|p| p.line);
+            if t.html.detached {
+                let title = match t.html.title() {
+                    Some(h) => format!("{h} — {}", t.doc.name),
+                    None => tf!("Lectura — {name}", name = t.doc.name),
+                };
+                let html = &mut t.html;
+                let builder = ViewportBuilder::default().with_title(title).with_inner_size([820.0, 900.0]).with_min_inner_size([360.0, 300.0]);
+                ctx.show_viewport_immediate(ViewportId::from_hash_of(("lectura", &t.doc.path)), builder, |ui, _| {
+                    CentralPanel::default().show(ui, |ui| html_act = crate::htmlview::show(ui, html, base, cursor));
+                    if ui.ctx().input(|i| i.viewport().close_requested()) {
+                        html_act = Some(crate::htmlview::Action::Close);
+                    }
+                });
+            } else {
+                let w = ui.available_width();
+                html_act = Panel::right("html_view")
+                    .resizable(true)
+                    .default_size(w * 0.45)
+                    .min_size(220.0)
+                    .max_size(w - 200.0)
+                    .show(ui, |ui| crate::htmlview::show(ui, &mut t.html, base, cursor))
+                    .inner;
+            }
         }
         match html_act {
             Some(crate::htmlview::Action::Goto(l)) => {
@@ -5283,6 +5302,16 @@ impl eframe::App for App {
                 self.focus_view = true;
             }
             Some(crate::htmlview::Action::Open(href)) => self.open_html_link(&href),
+            Some(crate::htmlview::Action::Detach(on)) => {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.html.detached = on;
+                }
+            }
+            Some(crate::htmlview::Action::Close) => {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.html.toggle();
+                }
+            }
             None => {}
         }
         let mut message = None;

@@ -45,6 +45,9 @@ pub enum Icon {
     Search,
     Eye,
     Globe,
+    Target,
+    Detach,
+    Attach,
 }
 
 /// Familia de colores (discretos) de cada grupo de botones.
@@ -191,6 +194,25 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(2.0, 8.0), (14.0, 8.0)]);
             line(&[(3.2, 4.8), (12.8, 4.8)]);
             line(&[(3.2, 11.2), (12.8, 11.2)]);
+        }
+        Icon::Target => {
+            circle(8.0, 8.0, 4.6);
+            dot(8.0, 8.0, 1.5);
+            line(&[(8.0, 1.2), (8.0, 3.4)]);
+            line(&[(8.0, 12.6), (8.0, 14.8)]);
+            line(&[(1.2, 8.0), (3.4, 8.0)]);
+            line(&[(12.6, 8.0), (14.8, 8.0)]);
+        }
+        Icon::Detach | Icon::Attach => {
+            // Ventana con una flecha hacia fuera (separar) o hacia dentro (acoplar).
+            line(&[(7.0, 2.5), (2.5, 2.5), (2.5, 13.5), (13.5, 13.5), (13.5, 9.0)]);
+            if icon == Icon::Detach {
+                line(&[(7.5, 8.5), (13.5, 2.5)]);
+                line(&[(9.5, 2.5), (13.5, 2.5), (13.5, 6.5)]);
+            } else {
+                line(&[(13.5, 2.5), (7.5, 8.5)]);
+                line(&[(7.5, 4.5), (7.5, 8.5), (11.5, 8.5)]);
+            }
         }
         Icon::Search => {
             circle(6.8, 6.8, 4.3);

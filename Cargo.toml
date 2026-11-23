@@ -8,6 +8,8 @@ license = "MIT"
 chardetng = "1.0.0"
 eframe = { version = "0.37", features = ["persistence"] }
 encoding_rs = "0.8.44"
+# Imágenes de la vista de lectura de HTML (ya venía con PNG por otras dependencias).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 memchr = "2.8.3"
 memmap2 = "0.9.12"
 regex = "1.13.1"
