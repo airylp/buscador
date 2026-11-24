@@ -1,4 +1,4 @@
-//! Logotipo de la aplicación: su letra (B, C o P) hecha de cubos en 3D, con la
+//! Logotipo de la aplicación: su letra (B, C, P o K) hecha de cubos en 3D, con la
 //! textura de bloque «pixelada» de los juegos de cubos, sobre un cuadrado
 //! redondeado totalmente blanco. Se genera en código (sin archivos de imagen) a
 //! cualquier tamaño: ventana, Dock, barra de tareas, `.icns` de macOS y `.ico`
@@ -57,6 +57,55 @@ fn noise(a: u32, b: u32, c: u32) -> f32 {
     h = h.wrapping_mul(0x2C1B_3C6D);
     h ^= h >> 12;
     (h & 0xffff) as f32 / 32_767.5 - 1.0
+}
+
+/// Postura de la letra (grados): acostada hacia atrás, girada y vista desde arriba.
+const TILT: f32 = 20.0;
+const YAW: f32 = 30.0;
+const ELEV: f32 = 30.0;
+/// Hacia dónde está la luz (mundo: x derecha, y arriba, z hacia atrás).
+const LIGHT: V3 = [-0.5, 1.3, -0.15];
+/// Desenfoque (en cubos) e intensidad de la sombra.
+const BLUR: f32 = 0.14;
+const SHADOW: f32 = 0.24;
+/// Corrección del encuadre (en cubos): la sombra pesa a un lado.
+const SHIFT_X: f32 = 0.15;
+const SHIFT_Y: f32 = -0.35;
+
+type V3 = [f32; 3];
+fn add(a: V3, b: V3) -> V3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+fn sub(a: V3, b: V3) -> V3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn mul(a: V3, k: f32) -> V3 {
+    [a[0] * k, a[1] * k, a[2] * k]
+}
+fn dot(a: V3, b: V3) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn norm(a: V3) -> V3 {
+    mul(a, 1.0 / dot(a, a).sqrt())
+}
+
+/// Desenfoque de caja de radio `r` sobre filas (`h`) o columnas.
+fn blur(v: &mut [f32], w: usize, r: usize, h: bool) {
+    let mut line = vec![0.0f32; w];
+    let mut acc = vec![0.0f32; w + 1];
+    for a in 0..w {
+        for b in 0..w {
+            line[b] = if h { v[a * w + b] } else { v[b * w + a] };
+        }
+        for b in 0..w {
+            acc[b + 1] = acc[b] + line[b];
+        }
+        for b in 0..w {
+            let (lo, hi) = (b.saturating_sub(r), (b + r + 1).min(w));
+            let m = (acc[hi] - acc[lo]) / (2 * r + 1) as f32;
+            if h { v[a * w + b] = m } else { v[b * w + a] = m }
+        }
+    }
 }
 
 /// Lienzo con sobremuestreo (`ss` muestras por lado de cada píxel).
@@ -129,18 +178,87 @@ fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
         }
     }
 
-    // La letra: 5×7 cubos, extruidos hacia arriba a la derecha (proyección oblicua).
-    let (cols, rows) = (5.0, 7.0);
-    let depth = 0.55; // desplazamiento de la cara trasera, en celdas
-    let cell = (s - 2.0 * margin) * 0.68 / (rows + depth);
-    let lw = (cols + depth) * cell;
-    let lh = (rows + depth) * cell;
-    // Centrado óptico (la sombra queda abajo).
-    let ox = center - lw / 2.0;
-    let oy = center - lh / 2.0 + depth * cell - cell * 0.15;
-    let (dx, dy) = (depth * cell, -depth * cell);
+    // La letra: 5×7 cubos en 3D, algo acostada hacia atrás y girada para verse de
+    // lado, sobre el suelo blanco, donde proyecta una sombra corta. Se traza un rayo
+    // por muestra (proyección ortogonal); los cubos son cajas en el espacio de la
+    // letra (x 0..5, y 0..7 de abajo arriba, z 0..D hacia atrás).
+    let depth = 1.0f32;
+    let (tilt, yaw, elev) = (TILT.to_radians(), YAW.to_radians(), ELEV.to_radians());
+    let (st, ct, sy, cy) = (tilt.sin(), tilt.cos(), yaw.sin(), yaw.cos());
+    // Ejes de la letra en el mundo (inclinación sobre x y luego giro sobre y).
+    let ex: V3 = [cy, 0.0, -sy];
+    let ey: V3 = [st * sy, ct, st * cy];
+    let ez: V3 = [ct * sy, -st, ct * cy];
+    let to_world = |p: V3| add(add(mul(ex, p[0]), mul(ey, p[1])), mul(ez, p[2]));
+    let c = to_world([2.5, 3.5, depth / 2.0]);
+    let tr: V3 = [-c[0], st * depth, -c[2]]; // apoyada en el suelo (y = 0)
+    let to_local = |w: V3| {
+        let q = sub(w, tr);
+        [dot(ex, q), dot(ey, q), dot(ez, q)]
+    };
+    let dir_local = |d: V3| [dot(ex, d), dot(ey, d), dot(ez, d)];
+    // Cámara: mira hacia +z, algo desde arriba.
+    let fwd: V3 = [0.0, -elev.sin(), elev.cos()];
+    let up: V3 = [0.0, elev.cos(), elev.sin()];
     let on = |r: isize, c: isize| {
         (0..7).contains(&r) && (0..5).contains(&c) && m.letra[r as usize].as_bytes()[c as usize] == b'#'
+    };
+    let mut cubes: Vec<(isize, isize, V3, V3)> = Vec::new();
+    for r in 0..7isize {
+        for c in 0..5isize {
+            if on(r, c) {
+                cubes.push((r, c, [c as f32, (6 - r) as f32, 0.0], [c as f32 + 1.0, (7 - r) as f32, depth]));
+            }
+        }
+    }
+    // Encuadre: la letra (y un poco de su sombra) ocupa ≈ 66 % del lienzo.
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for &(_, _, lo, hi) in &cubes {
+        for k in 0..8 {
+            let p = to_world(add([if k & 1 == 0 { lo[0] } else { hi[0] }, if k & 2 == 0 { lo[1] } else { hi[1] }, if k & 4 == 0 { lo[2] } else { hi[2] }], tr));
+            let (sx, sy) = (p[0], dot(p, up));
+            x0 = x0.min(sx);
+            x1 = x1.max(sx);
+            y0 = y0.min(sy);
+            y1 = y1.max(sy);
+        }
+    }
+    let scale = (s - 2.0 * margin) * 0.66 / (x1 - x0).max(y1 - y0);
+    let (mx, my) = ((x0 + x1) / 2.0 + SHIFT_X, (y0 + y1) / 2.0 + SHIFT_Y);
+    let light = norm(LIGHT);
+    let light_l = dir_local(light);
+    let fwd_l = dir_local(fwd);
+    // Primer cubo que toca el rayo (origen y dirección en el espacio de la letra).
+    let hit = |o: V3, d: V3| -> Option<(f32, usize, usize, bool)> {
+        let mut best: Option<(f32, usize, usize, bool)> = None;
+        for (i, &(_, _, lo, hi)) in cubes.iter().enumerate() {
+            let (mut tn, mut tf, mut axis, mut neg) = (f32::MIN, f32::MAX, 0, false);
+            let mut miss = false;
+            for k in 0..3 {
+                if d[k].abs() < 1e-9 {
+                    if o[k] < lo[k] || o[k] > hi[k] {
+                        miss = true;
+                        break;
+                    }
+                    continue;
+                }
+                let (a, b) = ((lo[k] - o[k]) / d[k], (hi[k] - o[k]) / d[k]);
+                let (a, b, n) = if a < b { (a, b, true) } else { (b, a, false) };
+                if a > tn {
+                    tn = a;
+                    axis = k;
+                    neg = n; // entra por la cara «lo» de este eje
+                }
+                tf = tf.min(b);
+            }
+            if miss || tn > tf || tf < 1e-4 {
+                continue;
+            }
+            if best.is_none_or(|b| tn < b.0) {
+                best = Some((tn, i, axis, neg));
+            }
+        }
+        best
     };
     let base = m.color;
     // Textura: cada cara de 8×8 texels con brillo variable (se omite en tamaños
@@ -162,58 +280,63 @@ fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
         }
         [(col[0] * k).min(255.0), (col[1] * k).min(255.0), (col[2] * k).min(255.0)]
     };
-
-    // Sombra suave en el suelo blanco (abajo, algo desplazada).
-    let sh = [228.0, 230.0, 236.0];
-    for r in 0..7isize {
-        for c in 0..5isize {
-            if on(r, c) {
-                let x = ox + c as f32 * cell + cell * 0.30;
-                let y = oy + r as f32 * cell + cell * 0.30;
-                cv.fill(&[(x, y), (x + cell, y), (x + cell, y + cell), (x, y + cell)], &|_, _| sh);
+    // Tono de cada cara (luz de arriba a la izquierda): frente, arriba, derecha,
+    // izquierda, abajo, atrás.
+    let faces = [shade(base, 1.0), shade(base, 1.38), shade(base, 0.66), shade(base, 0.82), shade(base, 0.55), shade(base, 0.6)];
+    let mut cube_px: Vec<Option<[f32; 3]>> = vec![None; w * w];
+    let mut shadow = vec![0.0f32; w * w];
+    for yy in 0..w {
+        for xx in 0..w {
+            let i = yy * w + xx;
+            if cv.px[i][3] == 0.0 {
+                continue;
+            }
+            let sx = (xx as f32 + 0.5 - center) / scale + mx;
+            let syy = -(yy as f32 + 0.5 - center) / scale + my;
+            let o = add(add([sx, 0.0, 0.0], mul(up, syy)), mul(fwd, -100.0));
+            let ol = to_local(o);
+            if let Some((t, ci, axis, neg)) = hit(ol, fwd_l) {
+                let (r, c, lo, _) = cubes[ci];
+                let h = add(ol, mul(fwd_l, t));
+                let (fx, fy, fz) = (h[0] - lo[0], h[1] - lo[1], h[2] / depth);
+                let (face, u, v) = match (axis, neg) {
+                    (2, true) => (0, fx, 1.0 - fy),
+                    (1, false) => (1, fx, fz),
+                    (0, false) => (2, fz, 1.0 - fy),
+                    (0, true) => (3, 1.0 - fz, 1.0 - fy),
+                    (1, true) => (4, fx, 1.0 - fz),
+                    _ => (5, 1.0 - fx, 1.0 - fy),
+                };
+                cube_px[i] = Some(tex(faces[face], u, v, face as u32, r, c));
+            }
+            // Sombra en el suelo (y = 0) aunque un cubo lo tape: así el difuminado
+            // no deja un hueco junto a la base.
+            if fwd[1] < 0.0 {
+                let g = add(o, mul(fwd, -o[1] / fwd[1]));
+                if let Some((t, ..)) = hit(to_local(g), light_l) {
+                    shadow[i] = (-t * 0.22).exp();
+                }
             }
         }
     }
-    let top = shade(base, 1.38);
-    let side = shade(base, 0.68);
-    let front = shade(base, 1.0);
-    // 1) Caras de arriba y de la derecha (solo las que dan al exterior).
-    for r in 0..7isize {
-        for c in 0..5isize {
-            if !on(r, c) {
-                continue;
-            }
-            let x = ox + c as f32 * cell;
-            let y = oy + r as f32 * cell;
-            if !on(r - 1, c) {
-                let p = [(x, y), (x + cell, y), (x + cell + dx, y + dy), (x + dx, y + dy)];
-                cv.fill(&p, &|px, py| {
-                    let v = (y - py) / -dy; // 0 delante … 1 detrás
-                    let u = (px - x - v * dx) / cell;
-                    tex(top, u, 1.0 - v, 1, r, c)
-                });
-            }
-            if !on(r, c + 1) {
-                let p = [(x + cell, y), (x + cell + dx, y + dy), (x + cell + dx, y + cell + dy), (x + cell, y + cell)];
-                cv.fill(&p, &|px, py| {
-                    let u = (px - x - cell) / dx;
-                    let v = (py - y - u * dy) / cell;
-                    tex(side, u, v, 2, r, c)
-                });
-            }
-        }
+    // Sombra suave: dos pasadas de caja horizontales y verticales.
+    let rad = ((scale * BLUR) as usize).max(1);
+    for _ in 0..2 {
+        blur(&mut shadow, w, rad, true);
+        blur(&mut shadow, w, rad, false);
     }
-    // 2) Caras frontales encima de todo.
-    for r in 0..7isize {
-        for c in 0..5isize {
-            if !on(r, c) {
-                continue;
-            }
-            let x = ox + c as f32 * cell;
-            let y = oy + r as f32 * cell;
-            cv.fill(&[(x, y), (x + cell, y), (x + cell, y + cell), (x, y + cell)], &|px, py| {
-                tex(front, (px - x) / cell, (py - y) / cell, 0, r, c)
-            });
+    for i in 0..w * w {
+        if cv.px[i][3] == 0.0 {
+            continue;
+        }
+        if let Some(col) = cube_px[i] {
+            cv.px[i] = [col[0], col[1], col[2], 1.0];
+        } else {
+            let k = shadow[i] * SHADOW;
+            let p = &mut cv.px[i];
+            p[0] *= 1.0 - k;
+            p[1] *= 1.0 - k * 0.94;
+            p[2] *= 1.0 - k * 0.78;
         }
     }
 
