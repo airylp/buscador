@@ -8,14 +8,18 @@
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # Invoke-WebRequest va mucho más rápido sin barra
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+# Windows PowerShell 5.1 no activa TLS 1.2 por omisión (GitHub lo exige).
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $repo = if ($env:BUSCADOR_REPO) { $env:BUSCADOR_REPO } else { 'airylp/buscador' }
 $lang = (Get-UICulture).TwoLetterISOLanguageName
 function m($es, $en, $fr) { switch ($lang) { 'es' { $es } 'fr' { $fr } default { $en } } }
 
 Write-Host (m '==> Buscando la última versión de buscador...' '==> Looking for the latest version of buscador...' '==> Recherche de la dernière version de buscador...')
-$rel = Invoke-RestMethod -UseBasicParsing "https://api.github.com/repos/$repo/releases/latest"
+# La más reciente aunque sea «pre-release» (releases/latest no las incluye).
+$rels = Invoke-RestMethod -UseBasicParsing "https://api.github.com/repos/$repo/releases?per_page=1"
+$rel = $rels[0]
+if (-not $rel) { throw (m "$repo aún no tiene versiones publicadas." "$repo has no published versions yet." "$repo n'a pas encore de version publiée.") }
 $asset = $rel.assets | Where-Object { $_.name -like '*setup*.exe' } | Select-Object -First 1
 if (-not $asset) {
     throw (m "La versión $($rel.tag_name) no tiene instalador para Windows." "Version $($rel.tag_name) has no Windows installer." "La version $($rel.tag_name) n'a pas d'installateur Windows.")
