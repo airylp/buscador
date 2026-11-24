@@ -80,7 +80,7 @@ fn main() -> eframe::Result {
         persist_window: !testing && !files.iter().any(|f| f.as_os_str() == "--sin-sesion"),
         ..Default::default()
     };
-    eframe::run_native(
+    estilo::arrancar(
         "buscador",
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, files)))),

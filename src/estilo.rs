@@ -35,6 +35,65 @@ pub fn abrir(url: &str) {
     let _ = c.arg(url).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }
 
+/// Abre la ventana principal. Primero con wgpu (DirectX 12 / Vulkan / Metal); si no
+/// arranca (máquinas virtuales, Escritorio remoto, controladores viejos) la app se
+/// relanza con OpenGL (winit no deja crear un segundo bucle de eventos en el mismo
+/// proceso). Sin consola (Windows) un fallo pasaría en silencio: se muestra en un
+/// cuadro de diálogo y se guarda en `<config>/error.log`.
+pub fn arrancar(nombre: &str, mut options: eframe::NativeOptions, app: eframe::AppCreator<'static>) -> eframe::Result {
+    let var = format!("{}_GLOW", crate::APP.nombre.to_uppercase());
+    let previo = std::env::var(&var).ok().filter(|v| !v.is_empty());
+    let glow = previo.is_some();
+    options.renderer = if glow { eframe::Renderer::Glow } else { eframe::Renderer::Wgpu };
+    std::panic::set_hook(Box::new(|info| error_fatal(&info.to_string())));
+    let r = eframe::run_native(nombre, options, app);
+    if let Err(e) = &r {
+        if !glow {
+            let otro = std::env::current_exe().and_then(|exe| {
+                std::process::Command::new(exe).args(std::env::args_os().skip(1)).env(&var, e.to_string()).spawn()
+            });
+            if otro.is_ok() {
+                return Ok(());
+            }
+        }
+        error_fatal(&match previo.filter(|p| p != "1") {
+            Some(w) => format!("wgpu: {w}\nOpenGL: {e}"),
+            None => e.to_string(),
+        });
+    }
+    r
+}
+
+/// Informa de un error que impide seguir (consola, `<config>/error.log` y, en
+/// Windows, un cuadro de diálogo).
+pub fn error_fatal(msg: &str) {
+    let app = crate::APP.nombre;
+    eprintln!("{app}: {msg}");
+    let env = |k| std::env::var_os(k).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    let base = if cfg!(target_os = "macos") {
+        env("HOME").map(|h| h.join("Library/Application Support"))
+    } else if cfg!(windows) {
+        env("APPDATA")
+    } else {
+        env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|h| h.join(".config")))
+    };
+    if let Some(dir) = base.map(|b| b.join(app)) {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("error.log"), format!("{app} {}\n{msg}\n", env!("CARGO_PKG_VERSION")));
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn MessageBoxW(hwnd: *mut std::ffi::c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
+        }
+        let w = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+        let (text, caption) = (w(msg), w(app));
+        // SAFETY: cadenas UTF-16 terminadas en 0 que viven durante la llamada.
+        unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), 0x10) };
+    }
+}
+
 /// Color de acento de la aplicación (el de su logotipo).
 pub fn acento() -> Color32 {
     let [r, g, b] = crate::APP.color;

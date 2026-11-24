@@ -3118,7 +3118,7 @@ impl App {
             let gap = ui.spacing().item_spacing.x;
             ui.spacing_mut().item_spacing.x = 1.0;
             let mut pick = None;
-            let r = eframe::egui::containers::menu::MenuButton::from_button(Button::new(RichText::new("▾").color(Tone::File.color(ui))).frame(false).min_size(vec2(14.0, 0.0)))
+            let r = eframe::egui::containers::menu::MenuButton::from_button(Button::new(RichText::new("⏷").color(Tone::File.color(ui))).frame(false).min_size(vec2(14.0, 0.0)))
                 .ui(ui, |ui| pick = recent_menu(ui, &self.recent))
                 .0
                 .on_hover_text(t!("Abrir recientes"));
@@ -4990,7 +4990,7 @@ impl eframe::App for App {
         }
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_session(true);
         // Cierre normal (con lo no guardado ya descartado): fuera los diarios.
         for t in &mut self.tabs {

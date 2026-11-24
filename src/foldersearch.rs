@@ -441,7 +441,7 @@ impl FolderSearch {
                         let rel = f.path.strip_prefix(&job.root).unwrap_or(&f.path);
                         let name = rel.display().to_string();
                         let more = if f.more { "+" } else { "" };
-                        let txt = format!("{} {name}  ({}{more})", if open { "▾" } else { "▸" }, f.hits.len());
+                        let txt = format!("{} {name}  ({}{more})", if open { "⏷" } else { "⏵" }, f.hits.len());
                         ui.painter().text(rect.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, txt, FontId::proportional(13.0), v.strong_text_color());
                         let r = r.on_hover_text(tf!("{display}\nClic: plegar/desplegar · Doble clic: abrir", display = f.path.display()));
                         if r.double_clicked() {
