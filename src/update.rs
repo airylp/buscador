@@ -26,6 +26,9 @@ pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux", w
 /// En Windows se actualiza con el instalador publicado (no se compila).
 pub const WINDOWS: bool = cfg!(windows);
 
+/// Actualizar compila el código (buscador, conector) o descarga lo publicado (peticiones).
+pub const COMPILES: bool = true;
+
 /// Versión publicada con la que se compiló (tag, p. ej. «v0.2.0»; la graba el
 /// flujo de GitHub que crea el instalador de Windows).
 pub fn current_version() -> Option<&'static str> {

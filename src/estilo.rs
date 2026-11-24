@@ -309,3 +309,414 @@ pub fn fila_dato(ui: &mut Ui, etiqueta: &str, valor: &str) {
     ui.add(Label::new(valor).truncate());
     ui.end_row();
 }
+
+// ------------------------------------------------------------ actualizar
+
+/// Lo que se pidió en la ventana «Actualizar».
+pub enum AccionActualizar {
+    Nada,
+    /// Empezar a descargar/instalar (`Updater::run`).
+    Ejecutar,
+    /// Cerrar y abrir la versión instalada en esa ruta (`update::relaunch_after_exit`).
+    Reiniciar(std::path::PathBuf),
+}
+
+pub fn id_actualizar() -> Id {
+    Id::NULL.with("ventana_actualizar_comun")
+}
+
+/// Ventana «Actualizar <app>», común a las tres: versión instalada, estado de la
+/// comprobación, botón para instalar, registro y «Reiniciar ahora». `nota`
+/// se muestra tras instalar (p. ej. «hay cambios sin guardar»).
+pub fn ventana_actualizar(ctx: &Context, u: &crate::update::Updater, abierta: &mut bool, nota: Option<&str>) -> AccionActualizar {
+    use crate::icons::{Icon, IconButton, Tone};
+    use crate::update::Stage;
+    let stage = u.stage();
+    let mut accion = AccionActualizar::Nada;
+    let app = crate::APP.nombre;
+    Window::new(tf!("Actualizar {app}", app = app))
+        .id(id_actualizar())
+        .open(abierta)
+        .collapsible(false)
+        .resizable(true)
+        .default_size([560.0, 300.0])
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
+        .frame(Frame::window(&ctx.global_style()).inner_margin(16.0))
+        .show(ctx, |ui| {
+            ui.label(tf!("Versión instalada: {v}", v = crate::update::version_label()));
+            ui.add_space(6.0);
+            let ok = Color32::from_rgb(40, 170, 80);
+            match &stage {
+                Stage::Checking => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(t!("Buscando la última versión en GitHub…"));
+                    });
+                }
+                Stage::UpToDate(v) => {
+                    ui.colored_label(ok, tf!("✔ Ya tienes la última versión ({v}).", v = v));
+                    if ui.add(IconButton::new(Icon::Reload, Tone::Neutral).label(t!("Reinstalar de todos modos"))).clicked() {
+                        accion = AccionActualizar::Ejecutar;
+                    }
+                }
+                Stage::Available(v) => {
+                    ui.strong(tf!("Hay una versión nueva: {v}", v = v));
+                    ui.label(if crate::update::WINDOWS {
+                        tf!("Se descarga el instalador; al reiniciar, {app} se cierra, se instala la versión nueva y vuelve a abrirse.", app = app)
+                    } else if crate::update::COMPILES {
+                        tf!("Se descarga el código, se compila (la primera vez tarda unos minutos) y se reemplaza la app instalada. Puedes seguir usando {app} mientras tanto.", app = app)
+                    } else {
+                        tf!("Se descarga la versión publicada y se reemplaza la app instalada. Puedes seguir usando {app} mientras tanto.", app = app)
+                    });
+                    ui.add_space(4.0);
+                    if ui.add(IconButton::new(Icon::Download, Tone::Live).label(t!("Actualizar ahora"))).clicked() {
+                        accion = AccionActualizar::Ejecutar;
+                    }
+                }
+                Stage::Running => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(t!("Actualizando… (puedes seguir trabajando)"));
+                    });
+                }
+                Stage::Done(p) => {
+                    ui.colored_label(ok, t!("✔ Versión nueva instalada."));
+                    ui.horizontal(|ui| {
+                        if ui.add(IconButton::new(Icon::Reload, Tone::Live).label(t!("Reiniciar ahora"))).clicked() {
+                            accion = AccionActualizar::Reiniciar(p.clone());
+                        }
+                        ui.weak(tf!("o úsala la próxima vez que abras {app}", app = app));
+                    });
+                    if let Some(n) = nota {
+                        ui.weak(n);
+                    }
+                }
+                Stage::Failed(e) => {
+                    ui.colored_label(ui.visuals().error_fg_color, tf!("No se pudo actualizar: {e}", e = e));
+                    if ui.add(IconButton::new(Icon::Reload, Tone::Neutral).label(t!("Reintentar"))).clicked() {
+                        accion = AccionActualizar::Ejecutar;
+                    }
+                }
+            }
+            let log = u.log.lock().unwrap();
+            if !log.is_empty() {
+                ui.add_space(6.0);
+                ui.weak(t!("Registro:"));
+                ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, true]).max_height(220.0).show(ui, |ui| {
+                    for l in log.iter() {
+                        ui.label(RichText::new(l).monospace().small());
+                    }
+                });
+            }
+        });
+    accion
+}
+
+/// Comprobación de versión nueva en segundo plano: 5 s después de abrir y luego
+/// cada 6 horas, solo si la app sabe qué versión es (no en compilaciones locales).
+pub struct Vigia {
+    inicio: std::time::Instant,
+    ultima: Option<std::time::Instant>,
+    pub comprobacion: Option<crate::update::Updater>,
+}
+
+impl Default for Vigia {
+    fn default() -> Self {
+        Vigia { inicio: std::time::Instant::now(), ultima: None, comprobacion: None }
+    }
+}
+
+impl Vigia {
+    pub fn tick(&mut self, ctx: &Context, activa: bool) {
+        use std::time::Duration;
+        const PRIMERA: Duration = Duration::from_secs(5);
+        const CADA: Duration = Duration::from_secs(6 * 3600);
+        let conocida = crate::update::current_version().is_some() || crate::update::current_commit().is_some();
+        if !crate::update::SUPPORTED || !activa || !conocida {
+            return;
+        }
+        let toca = match self.ultima {
+            None => self.inicio.elapsed() >= PRIMERA,
+            Some(t) => t.elapsed() >= CADA,
+        };
+        if toca {
+            self.ultima = Some(std::time::Instant::now());
+            self.comprobacion = Some(crate::update::Updater::check(ctx.clone()));
+        } else if self.ultima.is_none() {
+            ctx.request_repaint_after(PRIMERA.saturating_sub(self.inicio.elapsed()) + Duration::from_millis(50));
+        }
+    }
+
+    /// Versión nueva encontrada (en segundo plano o en la ventana `otra`).
+    pub fn nueva(&self, otra: Option<&crate::update::Updater>) -> Option<String> {
+        [otra, self.comprobacion.as_ref()].into_iter().flatten().find_map(|u| match u.stage() {
+            crate::update::Stage::Available(v) => Some(v),
+            _ => None,
+        })
+    }
+}
+
+/// Botón ⬇ de la barra superior, con un punto verde si hay versión nueva.
+pub fn boton_actualizar(ui: &mut Ui, abierta: bool, nueva: Option<&str>) -> bool {
+    use crate::icons::{Icon, IconButton, Tone};
+    let hint = match nueva {
+        Some(v) => tf!("Hay una versión nueva ({v}): clic para actualizar", v = v),
+        None => tf!("Buscar actualizaciones · versión {v}", v = crate::update::version_label()),
+    };
+    let r = ui.add(IconButton::new(Icon::Download, Tone::Live).selected(abierta)).on_hover_text(hint);
+    if nueva.is_some() {
+        crate::icons::badge(ui, &r, Color32::from_rgb(40, 190, 80));
+    }
+    r.clicked()
+}
+
+// ------------------------------------------------------------ atajos
+
+/// «Ctrl» → «Cmd» en macOS.
+pub fn tecla(s: &str) -> String {
+    if cfg!(target_os = "macos") { s.replace("Ctrl+", "Cmd+") } else { s.to_string() }
+}
+
+/// Atajos comunes a las tres: Ctrl+, (Ajustes) y F1 (atajos de teclado).
+/// Devuelve (ajustes, atajos) si se pulsaron.
+pub fn atajos_comunes(ctx: &Context) -> (bool, bool) {
+    use eframe::egui::{Key, Modifiers};
+    ctx.input_mut(|i| (i.consume_key(Modifiers::COMMAND, Key::Comma), i.consume_key(Modifiers::NONE, Key::F1)))
+}
+
+pub fn id_atajos() -> Id {
+    Id::NULL.with("ventana_atajos_comun")
+}
+
+/// Ventana «Atajos de teclado» común: primero los atajos de las tres y luego
+/// las secciones propias de la app (`(sección, [(tecla, qué hace)])`).
+pub fn ventana_atajos(ctx: &Context, abierta: &mut bool, propias: &[(&str, Vec<(String, &str)>)]) {
+    if !*abierta {
+        return;
+    }
+    let comunes: Vec<(String, &str)> = vec![
+        (tecla("Ctrl+,"), t!("Ajustes")),
+        ("F1".into(), t!("Atajos de teclado")),
+        ("Escape".into(), t!("Cerrar la ventana de delante")),
+    ];
+    Window::new(t!("Atajos de teclado"))
+        .id(id_atajos())
+        .open(abierta)
+        .collapsible(false)
+        .resizable(true)
+        .default_size([520.0, 520.0])
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
+        .show(ctx, |ui| {
+            ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+                let sec = |ui: &mut Ui, titulo: &str, filas: &[(String, &str)]| {
+                    seccion(ui, titulo);
+                    Grid::new(("atajos", titulo)).num_columns(2).striped(true).spacing([16.0, 4.0]).min_col_width(200.0).show(ui, |ui| {
+                        for (k, que) in filas {
+                            ui.label(RichText::new(k).monospace());
+                            ui.label(*que);
+                            ui.end_row();
+                        }
+                    });
+                };
+                sec(ui, t!("General"), &comunes);
+                for (titulo, filas) in propias {
+                    sec(ui, titulo, filas);
+                }
+            });
+        });
+}
+
+// ------------------------------------------------------------ barra de estado
+
+/// Parte derecha de la barra de estado, igual en las tres: ? (atajos) e ℹ (acerca de).
+pub fn barra_estado_derecha(ui: &mut Ui, atajos: &mut bool, acerca: &mut bool) {
+    use crate::icons::{Icon, IconButton, Tone};
+    if ui.add(IconButton::new(Icon::Info, Tone::Neutral).small().selected(*acerca)).on_hover_text(tf!("Acerca de {app}", app = crate::APP.nombre)).clicked() {
+        *acerca = !*acerca;
+    }
+    if ui.add(IconButton::new(Icon::Help, Tone::Neutral).small().selected(*atajos)).on_hover_text(t!("Atajos de teclado (F1)")).clicked() {
+        *atajos = !*atajos;
+    }
+}
+
+/// Barra de estado común: `izquierda` (lo propio de la app) y, a la derecha,
+/// atajos y «Acerca de».
+pub fn barra_estado(ui: &mut Ui, atajos: &mut bool, acerca: &mut bool, izquierda: impl FnOnce(&mut Ui)) {
+    use eframe::egui::Panel;
+    Panel::bottom("barra_estado_comun").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                barra_estado_derecha(ui, atajos, acerca);
+                ui.separator();
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.set_clip_rect(ui.max_rect());
+                    izquierda(ui);
+                });
+            });
+        });
+    });
+}
+
+// ------------------------------------------------------------ avisos
+
+/// Tipo de aviso: color e ícono.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tipo {
+    Info,
+    Exito,
+    Aviso,
+    Error,
+}
+
+/// Avisos flotantes (abajo a la derecha) que se van solos: el mismo estilo de
+/// mensajes en las tres aplicaciones. Clic para cerrarlos antes.
+#[derive(Default)]
+pub struct Avisos {
+    lista: Vec<(Tipo, String, std::time::Instant)>,
+}
+
+impl Avisos {
+    pub fn push(&mut self, tipo: Tipo, texto: impl Into<String>) {
+        let texto = texto.into();
+        if texto.trim().is_empty() {
+            return;
+        }
+        // El mismo texto otra vez: solo se renueva.
+        self.lista.retain(|(_, t, _)| *t != texto);
+        self.lista.push((tipo, texto, std::time::Instant::now()));
+        if self.lista.len() > 4 {
+            self.lista.remove(0);
+        }
+    }
+
+    /// Elige el tipo por el principio del texto: ✔ éxito, ⚠ aviso, ✖ o «error» error.
+    pub fn auto(&mut self, texto: impl Into<String>) {
+        let texto: String = texto.into();
+        let t = texto.trim_start();
+        let low = t.to_lowercase();
+        let tipo = if t.starts_with('✔') {
+            Tipo::Exito
+        } else if t.starts_with('⚠') {
+            Tipo::Aviso
+        } else if t.starts_with('✖') || low.starts_with("error") || low.contains(t!("no se pudo").to_lowercase().as_str()) {
+            Tipo::Error
+        } else {
+            Tipo::Info
+        };
+        let limpio = t.trim_start_matches(['✔', '⚠', '✖']).trim_start().to_string();
+        self.push(tipo, limpio);
+    }
+
+    pub fn info(&mut self, t: impl Into<String>) {
+        self.push(Tipo::Info, t);
+    }
+    pub fn exito(&mut self, t: impl Into<String>) {
+        self.push(Tipo::Exito, t);
+    }
+    pub fn error(&mut self, t: impl Into<String>) {
+        self.push(Tipo::Error, t);
+    }
+
+    pub fn ultimo(&self) -> Option<&str> {
+        self.lista.last().map(|(_, t, _)| t.as_str())
+    }
+
+    /// Pinta los avisos vigentes (5 s; los errores, 10 s).
+    pub fn mostrar(&mut self, ctx: &Context) {
+        use crate::icons::{Icon, paint};
+        use eframe::egui::{Area, Order, Sense};
+        use std::time::Duration;
+        let dura = |t: Tipo| if t == Tipo::Error { Duration::from_secs(10) } else { Duration::from_secs(5) };
+        self.lista.retain(|(t, _, at)| at.elapsed() < dura(*t));
+        if self.lista.is_empty() {
+            return;
+        }
+        let mut cerrar = None;
+        Area::new(Id::NULL.with("avisos_comunes")).order(Order::Foreground).anchor(Align2::RIGHT_BOTTOM, vec2(-14.0, -34.0)).interactable(true).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            // De arriba abajo (el más reciente, abajo): el área se ancla por su esquina inferior derecha.
+            ui.with_layout(Layout::top_down(Align::Max), |ui| {
+                for (i, (tipo, texto, _)) in self.lista.iter().enumerate() {
+                    let (color, icono) = match tipo {
+                        Tipo::Info => (Color32::from_rgb(0x2f, 0x7c, 0xf6), Icon::Info),
+                        Tipo::Exito => (Color32::from_rgb(0x1f, 0xb3, 0x55), Icon::Check),
+                        Tipo::Aviso => (Color32::from_rgb(0xe8, 0xa8, 0x1e), Icon::Warning),
+                        Tipo::Error => (Color32::from_rgb(0xe5, 0x48, 0x4d), Icon::Error),
+                    };
+                    let v = ui.visuals().clone();
+                    let r = Frame::new()
+                        .fill(v.window_fill)
+                        .stroke(Stroke::new(1.0, color.gamma_multiply(0.8)))
+                        .corner_radius(8)
+                        .inner_margin(vec2(10.0, 8.0))
+                        .shadow(v.popup_shadow)
+                        .show(ui, |ui| {
+                            ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
+                                let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                                paint(ui.painter(), rect, icono);
+                                ui.add(Label::new(texto.as_str()).wrap());
+                            });
+                        })
+                        .response
+                        .interact(Sense::click());
+                    if r.on_hover_text(t!("Clic para cerrar")).clicked() {
+                        cerrar = Some(i);
+                    }
+                    if i + 1 < self.lista.len() {
+                        ui.add_space(6.0);
+                    }
+                }
+            });
+        });
+        if let Some(i) = cerrar {
+            self.lista.remove(i);
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+}
+
+// ------------------------------------------------------------ bienvenida
+
+/// Pantalla de bienvenida común (sin nada abierto): logotipo grande, nombre,
+/// descripción y las acciones principales. Devuelve el índice de la pulsada.
+pub fn bienvenida(ui: &mut Ui, logo: &TextureHandle, acciones: &[(crate::icons::Icon, &str, &str)], pie: Option<&str>) -> Option<usize> {
+    use crate::icons::{IconButton, Tone};
+    let mut pulsada = None;
+    let alto = 150.0 + 40.0 * acciones.len() as f32;
+    let arriba = ((ui.available_height() - alto) / 2.0 - 20.0).max(10.0);
+    ui.vertical_centered(|ui| {
+        ui.add_space(arriba);
+        ui.add(Image::new(logo).fit_to_exact_size(vec2(96.0, 96.0)));
+        ui.add_space(6.0);
+        ui.label(RichText::new(crate::APP.nombre).size(26.0).strong().color(acento_texto(ui)));
+        ui.label(RichText::new((crate::APP.descripcion)()).weak());
+        ui.add_space(16.0);
+        for (i, (icono, texto, ayuda)) in acciones.iter().enumerate() {
+            let r = ui.add(IconButton::new(*icono, Tone::File).label(*texto).framed());
+            let r = if ayuda.is_empty() { r } else { r.on_hover_text(*ayuda) };
+            if r.clicked() {
+                pulsada = Some(i);
+            }
+            ui.add_space(4.0);
+        }
+        if let Some(p) = pie {
+            ui.add_space(10.0);
+            ui.weak(p);
+        }
+    });
+    pulsada
+}
+
+/// Etiqueta con un ícono delante (en lugar de un emoji), para barras de estado.
+pub fn etiqueta(ui: &mut Ui, icono: crate::icons::Icon, texto: impl Into<eframe::egui::WidgetText>) -> eframe::egui::Response {
+    use eframe::egui::Sense;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+        crate::icons::paint(ui.painter(), rect, icono);
+        ui.add(Label::new(texto).sense(Sense::click()))
+    })
+    .inner
+}

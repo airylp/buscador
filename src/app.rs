@@ -2129,7 +2129,8 @@ pub struct App {
     /// Ventanas de búsqueda avanzada abiertas.
     advs: Vec<AdvWin>,
     next_adv: u64,
-    message: Option<(String, Instant)>,
+    /// Avisos flotantes (comunes a las tres apps).
+    avisos: crate::estilo::Avisos,
     focus_search: bool,
     focus_goto: bool,
     /// El campo «Ir a línea» de la barra de estado está abierto.
@@ -2257,7 +2258,7 @@ impl App {
             view_focused: false,
             advs: Vec::new(),
             next_adv: 1,
-            message: None,
+            avisos: Default::default(),
             focus_search: false,
             focus_goto: false,
             goto_open: false,
@@ -2567,8 +2568,9 @@ impl App {
         crate::fonts::find(&self.text_font).is_none_or(|o| o.mono)
     }
 
+    /// Aviso flotante (común a las tres apps: `estilo::Avisos`).
     fn msg(&mut self, m: impl Into<String>) {
-        self.message = Some((m.into(), Instant::now()));
+        self.avisos.auto(m);
     }
 
     fn tab(&mut self) -> Option<&mut Tab> {
@@ -2898,7 +2900,12 @@ impl App {
             // Pasa por la confirmación de cambios sin guardar.
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
-        if pressed(sc(Modifiers::NONE, Key::F1)) {
+        // Comunes a las tres apps: Ctrl+, (Ajustes) y F1 (atajos).
+        let (settings_key, keys_key) = crate::estilo::atajos_comunes(ctx);
+        if settings_key {
+            self.show_settings = !self.show_settings;
+        }
+        if keys_key {
             self.show_keys = !self.show_keys;
         }
         if pressed(sc(Modifiers::COMMAND, Key::N)) {
@@ -4132,16 +4139,7 @@ impl App {
 
         let mut open_html = false;
         let used = ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)), |ui| {
-            if ui.add(IconButton::new(Icon::Info, Tone::Neutral).small().selected(self.show_about)).on_hover_text(t!("Acerca de buscador")).clicked() {
-                self.show_about = !self.show_about;
-            }
-            if ui
-                .add(IconButton::new(Icon::Help, Tone::Neutral).small().selected(self.show_keys))
-                .on_hover_text(t!("Atajos de teclado (F1)"))
-                .clicked()
-            {
-                self.show_keys = !self.show_keys;
-            }
+            crate::estilo::barra_estado_derecha(ui, &mut self.show_keys, &mut self.show_about);
             ui.separator();
             let wrap_hint = tf!("Ajuste de línea (Ctrl+Alt+Z): {into} · el modo se elige en ⚙ Ajustes", into = match self.wrap_last {
                     Wrap::Columns(n) => tf!("a {n} columnas", n = n),
@@ -4337,13 +4335,6 @@ impl App {
                     let p = job.progress.load(Ordering::Relaxed) as f32 / job.total.max(1) as f32;
                     ui.add(ProgressBar::new(p.min(1.0)).desired_width(140.0).text(t!("guardando…")));
                 }
-                // Los mensajes van antes de la ruta para que no se corten.
-                if let Some((m, when)) = &self.message {
-                    if when.elapsed() < Duration::from_secs(8) {
-                        ui.separator();
-                        ui.label(RichText::new(m).small().color(ui.visuals().warn_fg_color));
-                    }
-                }
                 ui.separator();
                 if t.untitled {
                     ui.label(RichText::new(t!("sin guardar en disco · Ctrl+S para elegir dónde")).small().weak());
@@ -4356,13 +4347,6 @@ impl App {
                     if r.on_hover_text(t!("Ruta del archivo · clic: copiarla")).clicked() {
                         ui.ctx().copy_text(path);
                         copied = true;
-                    }
-                }
-            }
-            if self.tabs.is_empty() {
-                if let Some((m, when)) = &self.message {
-                    if when.elapsed() < Duration::from_secs(8) {
-                        ui.label(RichText::new(m).small().color(ui.visuals().warn_fg_color));
                     }
                 }
             }
@@ -5249,6 +5233,7 @@ impl eframe::App for App {
         let mut header_action = None;
         let mut ext_action = None;
         let mut hex_convert = None;
+        let mut welcome = None;
         CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
             if let Some(t) = self.tabs.get(self.active).filter(|_| self.show_header) {
                 header_action = editor_header(ui, t);
@@ -5280,11 +5265,12 @@ impl eframe::App for App {
                     (message, view_focused) = log_view(ui, t, &font, show_detail, focus_view, colors, syntax_on, wrap);
                 }
             } else {
-                ui.centered_and_justified(|ui| {
-                    ui.heading(t!("Arrastra archivos aquí, o pulsa Ctrl+O"));
-                });
+                welcome = Some(ui.max_rect());
             }
         });
+        if let Some(r) = welcome {
+            self.welcome(ui, r);
+        }
         self.view_focused = view_focused;
         if let Some(text) = hex_convert {
             self.convert.show_with(Some(text));
@@ -5339,13 +5325,13 @@ impl eframe::App for App {
                 t.select(e, e);
             }
             if let Some(m) = t.apply_recover() {
-                self.message = Some((m, Instant::now()));
+                self.avisos.auto(m);
             }
             if t.pending_text.is_some() && t.doc.indexing_done() {
                 let text = t.pending_text.take().unwrap();
                 t.select(Pos::default(), Pos::default());
                 if let Err(e) = t.insert(&text, EditKind::Other) {
-                    self.message = Some((e, Instant::now()));
+                    self.avisos.error(e);
                 }
                 t.select(Pos::default(), Pos::default());
                 t.center_on = Some(0);
@@ -5362,6 +5348,7 @@ impl eframe::App for App {
         self.settings_window(&ctx);
         self.update_window(&ctx);
         self.keys_window(&ctx);
+        self.avisos.mostrar(&ctx);
         self.adv_windows(&ctx);
         self.map_window(&ctx);
         self.folder_window(&ctx);
@@ -5637,7 +5624,7 @@ fn log_view(
         }
         let has_any = tab.block().is_some() || tab.selection().is_some();
         if ui
-            .add_enabled(has_any, Button::new(t!("📝 Nuevo archivo con la selección")))
+            .add_enabled(has_any, Button::new(t!("Nuevo archivo con la selección")))
             .on_hover_text(t!("Abre un archivo nuevo con el texto seleccionado (o el bloque), listo para guardar"))
             .clicked()
         {
@@ -5652,7 +5639,7 @@ fn log_view(
             }
             ui.close();
         }
-        if ui.add_enabled(has_sel, Button::new(t!("⇄ Convertir Base64 / hex…"))).on_hover_text(t!("Decodifica o codifica el texto seleccionado (Ctrl+Shift+K)")).clicked() {
+        if ui.add_enabled(has_sel, Button::new(t!("Convertir Base64 / hex…"))).on_hover_text(t!("Decodifica o codifica el texto seleccionado (Ctrl+Shift+K)")).clicked() {
             if let Some((a, b)) = tab.selection() {
                 match tab.text(a, b, MAX_COPY_BYTES) {
                     Some(t) => tab.convert_request = Some(t),
@@ -6376,10 +6363,6 @@ fn block_range(b: &Block, mode: CopyMode) -> (Pos, Pos) {
     }
 }
 
-fn update_window_id() -> Id {
-    Id::NULL.with("ventana_actualizar")
-}
-
 /// Hace más visibles los bordes y separaciones de paneles y ventanas, en los
 /// dos temas (claro: más oscuros; oscuro: más claros).
 fn apply_borders(ctx: &Context, level: u8) {
@@ -6411,7 +6394,7 @@ fn settings_window_id() -> Id {
 }
 
 fn keys_window_id() -> Id {
-    Id::NULL.with("ventana_atajos")
+    crate::estilo::id_atajos()
 }
 
 fn adv_window_id(n: u64) -> Id {
@@ -6753,92 +6736,24 @@ impl App {
         self.updater = Some(crate::update::Updater::check(ctx.clone()));
     }
 
+    /// «Actualizar» (ventana común a las tres aplicaciones: `estilo::ventana_actualizar`).
     fn update_window(&mut self, ctx: &Context) {
         use crate::update::Stage;
         let Some(u) = &self.updater else { return };
-        let stage = u.stage();
         let mut open = true;
-        let (mut run, mut restart) = (false, false);
         let dirty = self.tabs.iter().any(|t| t.dirty() || t.save.is_some());
-        Window::new(t!("Actualizar buscador"))
-            .id(update_window_id())
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_size([560.0, 360.0])
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.label(tf!("Versión instalada: {crate_update_version_label}", crate_update_version_label = crate::update::version_label()));
-                ui.add_space(6.0);
-                match &stage {
-                    Stage::Checking => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(t!("Comprobando la última versión en GitHub…"));
-                        });
-                    }
-                    Stage::UpToDate(h) => {
-                        ui.label(tf!("✔ Ya tienes la última versión ({h}).", h = h));
-                        run = ui.button(t!("Reinstalar de todos modos")).clicked();
-                    }
-                    Stage::Available(h) => {
-                        ui.strong(tf!("Hay una versión nueva: {h}", h = h));
-                        if crate::update::WINDOWS {
-                            ui.label(t!("Se descarga el instalador de la versión nueva. Al reiniciar, buscador se cierra, se instala la versión nueva y vuelve a abrirse."));
-                            run = ui.button(t!("⬇ Descargar")).clicked();
-                        } else {
-                            ui.label(t!("Se descarga el código a una carpeta temporal, se compila (la primera vez tarda unos minutos) y se reemplaza la app instalada. Puedes seguir trabajando mientras tanto."));
-                            run = ui.button(t!("⬇ Descargar, compilar e instalar")).clicked();
-                        }
-                    }
-                    Stage::Running => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(if crate::update::WINDOWS { t!("Descargando el instalador…") } else { t!("Descargando, compilando e instalando…") });
-                        });
-                    }
-                    Stage::Done(p) => {
-                        if crate::update::WINDOWS {
-                            ui.strong(t!("✔ Instalador descargado"));
-                        } else {
-                            ui.strong(tf!("✔ Instalada en {display}", display = p.display()));
-                        }
-                        restart = ui
-                            .button(if crate::update::WINDOWS { t!("⟳ Instalar y reiniciar") } else { t!("⟳ Reiniciar ahora") })
-                            .on_hover_text(t!("Cierra buscador y lo abre con la versión nueva (recupera los archivos abiertos)"))
-                            .clicked();
-                        if dirty {
-                            ui.weak(t!("Hay cambios sin guardar: al reiniciar se preguntará si descartarlos (o cancela y guárdalos)."));
-                        }
-                    }
-                    Stage::Failed(e) => {
-                        ui.colored_label(ui.visuals().error_fg_color, tf!("No se pudo actualizar: {e}", e = e));
-                        run = ui.button(t!("Reintentar")).clicked();
-                    }
-                }
-                let log = u.log.lock().unwrap();
-                if !log.is_empty() {
-                    ui.add_space(6.0);
-                    ui.weak(t!("Registro:"));
-                    ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).max_height(220.0).show(ui, |ui| {
-                        for l in log.iter() {
-                            ui.label(RichText::new(l).monospace().small());
-                        }
-                    });
-                }
-            });
-        if run {
-            u.run(ctx.clone());
-        }
-        if restart {
-            if let Stage::Done(p) = &stage {
+        let nota = dirty.then(|| t!("Hay cambios sin guardar: al reiniciar se preguntará si descartarlos (o cancela y guárdalos)."));
+        let running = u.stage() == Stage::Running;
+        match crate::estilo::ventana_actualizar(ctx, u, &mut open, nota) {
+            crate::estilo::AccionActualizar::Ejecutar => u.run(ctx.clone()),
+            crate::estilo::AccionActualizar::Reiniciar(p) => {
                 // Se cierra como siempre (con la confirmación si hay cambios) y la
                 // versión nueva se abre en `on_exit`, cuando esta ya terminó.
-                self.relaunch = Some(p.clone());
+                self.relaunch = Some(p);
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
+            crate::estilo::AccionActualizar::Nada => {}
         }
-        let running = stage == Stage::Running;
         if !open && !running {
             self.updater = None;
         } else if !open && running {
@@ -6846,34 +6761,34 @@ impl App {
         }
     }
 
-    fn keys_window(&mut self, ctx: &Context) {
-        if !self.show_keys {
-            return;
+    /// Bienvenida (común a las tres apps) sin archivos abiertos.
+    fn welcome(&mut self, ui: &mut Ui, rect: Rect) {
+        let logo = crate::estilo::logo(ui.ctx(), &mut self.about_icon);
+        let k = |s: &str| crate::estilo::tecla(s);
+        let (o, n, f) = (k("Ctrl+O"), k("Ctrl+N"), k("Ctrl+Shift+O"));
+        let acciones = [
+            (Icon::Open, t!("Abrir archivo…"), o.as_str()),
+            (Icon::New, t!("Archivo nuevo"), n.as_str()),
+            (Icon::FolderSearch, t!("Buscar en carpeta…"), f.as_str()),
+            (Icon::Map, t!("Mapa de disco"), ""),
+        ];
+        let mut pulsada = None;
+        ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
+        ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+            pulsada = crate::estilo::bienvenida(ui, &logo, &acciones, Some(t!("También puedes arrastrar archivos a la ventana.")));
+        });
+        match pulsada {
+            Some(0) => self.open_dialog(),
+            Some(1) => self.new_untitled(None),
+            Some(2) => self.show_folder_search(),
+            Some(3) => self.map.open = true,
+            _ => {}
         }
-        let mut open = true;
-        Window::new(t!("Atajos de teclado"))
-            .id(keys_window_id())
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_size([520.0, 560.0])
-            .anchor(Align2::RIGHT_BOTTOM, vec2(-8.0, -30.0))
-            .show(ctx, |ui| {
-                ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    for (section, keys) in shortcut_list() {
-                        ui.add_space(4.0);
-                        ui.strong(section);
-                        Grid::new(section).num_columns(2).striped(true).spacing([16.0, 3.0]).min_col_width(230.0).show(ui, |ui| {
-                            for (k, what) in keys {
-                                ui.label(RichText::new(k).monospace());
-                                ui.label(what);
-                                ui.end_row();
-                            }
-                        });
-                    }
-                });
-            });
-        self.show_keys = open;
+    }
+
+    /// «Atajos de teclado» (ventana común: `estilo::ventana_atajos`).
+    fn keys_window(&mut self, ctx: &Context) {
+        crate::estilo::ventana_atajos(ctx, &mut self.show_keys, &shortcut_list());
     }
 
     /// Abre «Buscar en carpeta»: propone la carpeta del archivo activo y el
@@ -7179,7 +7094,7 @@ fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOu
             }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.button(t!("+ Nueva")).on_hover_text(t!("Abrir otra ventana de búsqueda avanzada")).clicked() {
+            if ui.add(IconButton::new(Icon::Plus, Tone::Search).label(t!("Nueva"))).on_hover_text(t!("Abrir otra ventana de búsqueda avanzada")).clicked() {
                 out.new_window = true;
             }
             let label = if w.detached { t!("Integrar") } else { t!("Ventana aparte") };
@@ -7287,10 +7202,10 @@ fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOu
     let tab = &mut tabs[ti];
     let mut go = None;
     ui.horizontal_wrapped(|ui| {
-        if ui.add_enabled(count > 0, Button::new("◀")).on_hover_text(t!("Bloque anterior")).clicked() {
+        if ui.add_enabled(count > 0, IconButton::new(Icon::Prev, Tone::Search)).on_hover_text(t!("Bloque anterior")).clicked() {
             go = Some(w.cur.map_or(count - 1, |i| if i == 0 { count - 1 } else { i - 1 }));
         }
-        if ui.add_enabled(count > 0, Button::new("▶")).on_hover_text(t!("Bloque siguiente")).clicked() {
+        if ui.add_enabled(count > 0, IconButton::new(Icon::Next, Tone::Search)).on_hover_text(t!("Bloque siguiente")).clicked() {
             go = Some(w.cur.map_or(0, |i| (i + 1) % count));
         }
         let cur = w.cur.filter(|&i| i < count);
@@ -7335,7 +7250,7 @@ fn adv_ui(ui: &mut Ui, w: &mut AdvWin, tabs: &mut [Tab], active: usize) -> AdvOu
             out.msg = Some(copy(None));
         }
         if ui
-            .add_enabled(count > 0, Button::new(t!("📝 A archivo nuevo")))
+            .add_enabled(count > 0, IconButton::new(Icon::New, Tone::File).label(t!("A archivo nuevo")))
             .on_hover_text(t!("Abre un archivo nuevo con todos los bloques (según «Copiar» y el separador), listo para guardar"))
             .clicked()
         {
@@ -7678,7 +7593,7 @@ fn filter_view(ui: &mut Ui, tab: &mut Tab, font: &FontId, colors: Option<(Color3
             tab.filter.touch();
         }
         ui.horizontal(|ui| {
-            if ui.button(t!("+ Regla")).on_hover_text(t!("Varias de Incluir: basta con que coincida una. Las de Excluir quitan líneas.")).clicked() {
+            if ui.add(IconButton::new(Icon::Plus, Tone::Search).label(t!("Regla"))).on_hover_text(t!("Varias de Incluir: basta con que coincida una. Las de Excluir quitan líneas.")).clicked() {
                 tab.filter.rules.push(Rule::default());
             }
             ui.separator();

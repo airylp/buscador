@@ -68,10 +68,13 @@ pub enum Icon {
     FastForward,
     Lock,
     Send,
+    Check,
+    Warning,
+    Error,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 48] = [
+    pub const ALL: [Icon; 51] = [
         Icon::Sidebar,
         Icon::New,
         Icon::Open,
@@ -120,6 +123,9 @@ impl Icon {
         Icon::FastForward,
         Icon::Lock,
         Icon::Send,
+        Icon::Check,
+        Icon::Warning,
+        Icon::Error,
     ];
 }
 
@@ -928,6 +934,57 @@ const ART: &str = r"
 .BB.............
 ................
 ................
+@Check
+................
+................
+................
+............GG..
+...........GGG..
+..........GGG...
+.GG......GGG....
+.GGG....GGG.....
+..GGG..GGG......
+...GGGGGG.......
+....GGGG........
+.....GG.........
+................
+................
+................
+................
+@Warning
+................
+.......yy.......
+......yyyy......
+......yKKy......
+.....yyKKyy.....
+.....yyKKyy.....
+....yyyKKyyy....
+....yyyKKyyy....
+...yyyyKKyyyy...
+...yyyyyyyyyy...
+..yyyyyKKyyyyy..
+..yyyyyKKyyyyy..
+.yyyyyyyyyyyyyy.
+.yyyyyyyyyyyyyy.
+................
+................
+@Error
+................
+.....RRRRRR.....
+...RRRRRRRRRR...
+..RRRRRRRRRRRR..
+..RRWWRRRRWWRR..
+.RRRWWWRRWWWRRR.
+.RRRRWWWWWWRRRR.
+.RRRRRWWWWRRRRR.
+.RRRRRWWWWRRRRR.
+.RRRRWWWWWWRRRR.
+.RRRWWWRRWWWRRR.
+..RRWWRRRRWWRR..
+..RRRRRRRRRRRR..
+...RRRRRRRRRR...
+.....RRRRRR.....
+................
 ";
 
 /// Un píxel del ícono ya sombreado.
@@ -1103,16 +1160,17 @@ pub struct IconButton {
     selected: bool,
     tone: Tone,
     small: bool,
+    framed: bool,
 }
 
 impl IconButton {
     pub fn new(icon: Icon, tone: Tone) -> Self {
-        IconButton { icon: Some(icon), text: None, selected: false, tone, small: false }
+        IconButton { icon: Some(icon), text: None, selected: false, tone, small: false, framed: false }
     }
 
     /// Solo texto (p. ej. «Aa», «.*»), con el mismo aspecto que los demás.
     pub fn text_only(text: impl Into<String>, tone: Tone) -> Self {
-        IconButton { icon: None, text: Some(text.into()), selected: false, tone, small: false }
+        IconButton { icon: None, text: Some(text.into()), selected: false, tone, small: false, framed: false }
     }
 
     pub fn label(mut self, text: impl Into<String>) -> Self {
@@ -1123,6 +1181,12 @@ impl IconButton {
 
     pub fn selected(mut self, on: bool) -> Self {
         self.selected = on;
+        self
+    }
+
+    /// Con fondo y borde siempre visibles (botones grandes, p. ej. la bienvenida).
+    pub fn framed(mut self) -> Self {
+        self.framed = true;
         self
     }
 
@@ -1140,10 +1204,10 @@ impl Widget for IconButton {
         let (h, s, style) = if self.small {
             (ui.spacing().interact_size.y - 2.0, 16.0, TextStyle::Small)
         } else {
-            (ui.spacing().interact_size.y + 4.0, 16.0, TextStyle::Button)
+            (ui.spacing().interact_size.y + if self.framed { 12.0 } else { 4.0 }, 16.0, TextStyle::Button)
         };
         // El margen sale de `button_padding` (la barra lo reduce si la ventana es estrecha).
-        let pad = ui.spacing().button_padding.x - if self.small { 2.0 } else { 0.0 };
+        let pad = ui.spacing().button_padding.x - if self.small { 2.0 } else { 0.0 } + if self.framed { 8.0 } else { 0.0 };
         let gap = if self.small { 3.0 } else { 5.0 };
         let galley = self.text.as_ref().map(|t| WidgetText::from(t.as_str()).into_galley(ui, Some(eframe::egui::TextWrapMode::Extend), f32::INFINITY, style));
         let mut w = pad * 2.0;
@@ -1164,7 +1228,9 @@ impl Widget for IconButton {
                 ui.painter().rect(rect, radius, tint.gamma_multiply(if v.dark_mode { 0.22 } else { 0.16 }), Stroke::new(1.0, tint.gamma_multiply(0.7)), StrokeKind::Inside);
             } else if enabled && (resp.hovered() || resp.has_focus()) {
                 let f = if resp.is_pointer_button_down_on() { v.widgets.active.weak_bg_fill } else { v.widgets.hovered.weak_bg_fill };
-                ui.painter().rect_filled(rect, radius, f);
+                ui.painter().rect(rect, radius, f, if self.framed { v.widgets.hovered.bg_stroke } else { Stroke::NONE }, StrokeKind::Inside);
+            } else if self.framed {
+                ui.painter().rect(rect, radius, v.widgets.inactive.weak_bg_fill, v.widgets.inactive.bg_stroke, StrokeKind::Inside);
             }
             let mut x = rect.left() + pad;
             if self.icon.is_none() {

@@ -804,3 +804,32 @@ Probador de conexiones JDBC con consola SQL	JDBC connection tester with SQL cons
 Cliente HTTP y SOAP para probar APIs	HTTP and SOAP client for testing APIs	Client HTTP et SOAP pour tester des API
 General	General	Général
 Edición y logs	Editing and logs	Édition et journaux
+Actualizar {app}	Update {app}	Mettre à jour {app}
+Versión instalada: {v}	Installed version: {v}	Version installée : {v}
+Buscando la última versión en GitHub…	Looking for the latest version on GitHub…	Recherche de la dernière version sur GitHub…
+✔ Ya tienes la última versión ({v}).	✔ You already have the latest version ({v}).	✔ Vous avez déjà la dernière version ({v}).
+Hay una versión nueva: {v}	A new version is available: {v}	Une nouvelle version est disponible : {v}
+Se descarga el instalador; al reiniciar, {app} se cierra, se instala la versión nueva y vuelve a abrirse.	The installer is downloaded; on restart, {app} closes, the new version is installed and it opens again.	L'installateur est téléchargé ; au redémarrage, {app} se ferme, la nouvelle version s'installe et se rouvre.
+Se descarga el código, se compila (la primera vez tarda unos minutos) y se reemplaza la app instalada. Puedes seguir usando {app} mientras tanto.	The source is downloaded, built (the first time takes a few minutes) and the installed app is replaced. You can keep using {app} meanwhile.	Le code est téléchargé, compilé (la première fois prend quelques minutes) et l'app installée est remplacée. Vous pouvez continuer à utiliser {app} pendant ce temps.
+Se descarga la versión publicada y se reemplaza la app instalada. Puedes seguir usando {app} mientras tanto.	The published version is downloaded and replaces the installed app. You can keep using {app} meanwhile.	La version publiée est téléchargée et remplace l'app installée. Vous pouvez continuer à utiliser {app} pendant ce temps.
+Actualizar ahora	Update now	Mettre à jour maintenant
+Actualizando… (puedes seguir trabajando)	Updating… (you can keep working)	Mise à jour… (vous pouvez continuer à travailler)
+✔ Versión nueva instalada.	✔ New version installed.	✔ Nouvelle version installée.
+Reiniciar ahora	Restart now	Redémarrer maintenant
+o úsala la próxima vez que abras {app}	or use it next time you open {app}	ou utilisez-la la prochaine fois que vous ouvrirez {app}
+Cerrar la ventana de delante	Close the front window	Fermer la fenêtre au premier plan
+Acerca de {app}	About {app}	À propos de {app}
+no se pudo	could not	impossible
+Clic para cerrar	Click to close	Cliquer pour fermer
+Abrir archivo…	Open file…	Ouvrir un fichier…
+Archivo nuevo	New file	Nouveau fichier
+También puedes arrastrar archivos a la ventana.	You can also drag files onto the window.	Vous pouvez aussi glisser des fichiers dans la fenêtre.
+A archivo nuevo	To new file	Vers un nouveau fichier
+Abrir ({n})	Open ({n})	Ouvrir ({n})
+Convertir Base64 / hex…	Convert Base64 / hex…	Convertir Base64 / hex…
+Elegir carpeta…	Choose folder…	Choisir un dossier…
+Elegir…	Choose…	Choisir…
+En espera	Waiting	En attente
+Nueva	New	Nouvelle
+Nuevo archivo con la selección	New file with the selection	Nouveau fichier avec la sélection
+Regla	Rule	Règle

@@ -5,8 +5,9 @@
 //! Todo es de solo lectura: se lee la carpeta en un hilo y se busca con varios
 //! hilos sobre `mmap`, sin cargar los archivos en RAM.
 
+use crate::icons::{Icon, IconButton, Tone};
 use eframe::egui::{
-    self, Align2, Button, Color32, Context, CornerRadius, FontId, Id, Key, Mesh, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke,
+    self, Align2, Color32, Context, CornerRadius, FontId, Id, Key, Mesh, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke,
     StrokeKind, TextEdit, Ui, UiBuilder, pos2, vec2,
 };
 use std::collections::BTreeSet;
@@ -541,7 +542,7 @@ impl DiskMap {
             let root = &t.nodes[0];
             ui.label(RichText::new(t.root.display().to_string()).strong());
             ui.weak(tf!("{size} · {files} archivos{partial_lectura_detenida}", size = crate::app::human_size(root.size), files = crate::app::fmt_num(root.files), partial_lectura_detenida = if t.partial { t!(" · lectura detenida (incompleto)") } else { "" }));
-            if ui.small_button("⟳").on_hover_text(t!("Volver a leer la carpeta")).clicked() {
+            if ui.add(IconButton::new(Icon::Reload, Tone::Neutral).small()).on_hover_text(t!("Volver a leer la carpeta")).clicked() {
                 let r = t.root.clone();
                 self.start_scan(r, ctx);
             }
@@ -570,7 +571,7 @@ impl DiskMap {
 
         // --- Carpeta ---
         ui.horizontal(|ui| {
-            if ui.button(t!("📁 Elegir carpeta…")).clicked() {
+            if ui.add(IconButton::new(Icon::Open, Tone::File).label(t!("Elegir carpeta…"))).clicked() {
                 out.pick_folder = true;
             }
             let (label, hint) = if self.detached {
@@ -613,7 +614,7 @@ impl DiskMap {
                 // Aún se está leyendo la carpeta: la búsqueda queda en espera y
                 // empieza sola al terminar el mapa.
                 let b = ui
-                    .add(Button::new(if self.search_when_ready { t!("⏳ En espera") } else { t!("🔍 Buscar") }).selected(self.search_when_ready))
+                    .add(IconButton::new(Icon::Search, Tone::Search).label(if self.search_when_ready { t!("En espera") } else { t!("Buscar") }).selected(self.search_when_ready))
                     .on_hover_text(t!("La búsqueda empieza sola cuando termine de leerse la carpeta (clic otra vez para no buscar)"));
                 if b.clicked() || enter {
                     if self.needle.is_empty() {
@@ -622,7 +623,7 @@ impl DiskMap {
                         self.search_when_ready = if enter { true } else { !self.search_when_ready };
                     }
                 }
-            } else if ui.add_enabled(self.tree.is_some(), Button::new(t!("🔍 Buscar"))).clicked() || (enter && self.tree.is_some()) {
+            } else if ui.add_enabled(self.tree.is_some(), IconButton::new(Icon::Search, Tone::Search).label(t!("Buscar"))).clicked() || (enter && self.tree.is_some()) {
                 out.msg = self.start_find(&ctx).or(out.msg.take());
             }
             if self.find.is_some() && !running && ui.small_button("✖").on_hover_text(t!("Quitar el resaltado")).clicked() {
@@ -663,7 +664,7 @@ impl DiskMap {
 
         // --- Ruta del zoom ---
         ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(self.view != 0, Button::new("⬆").small()).on_hover_text(t!("Subir un nivel")).clicked() {
+            if ui.add_enabled(self.view != 0, IconButton::new(Icon::Upload, Tone::Neutral).small()).on_hover_text(t!("Subir un nivel")).clicked() {
                 self.view = tree.nodes[self.view as usize].parent;
             }
             let mut chain = vec![self.view];
@@ -710,7 +711,7 @@ impl DiskMap {
                 self.selected.clear();
             }
             let n = self.selected.len();
-            let b = ui.add_enabled(n > 0, Button::new(tf!("📂 Abrir ({n})", n = n)));
+            let b = ui.add_enabled(n > 0, IconButton::new(Icon::Open, Tone::File).label(tf!("Abrir ({n})", n = n)));
             if b.on_hover_text(t!("Abrir en el editor los archivos marcados y buscar en ellos el texto")).clicked() {
                 out.open = self.selected.iter().map(|&i| tree.path(i)).collect();
             }

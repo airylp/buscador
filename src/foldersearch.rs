@@ -6,6 +6,7 @@
 //! (mmap + `regex::bytes`, sin cargarlos en RAM). Se saltan carpetas ocultas
 //! (.git…) y `node_modules`, enlaces simbólicos y archivos binarios.
 
+use crate::icons::{Icon, IconButton, Tone};
 use eframe::egui::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -327,7 +328,7 @@ impl FolderSearch {
                     let (t, c) = if exists { ("✔", Color32::from_rgb(70, 170, 90)) } else { ("✖", ui.visuals().error_fg_color) };
                     ui.colored_label(c, t).on_hover_text(if exists { t!("La carpeta existe") } else { t!("No se encuentra la carpeta") });
                 }
-                if ui.button(t!("📁 Elegir…")).clicked() {
+                if ui.add(IconButton::new(Icon::Open, Tone::File).label(t!("Elegir…"))).clicked() {
                     out.pick_folder = true;
                 }
             });
@@ -341,10 +342,10 @@ impl FolderSearch {
                 ui.toggle_value(&mut self.case, "Aa").on_hover_text(t!("Distinguir mayúsculas"));
                 ui.toggle_value(&mut self.regex, ".*").on_hover_text(t!("Expresión regular"));
                 if self.is_busy() {
-                    if ui.button(t!("⏹ Detener")).clicked() {
+                    if ui.add(IconButton::new(Icon::Stop, Tone::Edit).label(t!("Detener"))).clicked() {
                         self.stop();
                     }
-                } else if ui.add_enabled(!self.query.is_empty(), Button::new(t!("🔍 Buscar"))).clicked() {
+                } else if ui.add_enabled(!self.query.is_empty(), IconButton::new(Icon::Search, Tone::Search).label(t!("Buscar"))).clicked() {
                     go = true;
                 }
             });
