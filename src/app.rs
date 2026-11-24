@@ -1905,14 +1905,6 @@ pub(crate) fn reveal_label() -> &'static str {
 }
 
 /// Cuenta y repositorio del proyecto en GitHub (datos públicos del perfil).
-const GITHUB_USER: &str = "airylp";
-const GITHUB_NAME: &str = "Airy";
-const GITHUB_REPO: &str = "buscador";
-const GITHUB_BLOG: &str = "https://decodigo.com";
-
-fn repo_url(rest: &str) -> String {
-    format!("https://github.com/{GITHUB_USER}/{GITHUB_REPO}{rest}")
-}
 
 /// Abre un enlace en el navegador.
 /// Carpeta de las copias temporales para ver HTML en el navegador.
@@ -2130,7 +2122,6 @@ pub struct App {
     show_settings: bool,
     show_keys: bool,
     /// La ventana de ajustes estaba abierta en el fotograma anterior.
-    settings_was_open: bool,
     /// Actualización desde la interfaz (ventana abierta si hay `Some`).
     updater: Option<crate::update::Updater>,
     /// El editor tenía el foco en el último fotograma.
@@ -2248,7 +2239,6 @@ impl App {
             fallback_fonts: fallbacks,
             show_settings: false,
             show_keys: false,
-            settings_was_open: false,
             updater: None,
             ctx: {
                 #[cfg(target_os = "macos")]
@@ -3213,7 +3203,7 @@ impl App {
                     .font(TextStyle::Monospace),
             );
             let lupa = Rect::from_center_size(pos2(r.rect.left() + 13.0, r.rect.center().y), vec2(14.0, 14.0));
-            crate::icons::paint(ui.painter(), lupa, Icon::Search, ui.visuals().weak_text_color());
+            crate::icons::paint_look(ui.painter(), lupa, Icon::Search, crate::icons::Look::Tint(ui.visuals().weak_text_color()));
             if self.focus_search {
                 r.request_focus();
                 self.focus_search = false;
@@ -4552,85 +4542,16 @@ impl App {
         }
     }
 
-    /// «Acerca de»: versión, licencia y enlaces al proyecto en GitHub.
+    /// «Acerca de» (ventana común a las tres aplicaciones: `estilo::acerca`).
     fn about_window(&mut self, ctx: &Context) {
-        if !self.show_about {
-            return;
-        }
-        let icon = self
-            .about_icon
-            .get_or_insert_with(|| {
-                let n = 128;
-                let img = ColorImage::from_rgba_unmultiplied([n, n], &crate::icon::rgba(n));
-                ctx.load_texture("acerca-icono", img, TextureOptions::LINEAR)
-            })
-            .clone();
-        let mut close = false;
-        let mut update = false;
-        let link = |ui: &mut Ui, text: &str, url: &str| {
-            let r = ui.link(text).on_hover_text(url);
-            if r.clicked() {
-                open_url(url);
-            }
-        };
-        let modal = Modal::new(Id::NULL.with("about")).show(ctx, |ui| {
-            ui.set_width(420.0);
-            ui.horizontal(|ui| {
-                ui.add(Image::new(&icon).fit_to_exact_size(vec2(64.0, 64.0)));
-                ui.vertical(|ui| {
-                    ui.heading("buscador");
-                    ui.label(tf!("Versión {v}", v = crate::update::version_label()));
-                    ui.label(RichText::new(t!("Visor y editor de archivos de varios GB")).weak());
-                });
-            });
-            ui.add_space(8.0);
-            ui.separator();
-            Grid::new("about-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                ui.label(RichText::new(t!("Autor")).strong());
-                ui.horizontal(|ui| {
-                    ui.label(GITHUB_NAME);
-                    link(ui, &format!("@{GITHUB_USER}"), &format!("https://github.com/{GITHUB_USER}"));
-                });
-                ui.end_row();
-                ui.label(RichText::new("GitHub").strong());
-                link(ui, &format!("github.com/{GITHUB_USER}/{GITHUB_REPO}"), &repo_url(""));
-                ui.end_row();
-                ui.label(RichText::new(t!("Sitio web")).strong());
-                link(ui, GITHUB_BLOG.trim_start_matches("https://"), GITHUB_BLOG);
-                ui.end_row();
-                ui.label(RichText::new(t!("Licencia")).strong());
-                ui.horizontal(|ui| {
-                    ui.label(tf!("MIT · © 2026 {user}", user = GITHUB_USER));
-                    link(ui, t!("ver"), &repo_url("/blob/main/LICENSE"));
-                });
-                ui.end_row();
-                ui.label(RichText::new(t!("Hecho con")).strong());
-                ui.label("Rust · egui / eframe");
-                ui.end_row();
-            });
-            ui.separator();
-            ui.horizontal(|ui| {
-                link(ui, t!("Versiones"), &repo_url("/releases"));
-                ui.label("·");
-                link(ui, t!("Reportar un problema"), &repo_url("/issues/new"));
-                ui.label("·");
-                link(ui, t!("Código fuente"), &repo_url(""));
-            });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button(t!("Buscar actualizaciones…")).clicked() {
-                    update = true;
-                    close = true;
-                }
-                if ui.button(t!("Cerrar")).clicked() {
-                    close = true;
-                }
-            });
+        let logo = crate::estilo::logo(ctx, &mut self.about_icon);
+        let label = crate::update::version_label();
+        let version = crate::estilo::Version { etiqueta: &label, actualizable: crate::update::SUPPORTED };
+        let config = crate::settings::config_dir().map(|d| d.display().to_string()).unwrap_or_default();
+        let accion = crate::estilo::acerca(ctx, &mut self.show_about, &logo, &version, |ui| {
+            crate::estilo::fila_carpeta(ui, t!("Configuración"), &config);
         });
-        if close || modal.should_close() {
-            self.show_about = false;
-        }
-        if update {
+        if accion == crate::estilo::Accion::BuscarActualizaciones {
             self.open_updater(ctx);
         }
     }
@@ -6482,21 +6403,11 @@ fn apply_borders(ctx: &Context, level: u8) {
 /// Retoques de presentación comunes a los dos temas: esquinas algo más
 /// redondeadas y botones con un poco más de aire.
 fn apply_style(ctx: &Context) {
-    for theme in [Theme::Dark, Theme::Light] {
-        ctx.style_mut_of(theme, |s| {
-            let w = &mut s.visuals.widgets;
-            for st in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
-                st.corner_radius = CornerRadius::same(5);
-            }
-            s.visuals.window_corner_radius = CornerRadius::same(10);
-            s.visuals.menu_corner_radius = CornerRadius::same(8);
-            s.spacing.button_padding = vec2(6.0, 2.0);
-        });
-    }
+    crate::estilo::aplicar(ctx);
 }
 
 fn settings_window_id() -> Id {
-    Id::NULL.with("ventana_ajustes")
+    crate::estilo::id_ajustes()
 }
 
 fn keys_window_id() -> Id {
@@ -6511,8 +6422,6 @@ const MINIMAP_GREEN: Color32 = Color32::from_rgb(40, 190, 80);
 
 impl App {
     fn settings_window(&mut self, ctx: &Context) {
-        // Al abrirse, aparece centrada (luego se puede mover).
-        let just_opened = self.show_settings && !std::mem::replace(&mut self.settings_was_open, self.show_settings);
         if !self.show_settings {
             return;
         }
@@ -6536,183 +6445,136 @@ impl App {
         };
         let mut open_update = false;
         let mut reset = false;
-        let mut win = Window::new(t!("Ajustes")).id(settings_window_id()).pivot(Align2::CENTER_CENTER);
-        if just_opened {
-            win = win.current_pos(ctx.content_rect().center());
-        }
-        win.open(&mut open)
-            .resizable(false)
-            .collapsible(false)
-            .frame(Frame::window(&ctx.global_style()).inner_margin(18.0))
-            .show(ctx, |ui| {
-                ui.set_width(560.0);
-                ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
-                // Etiqueta a la izquierda, controles a la derecha.
-                Grid::new("ajustes_grid").num_columns(2).spacing([28.0, 16.0]).min_col_width(150.0).show(ui, |ui| {
-                    ui.strong(t!("Idioma")).on_hover_text("Idioma · Language · Langue");
-                    ui.horizontal(|ui| {
-                        let cur = crate::i18n::get();
-                        for l in crate::i18n::Lang::ALL {
-                            if ui.radio(cur == l, l.name()).clicked() && cur != l {
-                                lang_change = Some(l);
-                            }
-                        }
-                    });
-                    ui.end_row();
-
-                    ui.strong(t!("Tema"));
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut theme, ThemePreference::System, t!("Sistema"));
-                        ui.radio_value(&mut theme, ThemePreference::Light, t!("Claro"));
-                        ui.radio_value(&mut theme, ThemePreference::Dark, t!("Oscuro"));
-                    });
-                    ui.end_row();
-
-                    ui.strong(t!("Bordes de paneles")).on_hover_text(t!("Separaciones entre paneles y bordes de las ventanas, en cualquier tema"));
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut borders, 0, t!("Normales"));
-                        ui.radio_value(&mut borders, 1, t!("Marcados"));
-                        ui.radio_value(&mut borders, 2, t!("Muy marcados"));
-                    });
-                    ui.end_row();
-
-                    ui.strong(t!("Tipo de letra"));
-                    ui.vertical(|ui| {
-                        ComboBox::from_id_salt("tipo_letra").selected_text(crate::fonts::label(&family)).width(240.0).show_ui(ui, |ui| {
-                            let av = crate::fonts::available();
-                            ui.weak(t!("Monoespaciadas (alinean columnas)"));
-                            for o in av.iter().filter(|o| o.mono) {
-                                ui.selectable_value(&mut family, o.name.to_string(), crate::fonts::label(o.name));
-                            }
-                            ui.separator();
-                            ui.weak(t!("Proporcionales"));
-                            for o in av.iter().filter(|o| !o.mono) {
-                                ui.selectable_value(&mut family, o.name.to_string(), crate::fonts::label(o.name));
-                            }
-                        });
-                        if crate::fonts::find(&family).is_some_and(|o| !o.mono) {
-                            ui.weak(t!("Con letra proporcional las columnas de los logs no quedan alineadas."));
-                        }
-                    });
-                    ui.end_row();
-
-                    ui.strong(t!("Tamaño de letra"));
-                    ui.add(Slider::new(&mut font, 7.0..=40.0).step_by(1.0));
-                    ui.end_row();
-
-                    ui.strong(t!("Tabulador"));
-                    ui.horizontal(|ui| {
-                        for w in [2, 4, 8] {
-                            ui.radio_value(&mut tabw, w, tf!("{w} espacios", w = w));
-                        }
-                        ui.add(DragValue::new(&mut tabw).range(1..=16).suffix(t!(" col."))).on_hover_text(t!("Columnas entre paradas de tabulador (1–16)"));
-                    });
-                    ui.end_row();
-
-                    ui.strong(t!("Deshacer"));
-                    ui.horizontal(|ui| {
-                        ui.add(DragValue::new(&mut undo_steps).range(1..=10_000).speed(1.0));
-                        ui.label(t!("pasos (se conservan también al guardar)"));
-                    });
-                    ui.end_row();
-
-                    ui.strong(t!("Espacios"));
-                    ui.checkbox(&mut show_ws, t!("Mostrar espacios y tabuladores (· y →)"));
-                    ui.end_row();
-
-                    ui.strong(t!("Logs"));
-                    ui.checkbox(&mut levels, t!("Fondo de color en las líneas ERROR y WARN (y sus trazas de pila)"));
-                    ui.end_row();
-
-                    if crate::update::SUPPORTED {
-                        ui.strong(t!("Actualizaciones"));
+        let label = crate::update::version_label();
+        let version = crate::estilo::Version { etiqueta: &label, actualizable: crate::update::SUPPORTED };
+        let accion = crate::estilo::ventana_ajustes(ctx, &mut open, &version, |ui| {
+            use crate::estilo::{fila, rejilla, seccion};
+            seccion(ui, t!("General"));
+            rejilla(ui, "ajustes_general", |ui| {
+                lang_change = crate::estilo::fila_idioma(ui);
+                crate::estilo::fila_tema(ui, &mut theme);
+                fila(ui, t!("Bordes de paneles"), Some(t!("Separaciones entre paneles y bordes de las ventanas, en cualquier tema")), |ui| {
+                    ui.radio_value(&mut borders, 0, t!("Normales"));
+                    ui.radio_value(&mut borders, 1, t!("Marcados"));
+                    ui.radio_value(&mut borders, 2, t!("Muy marcados"));
+                });
+                if crate::update::SUPPORTED {
+                    fila(ui, t!("Actualizaciones"), None, |ui| {
                         ui.checkbox(&mut check_updates, t!("Avisar de versiones nuevas (punto verde en ⬇; mira GitHub al abrir y cada 6 horas)"));
-                        ui.end_row();
-                    }
-
-                    ui.strong(t!("Encabezado"));
+                    });
+                }
+                fila(ui, t!("Encabezado"), None, |ui| {
                     ui.checkbox(&mut show_header, t!("Mostrar el nombre y la ruta del archivo encima del texto"));
-                    ui.end_row();
-
-                    ui.strong(t!("Colores del texto"));
-                    ui.vertical(|ui| {
-                        ui.checkbox(&mut custom, t!("Usar colores propios (tienen prioridad sobre el tema)"));
-                        ui.add_enabled_ui(custom, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(t!("Fondo"));
-                                ui.color_edit_button_srgba(&mut bg);
-                                ui.add_space(16.0);
-                                ui.label(t!("Letra"));
-                                ui.color_edit_button_srgba(&mut fg);
-                            });
-                        });
-                    });
-                    ui.end_row();
-
-                    ui.strong(t!("Ajuste de línea"));
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.radio_value(&mut wrap, Wrap::Off, t!("No"));
-                            ui.radio_value(&mut wrap, Wrap::Window, t!("Al ancho de la ventana"));
-                        });
-                        ui.horizontal(|ui| {
-                            let cols = match wrap {
-                                Wrap::Columns(n) => n,
-                                _ => wrap_cols,
-                            };
-                            if ui.radio(matches!(wrap, Wrap::Columns(_)), t!("A")).clicked() {
-                                wrap = Wrap::Columns(cols);
-                            }
-                            let mut c = cols;
-                            if ui.add(DragValue::new(&mut c).range(20..=1000).speed(1)).changed() {
-                                wrap_cols = c;
-                                wrap = Wrap::Columns(c);
-                            }
-                            ui.label(t!("columnas"));
-                        });
-                        ui.weak(t!("Valor por defecto; cada archivo lo cambia con ↩ Ajuste."));
-                    });
-                    ui.end_row();
-
-                    ui.strong(t!("Resaltado"));
-                    ui.add(Checkbox::new(&mut syn, t!("Colorear según el tipo de archivo (.java, .xml, .json, .py…) y los niveles de los logs")));
-                    ui.end_row();
                 });
-
-                ui.add_space(14.0);
-                ui.weak(t!("Vista previa:"));
-                let (pbg, pfg) = if custom { (bg, fg) } else { (ui.visuals().extreme_bg_color, ui.visuals().text_color()) };
-                Frame::NONE.fill(pbg).inner_margin(10.0).corner_radius(6.0).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    let sample = [t!("2026-11-10 12:00:01 [ERROR] año, acción: java.io.IOException"), "0O 1lI {}[]() -> => != 日本"];
-                    let lang = if syn { syntax::Lang::Log } else { syntax::Lang::Plain };
-                    for line in sample {
-                        let mut spans = Vec::new();
-                        syntax::highlight(lang, line, syntax::State::Normal, &mut spans);
-                        let job = line_job(line, false, &crate::fonts::text_font(font), pfg, None, &spans, is_dark(pbg));
-                        ui.label(job);
-                    }
-                });
-                ui.add_space(14.0);
-                ui.separator();
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(tf!("Versión {crate_update_version_label}", crate_update_version_label = crate::update::version_label()));
-                    if crate::update::SUPPORTED {
-                        let hint = if crate::update::WINDOWS { t!("Descarga el instalador de la última versión publicada y lo ejecuta") } else { t!("Descarga la última versión de GitHub, la compila y la instala") };
-                        if ui.button(t!("⟳ Buscar actualizaciones…")).on_hover_text(hint).clicked() {
-                            open_update = true;
-                        }
-                    }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button(t!("↺ Restablecer")).on_hover_text(t!("Vuelve a los ajustes predeterminados: tema del sistema, Hack 13, sin colores propios, bordes normales")).clicked() {
-                            reset = true;
-                        }
-                    });
-                });
-                ui.add_space(6.0);
-                ui.weak(t!("Los ajustes se guardan automáticamente."));
             });
+
+            seccion(ui, t!("Texto"));
+            rejilla(ui, "ajustes_texto", |ui| {
+                ui.strong(t!("Tipo de letra"));
+                ui.vertical(|ui| {
+                    ComboBox::from_id_salt("tipo_letra").selected_text(crate::fonts::label(&family)).width(240.0).show_ui(ui, |ui| {
+                        let av = crate::fonts::available();
+                        ui.weak(t!("Monoespaciadas (alinean columnas)"));
+                        for o in av.iter().filter(|o| o.mono) {
+                            ui.selectable_value(&mut family, o.name.to_string(), crate::fonts::label(o.name));
+                        }
+                        ui.separator();
+                        ui.weak(t!("Proporcionales"));
+                        for o in av.iter().filter(|o| !o.mono) {
+                            ui.selectable_value(&mut family, o.name.to_string(), crate::fonts::label(o.name));
+                        }
+                    });
+                    if crate::fonts::find(&family).is_some_and(|o| !o.mono) {
+                        ui.weak(t!("Con letra proporcional las columnas de los logs no quedan alineadas."));
+                    }
+                });
+                ui.end_row();
+                fila(ui, t!("Tamaño de letra"), None, |ui| {
+                    ui.add(Slider::new(&mut font, 7.0..=40.0).step_by(1.0));
+                });
+                fila(ui, t!("Tabulador"), None, |ui| {
+                    for w in [2, 4, 8] {
+                        ui.radio_value(&mut tabw, w, tf!("{w} espacios", w = w));
+                    }
+                    ui.add(DragValue::new(&mut tabw).range(1..=16).suffix(t!(" col."))).on_hover_text(t!("Columnas entre paradas de tabulador (1–16)"));
+                });
+                fila(ui, t!("Espacios"), None, |ui| {
+                    ui.checkbox(&mut show_ws, t!("Mostrar espacios y tabuladores (· y →)"));
+                });
+                ui.strong(t!("Ajuste de línea"));
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut wrap, Wrap::Off, t!("No"));
+                        ui.radio_value(&mut wrap, Wrap::Window, t!("Al ancho de la ventana"));
+                    });
+                    ui.horizontal(|ui| {
+                        let cols = match wrap {
+                            Wrap::Columns(n) => n,
+                            _ => wrap_cols,
+                        };
+                        if ui.radio(matches!(wrap, Wrap::Columns(_)), t!("A")).clicked() {
+                            wrap = Wrap::Columns(cols);
+                        }
+                        let mut c = cols;
+                        if ui.add(DragValue::new(&mut c).range(20..=1000).speed(1)).changed() {
+                            wrap_cols = c;
+                            wrap = Wrap::Columns(c);
+                        }
+                        ui.label(t!("columnas"));
+                    });
+                    ui.weak(t!("Valor por defecto; cada archivo lo cambia con ↩ Ajuste."));
+                });
+                ui.end_row();
+                ui.strong(t!("Colores del texto"));
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut custom, t!("Usar colores propios (tienen prioridad sobre el tema)"));
+                    ui.add_enabled_ui(custom, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(t!("Fondo"));
+                            ui.color_edit_button_srgba(&mut bg);
+                            ui.add_space(16.0);
+                            ui.label(t!("Letra"));
+                            ui.color_edit_button_srgba(&mut fg);
+                        });
+                    });
+                });
+                ui.end_row();
+                fila(ui, t!("Resaltado"), None, |ui| {
+                    ui.add(Checkbox::new(&mut syn, t!("Colorear según el tipo de archivo (.java, .xml, .json, .py…) y los niveles de los logs")));
+                });
+            });
+
+            seccion(ui, t!("Edición y logs"));
+            rejilla(ui, "ajustes_edicion", |ui| {
+                fila(ui, t!("Deshacer"), None, |ui| {
+                    ui.add(DragValue::new(&mut undo_steps).range(1..=10_000).speed(1.0));
+                    ui.label(t!("pasos (se conservan también al guardar)"));
+                });
+                fila(ui, t!("Logs"), None, |ui| {
+                    ui.checkbox(&mut levels, t!("Fondo de color en las líneas ERROR y WARN (y sus trazas de pila)"));
+                });
+            });
+
+            ui.add_space(10.0);
+            ui.weak(t!("Vista previa:"));
+            let (pbg, pfg) = if custom { (bg, fg) } else { (ui.visuals().extreme_bg_color, ui.visuals().text_color()) };
+            Frame::NONE.fill(pbg).inner_margin(10.0).corner_radius(6.0).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let sample = [t!("2026-11-10 12:00:01 [ERROR] año, acción: java.io.IOException"), "0O 1lI {}[]() -> => != 日本"];
+                let lang = if syn { syntax::Lang::Log } else { syntax::Lang::Plain };
+                for line in sample {
+                    let mut spans = Vec::new();
+                    syntax::highlight(lang, line, syntax::State::Normal, &mut spans);
+                    let job = line_job(line, false, &crate::fonts::text_font(font), pfg, None, &spans, is_dark(pbg));
+                    ui.label(job);
+                }
+            });
+        });
+        match accion {
+            crate::estilo::Accion::BuscarActualizaciones => open_update = true,
+            crate::estilo::Accion::Restablecer => reset = true,
+            crate::estilo::Accion::Nada => {}
+        }
         self.show_settings = open;
         if open_update {
             self.open_updater(ctx);

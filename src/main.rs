@@ -13,6 +13,7 @@ mod document;
 mod filter;
 mod foldersearch;
 mod encoding;
+mod estilo;
 mod fonts;
 mod hexview;
 mod htmlview;
@@ -31,6 +32,15 @@ mod timestamp;
 mod update;
 
 use std::path::PathBuf;
+
+/// Identidad de buscador para los módulos comunes (logotipo, «Acerca de»…).
+pub const APP: icon::Marca = icon::Marca {
+    nombre: "buscador",
+    descripcion: || t!("Visor y editor de archivos de varios GB"),
+    letra: icon::LETRA_B,
+    color: icon::AZUL,
+    hecho_con: "Rust · egui / eframe",
+};
 
 fn main() -> eframe::Result {
     let mut files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
