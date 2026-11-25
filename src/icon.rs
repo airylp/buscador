@@ -29,7 +29,7 @@ pub struct Marca {
 pub const LETRA_B: [&str; 7] = ["####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."];
 pub const LETRA_C: [&str; 7] = [".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."];
 pub const LETRA_P: [&str; 7] = ["####.", "#...#", "#...#", "####.", "#....", "#....", "#...."];
-pub const LETRA_K: [&str; 7] = ["#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"];
+pub const LETRA_K: [&str; 7] = ["#...#", "#..##", "#.##.", "###..", "#.##.", "#..##", "#...#"];
 
 /// Colores de las aplicaciones: bien distintos entre sí.
 pub const AZUL: [u8; 3] = [0x2f, 0x7c, 0xf6];
@@ -38,7 +38,7 @@ pub const NARANJA: [u8; 3] = [0xf5, 0x7a, 0x14];
 pub const MORADO: [u8; 3] = [0x8e, 0x4b, 0xe6];
 
 /// Grosor extra de la letra: cada cubo crece esta fracción de celda por lado.
-const BOLD: f32 = 0.12;
+const BOLD: f32 = 0.18;
 
 /// Tamaño del ícono de la ventana: 512 px (nítido en Retina).
 const SIZE: usize = 512;
@@ -132,7 +132,8 @@ fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
         }
     }
 
-    // La letra: 5×7 cubos, extruidos hacia arriba a la derecha (proyección oblicua).
+    // La letra: 5×7 cubos, extruidos hacia arriba a la izquierda (proyección oblicua):
+    // se ve girada hacia la derecha, con las caras de arriba y de la izquierda.
     let (cols, rows) = (5.0, 7.0);
     let depth = 0.55; // desplazamiento de la cara trasera, en celdas
     // Letra gruesa: cada cubo mide 1 + 2·BOLD celdas y se solapa con sus vecinos
@@ -142,9 +143,9 @@ fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
     let lw = (cols + depth + 2.0 * BOLD) * cell;
     let lh = (rows + depth + 2.0 * BOLD) * cell;
     // Centrado óptico (la sombra queda abajo).
-    let ox = center - lw / 2.0 + BOLD * cell;
+    let ox = center - lw / 2.0 + (depth + BOLD) * cell;
     let oy = center - lh / 2.0 + (depth + BOLD) * cell - cell * 0.15;
-    let (dx, dy) = (depth * cell, -depth * cell);
+    let (dx, dy) = (-depth * cell, -depth * cell);
     let on = |r: isize, c: isize| {
         (0..7).contains(&r) && (0..5).contains(&c) && m.letra[r as usize].as_bytes()[c as usize] == b'#'
     };
@@ -169,12 +170,12 @@ fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
         [(col[0] * k).min(255.0), (col[1] * k).min(255.0), (col[2] * k).min(255.0)]
     };
 
-    // Sombra suave en el suelo blanco (abajo, algo desplazada).
-    let sh = [228.0, 230.0, 236.0];
+    // Sombra en el suelo blanco (abajo, algo desplazada a la izquierda).
+    let sh = [206.0, 209.0, 218.0];
     for r in 0..7isize {
         for c in 0..5isize {
             if on(r, c) {
-                let x = ox + (c as f32 - BOLD) * cell + cell * 0.30;
+                let x = ox + (c as f32 - BOLD) * cell - cell * 0.30;
                 let y = oy + (r as f32 - BOLD) * cell + cell * 0.30;
                 cv.fill(&[(x, y), (x + cs, y), (x + cs, y + cs), (x, y + cs)], &|_, _| sh);
             }
@@ -183,9 +184,10 @@ fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
     let top = shade(base, 1.38);
     let side = shade(base, 0.68);
     let front = shade(base, 1.0);
-    // 1) Caras de arriba y de la derecha (solo las que dan al exterior).
+    // 1) Caras de arriba y de la izquierda (solo las que dan al exterior), de
+    //    derecha a izquierda para que las más cercanas queden encima.
     for r in 0..7isize {
-        for c in 0..5isize {
+        for c in (0..5isize).rev() {
             if !on(r, c) {
                 continue;
             }
@@ -199,10 +201,10 @@ fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
                     tex(top, u, 1.0 - v, 1, r, c)
                 });
             }
-            if !on(r, c + 1) {
-                let p = [(x + cs, y), (x + cs + dx, y + dy), (x + cs + dx, y + cs + dy), (x + cs, y + cs)];
+            if !on(r, c - 1) {
+                let p = [(x, y), (x + dx, y + dy), (x + dx, y + cs + dy), (x, y + cs)];
                 cv.fill(&p, &|px, py| {
-                    let u = (px - x - cs) / dx;
+                    let u = (px - x) / dx;
                     let v = (py - y - u * dy) / cs;
                     tex(side, u, v, 2, r, c)
                 });
