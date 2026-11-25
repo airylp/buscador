@@ -370,6 +370,39 @@ pub fn boton_primario(texto: impl Into<String>) -> eframe::egui::Button<'static>
     eframe::egui::Button::new(RichText::new(texto.into()).color(Color32::WHITE).strong()).fill(c).stroke(Stroke::new(1.0, c.lerp_to_gamma(Color32::BLACK, 0.15))).corner_radius(6.0)
 }
 
+/// Eventos de portapapeles que faltan en macOS: egui solo convierte Cmd+C/X/V en
+/// copiar/cortar/pegar; Ctrl+C/X/V (costumbre de Windows y Linux) no hacían nada en
+/// las cajas de texto. Devuelve los eventos a añadir y si hay que pedir el pegado.
+pub fn ctrl_portapapeles(events: &[eframe::egui::Event], mac: bool) -> (Vec<eframe::egui::Event>, bool) {
+    use eframe::egui::{Event, Key};
+    let (mut extra, mut pegar) = (Vec::new(), false);
+    if !mac {
+        return (extra, pegar);
+    }
+    for e in events {
+        if let Event::Key { key, pressed: true, modifiers, .. } = e {
+            if modifiers.ctrl && !modifiers.mac_cmd && !modifiers.alt {
+                match key {
+                    Key::C => extra.push(Event::Copy),
+                    Key::X => extra.push(Event::Cut),
+                    Key::V => pegar = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    (extra, pegar)
+}
+
+/// Llamar desde `raw_input_hook`: en macOS, Ctrl+C/X/V también copian, cortan y pegan.
+pub fn portapapeles_mac(ctx: &Context, raw: &mut eframe::egui::RawInput) {
+    let (extra, pegar) = ctrl_portapapeles(&raw.events, cfg!(target_os = "macos"));
+    raw.events.extend(extra);
+    if pegar {
+        ctx.send_viewport_cmd(eframe::egui::ViewportCommand::RequestPaste);
+    }
+}
+
 /// Tipografía y retoques comunes a los dos temas. Llamar una vez al crear la app.
 pub fn aplicar(ctx: &Context) {
     let [r, g, b] = crate::APP.color;
