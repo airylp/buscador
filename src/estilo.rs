@@ -255,6 +255,16 @@ impl Paleta {
         Paleta::del_tema(ui.visuals().dark_mode)
     }
 
+    /// La paleta de un tema concreto (Sistema = la clara).
+    pub fn para(t: Tema) -> Paleta {
+        match t {
+            Tema::Sistema | Tema::Claro => Paleta::CLARA,
+            Tema::GrafitoClaro => Paleta::GRAFITO_CLARA,
+            Tema::Oscuro => Paleta::OSCURA,
+            Tema::GrafitoOscuro => Paleta::GRAFITO_OSCURA,
+        }
+    }
+
     pub fn del_tema(dark: bool) -> Paleta {
         match (dark, es_grafito()) {
             (true, false) => Paleta::OSCURA,
@@ -641,6 +651,20 @@ pub fn fila(ui: &mut Ui, etiqueta: &str, ayuda: Option<&str>, controles: impl Fn
     ui.end_row();
 }
 
+/// Como `fila`, pero para controles altos (varias líneas): se colocan de arriba
+/// abajo desde el borde superior de la fila, sin centrarse en vertical.
+pub fn fila_bloque(ui: &mut Ui, etiqueta: &str, ayuda: Option<&str>, controles: impl FnOnce(&mut Ui)) {
+    let p = Paleta::de(ui);
+    ui.with_layout(Layout::top_down(Align::Min), |ui| {
+        let r = ui.label(RichText::new(etiqueta).color(p.texto.lerp_to_gamma(p.apagado, 0.3)));
+        if let Some(a) = ayuda {
+            r.on_hover_text(a);
+        }
+    });
+    ui.with_layout(Layout::top_down(Align::Min), controles);
+    ui.end_row();
+}
+
 /// Fila «Idioma»: devuelve el elegido si cambió (cada app lo guarda a su modo).
 pub fn fila_idioma(ui: &mut Ui) -> Option<crate::i18n::Lang> {
     let mut cambio = None;
@@ -655,18 +679,94 @@ pub fn fila_idioma(ui: &mut Ui) -> Option<crate::i18n::Lang> {
     cambio
 }
 
-/// Fila «Tema»: cambia `tema` y lo aplica; devuelve true si cambió.
-pub fn fila_tema(ui: &mut Ui, tema: &mut Tema) -> bool {
-    let antes = *tema;
-    fila(ui, t!("Tema"), Some(t!("Grafito: paneles en otro gris y separaciones marcadas")), |ui| {
-        for t in Tema::TODOS {
-            ui.radio_value(tema, t, t.nombre());
+/// Miniatura de la ventana con una paleta: barra arriba, panel a la izquierda y zona de trabajo.
+fn miniatura_tema(painter: &eframe::egui::Painter, r: eframe::egui::Rect, p: &Paleta) {
+    use eframe::egui::{Rect, StrokeKind, pos2};
+    painter.rect_filled(r, 4.0, p.central);
+    let bar = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + 9.0));
+    let side = Rect::from_min_max(pos2(r.min.x, bar.max.y), pos2(r.min.x + r.width() * 0.3, r.max.y));
+    painter.rect_filled(bar, CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 }, p.fondo);
+    painter.rect_filled(side, CornerRadius { nw: 0, ne: 0, sw: 4, se: 0 }, p.fondo);
+    let linea = Stroke::new(1.0, p.borde);
+    painter.hline(r.x_range(), bar.max.y, linea);
+    painter.vline(side.max.x, side.y_range(), linea);
+    // «Texto»: rayas cortas en el panel y en la zona de trabajo.
+    for (k, w) in [0.7f32, 0.5, 0.6].into_iter().enumerate() {
+        let y = bar.max.y + 7.0 + k as f32 * 7.0;
+        painter.rect_filled(Rect::from_min_size(pos2(side.min.x + 4.0, y), vec2((side.width() - 8.0) * w, 3.0)), 1.0, p.apagado.gamma_multiply(0.7));
+        painter.rect_filled(Rect::from_min_size(pos2(side.max.x + 6.0, y), vec2((r.max.x - side.max.x - 12.0) * (w + 0.2), 3.0)), 1.0, p.texto.gamma_multiply(0.55));
+    }
+    painter.rect_stroke(r, 4.0, Stroke::new(1.0, p.borde_fuerte), StrokeKind::Inside);
+}
+
+const TARJETA_TEMA_ANCHO: f32 = 112.0;
+
+/// Una opción de tema: miniatura + nombre; la elegida, con borde del acento.
+fn tarjeta_tema(ui: &mut Ui, tema: &mut Tema, t: Tema) -> bool {
+    use eframe::egui::{Sense, StrokeKind};
+    let (w, h_img) = (TARJETA_TEMA_ANCHO, 46.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h_img + 26.0), Sense::click());
+    let elegida = *tema == t;
+    let img = eframe::egui::Rect::from_min_size(rect.min + vec2(0.0, 0.0), vec2(w, h_img));
+    let painter = ui.painter();
+    match t {
+        // Sistema: mitad clara y mitad oscura.
+        Tema::Sistema => {
+            let (izq, der) = img.split_left_right_at_fraction(0.5);
+            miniatura_tema(&painter.with_clip_rect(izq), img, &Paleta::CLARA);
+            miniatura_tema(&painter.with_clip_rect(der), img, &Paleta::OSCURA);
+        }
+        _ => miniatura_tema(painter, img, &Paleta::para(t)),
+    }
+    let p = Paleta::de(ui);
+    if elegida {
+        painter.rect_stroke(img.expand(2.0), 6.0, Stroke::new(2.0, acento()), StrokeKind::Outside);
+    } else if resp.hovered() {
+        painter.rect_stroke(img.expand(2.0), 6.0, Stroke::new(1.0, p.borde_fuerte), StrokeKind::Outside);
+    }
+    let color = if elegida { acento_texto(ui) } else { p.texto };
+    let font = eframe::egui::FontId::proportional(12.5);
+    painter.text(eframe::egui::pos2(img.center().x, img.max.y + 13.0), Align2::CENTER_CENTER, t.nombre(), font, color);
+    let clic = resp.on_hover_cursor(eframe::egui::CursorIcon::PointingHand).clicked();
+    if clic && !elegida {
+        *tema = t;
+    }
+    clic && !elegida
+}
+
+/// Opciones de tema en cuadrícula: los claros en una columna y los oscuros en
+/// otra; arriba la variante normal y debajo la «grafito». No aplica el tema.
+pub fn opciones_tema(ui: &mut Ui, tema: &mut Tema) -> bool {
+    // Sin Grid (dentro de la rejilla de Ajustes un Grid anidado se mide mal).
+    let mut cambio = false;
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = vec2(14.0, 10.0);
+        for fila_t in [[Some(Tema::Sistema), Some(Tema::Claro), Some(Tema::Oscuro)], [None, Some(Tema::GrafitoClaro), Some(Tema::GrafitoOscuro)]] {
+            ui.horizontal(|ui| {
+                for t in fila_t {
+                    match t {
+                        Some(t) => cambio |= tarjeta_tema(ui, tema, t),
+                        None => {
+                            ui.allocate_exact_size(vec2(TARJETA_TEMA_ANCHO, 1.0), eframe::egui::Sense::hover());
+                        }
+                    }
+                }
+            });
         }
     });
-    if *tema != antes {
+    cambio
+}
+
+/// Fila «Tema»: cambia `tema` y lo aplica; devuelve true si cambió.
+pub fn fila_tema(ui: &mut Ui, tema: &mut Tema) -> bool {
+    let mut cambio = false;
+    fila_bloque(ui, t!("Tema"), Some(t!("Grafito: paneles en otro gris y separaciones marcadas")), |ui| {
+        cambio = opciones_tema(ui, tema);
+    });
+    if cambio {
         aplicar_tema(ui.ctx(), *tema);
     }
-    *tema != antes
+    cambio
 }
 
 /// Ventana «Acerca de» común. `extra` añade filas propias a la rejilla (usar
