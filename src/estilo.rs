@@ -46,6 +46,13 @@ pub fn arrancar(nombre: &str, mut options: eframe::NativeOptions, app: eframe::A
     let glow = previo.is_some();
     options.renderer = if glow { eframe::Renderer::Glow } else { eframe::Renderer::Wgpu };
     std::panic::set_hook(Box::new(|info| error_fatal(&info.to_string())));
+    // Windows: si junto al .exe va Mesa (opengl32.dll), que dibuje con el procesador
+    // (llvmpipe) y no intente su controlador de DirectX 12, que ahí no habría.
+    #[cfg(windows)]
+    if std::env::var_os("GALLIUM_DRIVER").is_none() {
+        // SAFETY: al arrancar, antes de crear hilos.
+        unsafe { std::env::set_var("GALLIUM_DRIVER", "llvmpipe") };
+    }
     let r = eframe::run_native(nombre, options, app);
     if let Err(e) = &r {
         if !glow {
