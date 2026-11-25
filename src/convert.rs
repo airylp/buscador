@@ -586,7 +586,7 @@ impl Convert {
         }
         let (_, _, shown, bad) = self.shown.as_ref().unwrap();
         if *bad {
-            ui.colored_label(ui.visuals().warn_fg_color, tf!("No es texto {enc} válido: los bytes que no encajan se ven como �. Prueba «Ver como: Hex» u otro encoding.", enc = key.enc.label()));
+            ui.colored_label(ui.visuals().warn_fg_color, tf!("No es texto {enc} válido: los bytes que no encajan se sustituyen por el carácter de reemplazo (U+FFFD). Prueba «Ver como: Hex» u otro encoding.", enc = key.enc.label()));
         }
         let cut = shown.len() > SHOW_MAX || (decode && !as_text && o.bytes.len() > SHOW_MAX / 4);
         let mut view: &str = &shown[..crate::buffer::floor_char(shown, SHOW_MAX)];

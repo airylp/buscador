@@ -211,8 +211,6 @@ En vivo en pausa: hay cambios sin guardar (guárdalos o deshazlos)	Live paused: 
 En vivo: muestra lo que se va añadiendo al archivo (como tail -f) y baja hasta el final.\nSi el archivo se trunca o rota, se vuelve a abrir.	Live: shows what is appended to the file (like tail -f) and scrolls to the end.\nIf the file is truncated or rotated, it is reopened.	En direct : affiche ce qui est ajouté au fichier (comme tail -f) et descend jusqu'à la fin.\nSi le fichier est tronqué ou subit une rotation, il est rouvert.
 ⏸ En vivo	⏸ Live	⏸ En direct
 ⏵ En vivo	⏵ Live	⏵ En direct
-⚟ Filtro ({n})	⚟ Filter ({n})	⚟ Filtre ({n})
-⚟ Filtro	⚟ Filter	⚟ Filtre
 Vista filtrada: solo las líneas que cumplen las reglas (incluir / excluir), sin tocar el archivo (Ctrl+Shift+L)	Filtered view: only lines matching the rules (include / exclude), without touching the file (Ctrl+Shift+L)	Vue filtrée : seulement les lignes qui respectent les règles (inclure / exclure), sans toucher au fichier (Ctrl+Shift+L)
 📄 Detalle	📄 Detail	📄 Détail
 Panel con la línea actual completa, seleccionable	Panel with the full current line, selectable	Panneau avec la ligne actuelle complète, sélectionnable
@@ -665,7 +663,7 @@ Líneas de 76	76-character lines	Lignes de 76
 Mayúsculas	Uppercase	Majuscules
 Muestra el archivo en disco, sin los cambios sin guardar	Shows the file on disk, without the unsaved changes	Affiche le fichier sur le disque, sans les modifications non enregistrées
 No encontrado	Not found	Introuvable
-No es texto {enc} válido: los bytes que no encajan se ven como �. Prueba «Ver como: Hex» u otro encoding.	Not valid {enc} text: bytes that don't fit are shown as �. Try “View as: Hex” or another encoding.	Texte {enc} non valide : les octets qui ne conviennent pas s'affichent comme �. Essayez « Voir comme : Hex » ou un autre encodage.
+No es texto {enc} válido: los bytes que no encajan se sustituyen por el carácter de reemplazo (U+FFFD). Prueba «Ver como: Hex» u otro encoding.	Not valid {enc} text: bytes that don't fit are replaced by the replacement character (U+FFFD). Try “View as: Hex” or another encoding.	Texte {enc} non valide : les octets qui ne conviennent pas sont remplacés par le caractère de remplacement (U+FFFD). Essayez « Voir comme : Hex » ou un autre encodage.
 Orden de los bytes al leer números	Byte order when reading numbers	Ordre des octets pour lire les nombres
 Pone el resultado en lugar del texto seleccionado del archivo activo	Puts the result in place of the selected text in the active file	Met le résultat à la place du texte sélectionné du fichier actif
 Reemplazar la selección	Replace the selection	Remplacer la sélection
@@ -699,7 +697,6 @@ texto UTF-8	UTF-8 text	texte UTF-8
 {n} · desde {used} · tipo: {kind}	{n} · from {used} · type: {kind}	{n} · depuis {used} · type : {kind}
 · selección: {n} bytes (0x{a}–0x{b})	· selection: {n} bytes (0x{a}–0x{b})	· sélection : {n} octets (0x{a}–0x{b})
 ⇄ Convertir Base64 / hex…	⇄ Convert Base64 / hex…	⇄ Convertir Base64 / hex…
-⬡ Hex	⬡ Hex	⬡ Hex
 Amarillo	Yellow	Jaune
 Azul	Blue	Bleu
 Color	Color	Couleur
@@ -713,7 +710,7 @@ Sin color	No color	Sans couleur
 Turquesa	Teal	Turquoise
 Verde	Green	Vert
  · con BOM	 · with BOM	 · avec BOM
- · había bytes no válidos en el original: se escribieron como «�»	 · the original had invalid bytes: they were written as «�»	 · l’original contenait des octets non valides : écrits comme «�»
+ · había bytes no válidos en el original: se escribieron como el carácter de reemplazo (U+FFFD)	 · the original had invalid bytes: they were written as the replacement character (U+FFFD)	 · l’original contenait des octets non valides : écrits comme le caractère de remplacement (U+FFFD)
 Ahora: {enc} · {nl}{bom}	Now: {enc} · {nl}{bom}	Actuellement : {enc} · {nl}{bom}
 CRLF (Windows)	CRLF (Windows)	CRLF (Windows)
 Convertido a {enc} y guardado {name} ({len})	Converted to {enc} and saved {name} ({len})	Converti en {enc} et enregistré {name} ({len})
@@ -836,3 +833,11 @@ Regla	Rule	Règle
 Grafito claro	Light graphite	Graphite clair
 Grafito oscuro	Dark graphite	Graphite sombre
 Grafito: paneles en otro gris y separaciones marcadas	Graphite: panels in a different grey and clear separations	Graphite : panneaux d’un autre gris et séparations marquées
+Proyecto	Project	Projet
+Este equipo	This computer	Cet ordinateur
+Dibujo	Rendering	Rendu
+Copiar información	Copy information	Copier les informations
+Versión, sistema y carpetas, para pegarlos al reportar un problema	Version, system and folders, to paste when reporting a problem	Version, système et dossiers, à coller pour signaler un problème
+OpenGL (wgpu no disponible)	OpenGL (wgpu not available)	OpenGL (wgpu indisponible)
+Recuperación	Recovery	Récupération
+Java encontrados	Java found	Java trouvés

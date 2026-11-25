@@ -1015,7 +1015,7 @@ impl Tab {
             m += &tf!(" · {lossy} caracteres no representables se guardaron como «?»", lossy = w.lossy);
         }
         if w.invalid {
-            m += t!(" · había bytes no válidos en el original: se escribieron como «�»");
+            m += t!(" · había bytes no válidos en el original: se escribieron como el carácter de reemplazo (U+FFFD)");
         }
         Some(m)
     }
@@ -2191,8 +2191,9 @@ impl App {
         }
         clean_old_untitled();
         let fallbacks = crate::fonts::load_fallbacks();
-        cc.egui_ctx.set_fonts(crate::fonts::build(&settings.font, &fallbacks).0);
+        // Después de `apply_style` (que pone las fuentes comunes): estas parten de ellas.
         apply_style(&cc.egui_ctx);
+        cc.egui_ctx.set_fonts(crate::fonts::build(&settings.font, &fallbacks).0);
         crate::estilo::aplicar_tema(&cc.egui_ctx, settings.theme);
         apply_borders(&cc.egui_ctx, settings.borders);
         let mut app = App {
@@ -4537,8 +4538,10 @@ impl App {
         let label = crate::update::version_label();
         let version = crate::estilo::Version { etiqueta: &label, actualizable: crate::update::SUPPORTED };
         let config = crate::settings::config_dir().map(|d| d.display().to_string()).unwrap_or_default();
+        let recovery = crate::recovery::dir().map(|d| d.display().to_string()).unwrap_or_default();
         let accion = crate::estilo::acerca(ctx, &mut self.show_about, &logo, &version, |ui| {
             crate::estilo::fila_carpeta(ui, t!("Configuración"), &config);
+            crate::estilo::fila_carpeta(ui, t!("Recuperación"), &recovery);
         });
         if accion == crate::estilo::Accion::BuscarActualizaciones {
             self.open_updater(ctx);
@@ -6565,7 +6568,7 @@ impl App {
             let (pbg, pfg) = if custom { (bg, fg) } else { (ui.visuals().extreme_bg_color, ui.visuals().text_color()) };
             Frame::NONE.fill(pbg).inner_margin(10.0).corner_radius(6.0).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                let sample = [t!("2026-11-10 12:00:01 [ERROR] año, acción: java.io.IOException"), "0O 1lI {}[]() -> => != 日本"];
+                let sample = [t!("2026-11-10 12:00:01 [ERROR] año, acción: java.io.IOException"), "0O 1lI {}[]() -> => != 日本"]; // glifos: sistema (el japonés lo dibujan las fuentes del sistema que carga buscador)
                 let lang = if syn { syntax::Lang::Log } else { syntax::Lang::Plain };
                 for line in sample {
                     let mut spans = Vec::new();

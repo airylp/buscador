@@ -393,7 +393,7 @@ fn named_entity(n: &str) -> Option<char> {
         "larr" => '←',
         "uarr" => '↑',
         "darr" => '↓',
-        "check" => '✓',
+        "check" => '✔',
         "hearts" => '♥',
         "star" => '☆',
         _ => return None,

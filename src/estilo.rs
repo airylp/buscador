@@ -45,6 +45,11 @@ pub fn arrancar(nombre: &str, mut options: eframe::NativeOptions, app: eframe::A
     let previo = std::env::var(&var).ok().filter(|v| !v.is_empty());
     let glow = previo.is_some();
     options.renderer = if glow { eframe::Renderer::Glow } else { eframe::Renderer::Wgpu };
+    let _ = DIBUJO.set(match &previo {
+        None => "wgpu",
+        Some(v) if v == "1" => "OpenGL",
+        Some(_) => "alternativa",
+    });
     std::panic::set_hook(Box::new(|info| error_fatal(&info.to_string())));
     // Windows: si junto al .exe va Mesa (opengl32.dll), que dibuje con el procesador
     // (llvmpipe) y no intente su controlador de DirectX 12, que ahí no habría.
@@ -69,6 +74,20 @@ pub fn arrancar(nombre: &str, mut options: eframe::NativeOptions, app: eframe::A
         });
     }
     r
+}
+
+/// Con qué se dibuja la ventana (lo dice «Acerca de»).
+static DIBUJO: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Sistema y arquitectura para «Acerca de» y los reportes («Linux · x86_64»).
+pub fn sistema() -> String {
+    let os = match std::env::consts::OS {
+        "linux" => "Linux",
+        "macos" => "macOS",
+        "windows" => "Windows",
+        o => o,
+    };
+    format!("{os} · {}", std::env::consts::ARCH)
 }
 
 /// Informa de un error que impide seguir (consola, `<config>/error.log` y, en
@@ -517,8 +536,22 @@ pub fn pedir_pegado(ctx: &Context) {
     ctx.request_repaint();
 }
 
-/// Tipografía y retoques comunes a los dos temas. Llamar una vez al crear la app.
+/// Fuentes de egui con la monoespaciada (Hack) como último recurso también de la
+/// normal: tiene flechas y figuras (→ ← ● ▦ ▸ ⇄…) que la Ubuntu no trae, y así
+/// no salen como cuadros. Sin coste: Hack ya está cargada para la monoespaciada.
+pub fn fuentes_base() -> eframe::egui::FontDefinitions {
+    let mut defs = eframe::egui::FontDefinitions::default();
+    let prop = defs.families.entry(FontFamily::Proportional).or_default();
+    if !prop.iter().any(|f| f == "Hack") {
+        prop.push("Hack".into());
+    }
+    defs
+}
+
+/// Tipografía y retoques comunes a los dos temas. Llamar una vez al crear la app
+/// (si la app pone sus propias fuentes, que parta de `fuentes_base` y las ponga después).
 pub fn aplicar(ctx: &Context) {
+    ctx.set_fonts(fuentes_base());
     let [r, g, b] = crate::APP.color;
     for theme in [Theme::Dark, Theme::Light] {
         ctx.style_mut_of(theme, |s| {
@@ -782,69 +815,105 @@ pub fn fila_tema(ui: &mut Ui, tema: &mut Tema) -> bool {
     cambio
 }
 
-/// Ventana «Acerca de» común. `extra` añade filas propias a la rejilla (usar
-/// `fila_dato`). Devuelve `BuscarActualizaciones` si se pulsó ese botón.
+thread_local! {
+    /// Filas propias de la app en «Acerca de» (para «Copiar información»).
+    static ACERCA_FILAS: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Ventana «Acerca de» común: cabecera con logo, versión y descripción; una
+/// tarjeta con autor, enlaces y licencia; otra con los datos de este equipo
+/// (sistema, dibujo y lo que añada la app en `extra` con `fila_dato` /
+/// `fila_carpeta`); «Copiar información» para reportar problemas y «Buscar
+/// actualizaciones…». Devuelve `BuscarActualizaciones` si se pulsó ese botón.
 pub fn acerca(ctx: &Context, abierta: &mut bool, logo: &TextureHandle, version: &Version, extra: impl FnOnce(&mut Ui)) -> Accion {
     if !*abierta {
         return Accion::Nada;
     }
     let mut accion = Accion::Nada;
     let mut cerrar = false;
-    let link = |ui: &mut Ui, text: &str, url: &str| {
+    let app = &crate::APP;
+    let enlace = |ui: &mut Ui, text: &str, url: &str| {
         if ui.link(text).on_hover_text(url).clicked() {
             abrir(url);
         }
     };
-    let app = &crate::APP;
     let modal = Modal::new(Id::NULL.with("acerca_comun")).show(ctx, |ui| {
-        ui.set_width(480.0);
+        ui.set_width(520.0);
+        let p = Paleta::de(ui);
+        // Cabecera.
         ui.horizontal(|ui| {
             ui.add(Image::new(logo).fit_to_exact_size(vec2(72.0, 72.0)));
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             ui.vertical(|ui| {
                 ui.add_space(4.0);
-                ui.label(RichText::new(app.nombre).heading().strong().color(acento_texto(ui)));
-                ui.label(tf!("Versión {v}", v = version.etiqueta));
-                ui.label(RichText::new((app.descripcion)()).weak());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(app.nombre).size(24.0).strong().color(acento_texto(ui)));
+                    insignia(ui, &tf!("Versión {v}", v = version.etiqueta), acento_texto(ui));
+                });
+                ui.label(RichText::new((app.descripcion)()).color(p.texto));
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    enlace(ui, t!("Versiones"), &repo_url("/releases"));
+                    ui.label(RichText::new("·").color(p.apagado));
+                    enlace(ui, t!("Reportar un problema"), &repo_url("/issues/new"));
+                    ui.label(RichText::new("·").color(p.apagado));
+                    enlace(ui, t!("Código fuente"), &repo_url(""));
+                });
             });
         });
-        ui.add_space(8.0);
-        ui.separator();
-        Grid::new("acerca-rejilla").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            ui.label(RichText::new(t!("Autor")).strong());
-            ui.horizontal(|ui| {
-                ui.label(GITHUB_NAME);
-                link(ui, &format!("@{GITHUB_USER}"), &format!("https://github.com/{GITHUB_USER}"));
+        ui.add_space(12.0);
+        // Mismo ancho para las dos tarjetas; sin Grid, para que las rutas largas se recorten.
+        let ancho = ui.available_width() - 28.0;
+        let rejilla_acerca = |ui: &mut Ui, _id: &str, filas: &mut dyn FnMut(&mut Ui)| {
+            Frame::new().fill(p.central).stroke(Stroke::new(1.0, p.borde)).corner_radius(8.0).inner_margin(eframe::egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+                ui.set_width(ancho);
+                ui.spacing_mut().item_spacing.y = 8.0;
+                filas(ui);
             });
-            ui.end_row();
-            ui.label(RichText::new("GitHub").strong());
-            link(ui, &format!("github.com/{GITHUB_USER}/{}", app.nombre), &repo_url(""));
-            ui.end_row();
-            ui.label(RichText::new(t!("Sitio web")).strong());
-            link(ui, GITHUB_BLOG.trim_start_matches("https://"), GITHUB_BLOG);
-            ui.end_row();
-            ui.label(RichText::new(t!("Licencia")).strong());
-            ui.horizontal(|ui| {
-                ui.label(tf!("MIT · © 2026 {user}", user = GITHUB_USER));
-                link(ui, t!("ver"), &repo_url("/blob/main/LICENSE"));
+        };
+        seccion(ui, t!("Proyecto"));
+        rejilla_acerca(ui, "acerca_proyecto", &mut |ui| {
+            fila_acerca(ui, t!("Autor"), |ui| {
+                ui.label(RichText::new(GITHUB_NAME).color(p.texto));
+                enlace(ui, &format!("@{GITHUB_USER}"), &format!("https://github.com/{GITHUB_USER}"));
             });
-            ui.end_row();
-            ui.label(RichText::new(t!("Hecho con")).strong());
-            ui.label(app.hecho_con);
-            ui.end_row();
-            extra(ui);
+            fila_acerca(ui, "GitHub", |ui| enlace(ui, &format!("github.com/{GITHUB_USER}/{}", app.nombre), &repo_url("")));
+            fila_acerca(ui, t!("Sitio web"), |ui| enlace(ui, GITHUB_BLOG.trim_start_matches("https://"), GITHUB_BLOG));
+            fila_acerca(ui, t!("Licencia"), |ui| {
+                ui.label(RichText::new(tf!("MIT · © 2026 {user}", user = GITHUB_USER)).color(p.texto));
+                enlace(ui, t!("ver"), &repo_url("/blob/main/LICENSE"));
+            });
+            fila_acerca(ui, t!("Hecho con"), |ui| {
+                ui.add(Label::new(RichText::new(app.hecho_con).color(p.texto)).truncate());
+            });
         });
-        ui.separator();
+        seccion(ui, t!("Este equipo"));
+        ACERCA_FILAS.with(|f| f.borrow_mut().clear());
+        let mut extra = Some(extra);
+        rejilla_acerca(ui, "acerca_equipo", &mut |ui| {
+            fila_dato(ui, t!("Sistema"), &sistema());
+            let dibujo = match DIBUJO.get().copied().unwrap_or("wgpu") {
+                "alternativa" => t!("OpenGL (wgpu no disponible)"),
+                d => d,
+            };
+            fila_dato(ui, t!("Dibujo"), dibujo);
+            if let Some(f) = extra.take() {
+                f(ui);
+            }
+        });
+        ui.add_space(12.0);
         ui.horizontal(|ui| {
-            link(ui, t!("Versiones"), &repo_url("/releases"));
-            ui.label("·");
-            link(ui, t!("Reportar un problema"), &repo_url("/issues/new"));
-            ui.label("·");
-            link(ui, t!("Código fuente"), &repo_url(""));
-        });
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if version.actualizable && ui.button(t!("Buscar actualizaciones…")).clicked() {
+            if ui.add(crate::icons::IconButton::new(crate::icons::Icon::Copy, crate::icons::Tone::File).label(t!("Copiar información"))).on_hover_text(t!("Versión, sistema y carpetas, para pegarlos al reportar un problema")).clicked() {
+                let mut txt = format!("{} {}\n", app.nombre, version.etiqueta);
+                ACERCA_FILAS.with(|f| {
+                    for (k, v) in f.borrow().iter() {
+                        txt.push_str(&format!("{k}: {v}\n"));
+                    }
+                });
+                ui.ctx().copy_text(txt);
+            }
+            if version.actualizable && ui.add(boton_primario(t!("Buscar actualizaciones…"))).clicked() {
                 accion = Accion::BuscarActualizaciones;
                 cerrar = true;
             }
@@ -861,23 +930,41 @@ pub fn acerca(ctx: &Context, abierta: &mut bool, logo: &TextureHandle, version: 
     accion
 }
 
+/// Fila de las tarjetas de «Acerca de»: etiqueta de ancho fijo y el valor al lado.
+fn fila_acerca(ui: &mut Ui, etiqueta: &str, valor: impl FnOnce(&mut Ui)) {
+    let p = Paleta::de(ui);
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(vec2(120.0, 18.0), Layout::left_to_right(Align::Center), |ui| {
+            ui.set_min_width(120.0);
+            ui.label(RichText::new(etiqueta).color(p.texto.lerp_to_gamma(p.apagado, 0.45)));
+        });
+        valor(ui);
+    });
+}
+
 /// Fila de «Acerca de» con una ruta y un botón para abrirla.
 pub fn fila_carpeta(ui: &mut Ui, etiqueta: &str, ruta: &str) {
-    ui.label(RichText::new(etiqueta).strong());
-    ui.horizontal(|ui| {
-        ui.add(Label::new(RichText::new(ruta).weak()).truncate());
-        if !ruta.is_empty() && ui.small_button("🗁").on_hover_text(t!("Abrir carpeta")).clicked() {
-            abrir(ruta);
-        }
+    ACERCA_FILAS.with(|f| f.borrow_mut().push((etiqueta.to_string(), ruta.to_string())));
+    fila_acerca(ui, etiqueta, |ui| {
+        let p = Paleta::de(ui);
+        // El botón a la derecha y la ruta, recortada, en lo que quede.
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if !ruta.is_empty() && ui.add(crate::icons::IconButton::new(crate::icons::Icon::Open, crate::icons::Tone::File).small()).on_hover_text(t!("Abrir carpeta")).clicked() {
+                abrir(ruta);
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add(Label::new(RichText::new(ruta).monospace().size(11.5).color(p.apagado)).truncate()).on_hover_text(ruta);
+            });
+        });
     });
-    ui.end_row();
 }
 
 /// Fila de «Acerca de» con un dato.
 pub fn fila_dato(ui: &mut Ui, etiqueta: &str, valor: &str) {
-    ui.label(RichText::new(etiqueta).strong());
-    ui.add(Label::new(valor).truncate());
-    ui.end_row();
+    ACERCA_FILAS.with(|f| f.borrow_mut().push((etiqueta.to_string(), valor.to_string())));
+    fila_acerca(ui, etiqueta, |ui| {
+        ui.add(Label::new(RichText::new(valor).color(Paleta::de(ui).texto)).truncate()).on_hover_text(valor);
+    });
 }
 
 // ------------------------------------------------------------ actualizar
@@ -1294,4 +1381,102 @@ pub fn etiqueta(ui: &mut Ui, icono: crate::icons::Icon, texto: impl Into<eframe:
         ui.add(Label::new(texto).sense(Sense::click()))
     })
     .inner
+}
+
+#[cfg(test)]
+mod pruebas_glifos {
+    /// Caracteres que se muestran (entre comillas en el código, antes de las
+    /// pruebas, y en las traducciones), con el primer sitio donde aparecen.
+    fn mostrados() -> std::collections::BTreeMap<char, String> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = std::collections::BTreeMap::new();
+        let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+        files.sort();
+        for p in files {
+            let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            let Ok(text) = std::fs::read_to_string(&p) else { continue };
+            for (n, line) in text.lines().enumerate() {
+                let mut found = |c: char| {
+                    if !c.is_ascii() {
+                        out.entry(c).or_insert_with(|| format!("{name}:{}", n + 1));
+                    }
+                };
+                match ext {
+                    "tsv" => line.chars().for_each(&mut found),
+                    "rs" => {
+                        if line.starts_with("#[cfg(test)]") {
+                            break;
+                        }
+                        let t = line.trim_start();
+                        // «glifos: sistema»: lo dibujan las fuentes del sistema (p. ej. japonés).
+                        if t.starts_with("//") || line.contains("glifos: sistema") {
+                            continue;
+                        }
+                        let cs: Vec<char> = line.chars().collect();
+                        let mut in_str = false;
+                        let mut i = 0;
+                        while i < cs.len() {
+                            let c = cs[i];
+                            if in_str {
+                                if c == '\\' {
+                                    i += 2;
+                                    continue;
+                                }
+                                if c == '"' {
+                                    in_str = false;
+                                } else {
+                                    found(c);
+                                }
+                            } else if c == '"' {
+                                in_str = true;
+                            } else if c == '/' && cs.get(i + 1) == Some(&'/') {
+                                break;
+                            } else if c == '\'' && cs.get(i + 2) == Some(&'\'') {
+                                found(cs[i + 1]);
+                            }
+                            i += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
+    /// Todo lo que se muestra existe en las fuentes de egui (si no, sale un cuadro).
+    #[test]
+    fn todos_los_glifos_existen() {
+        use eframe::egui::{Context, FontFamily, RawInput};
+        let ctx = Context::default();
+        ctx.set_fonts(super::fuentes_base());
+        let _ = ctx.run_ui(RawInput::default(), |_| {});
+        let hay: std::collections::BTreeSet<char> = ctx.fonts_mut(|f| f.characters(&FontFamily::Proportional).keys().copied().collect());
+        assert!(hay.len() > 500, "no se cargaron las fuentes ({} caracteres)", hay.len());
+        let faltan: Vec<String> = mostrados()
+            .into_iter()
+            .filter(|(c, _)| !c.is_whitespace() && !hay.contains(c))
+            .map(|(c, sitio)| format!("{c} (U+{:04X}) en {sitio}", c as u32))
+            .collect();
+        assert!(faltan.is_empty(), "caracteres sin glifo (salen como cuadros):\n{}", faltan.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod pruebas_glifos_candidatos {
+    /// Ayuda para elegir reemplazos: `GLIFOS="●•→" cargo test glifos_candidatos -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn glifos_candidatos() {
+        use eframe::egui::{Context, FontFamily, RawInput};
+        let ctx = Context::default();
+        ctx.set_fonts(super::fuentes_base());
+        let _ = ctx.run_ui(RawInput::default(), |_| {});
+        let prop: std::collections::BTreeSet<char> = ctx.fonts_mut(|f| f.characters(&FontFamily::Proportional).keys().copied().collect());
+        let mono: std::collections::BTreeSet<char> = ctx.fonts_mut(|f| f.characters(&FontFamily::Monospace).keys().copied().collect());
+        for c in std::env::var("GLIFOS").unwrap_or_default().chars() {
+            println!("{c} U+{:04X} proporcional={} mono={}", c as u32, prop.contains(&c), mono.contains(&c));
+        }
+    }
 }

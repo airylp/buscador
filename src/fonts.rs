@@ -119,7 +119,7 @@ pub fn load_fallbacks() -> Vec<(String, Arc<FontData>)> {
 /// Definiciones de fuentes con `choice` como fuente del texto. Si no se puede
 /// cargar, se usa la predeterminada (y se devuelve `false`).
 pub fn build(choice: &str, fallbacks: &[(String, Arc<FontData>)]) -> (FontDefinitions, bool) {
-    let mut defs = FontDefinitions::default();
+    let mut defs = crate::estilo::fuentes_base();
     for (name, data) in fallbacks {
         defs.font_data.insert(name.clone(), data.clone());
         for fam in [FontFamily::Monospace, FontFamily::Proportional] {
