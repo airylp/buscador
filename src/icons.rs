@@ -1161,16 +1161,17 @@ pub struct IconButton {
     tone: Tone,
     small: bool,
     framed: bool,
+    primary: bool,
 }
 
 impl IconButton {
     pub fn new(icon: Icon, tone: Tone) -> Self {
-        IconButton { icon: Some(icon), text: None, selected: false, tone, small: false, framed: false }
+        IconButton { icon: Some(icon), text: None, selected: false, tone, small: false, framed: false, primary: false }
     }
 
     /// Solo texto (p. ej. «Aa», «.*»), con el mismo aspecto que los demás.
     pub fn text_only(text: impl Into<String>, tone: Tone) -> Self {
-        IconButton { icon: None, text: Some(text.into()), selected: false, tone, small: false, framed: false }
+        IconButton { icon: None, text: Some(text.into()), selected: false, tone, small: false, framed: false, primary: false }
     }
 
     pub fn label(mut self, text: impl Into<String>) -> Self {
@@ -1187,6 +1188,12 @@ impl IconButton {
     /// Con fondo y borde siempre visibles (botones grandes, p. ej. la bienvenida).
     pub fn framed(mut self) -> Self {
         self.framed = true;
+        self
+    }
+
+    /// Acción principal: relleno con el color de la app, ícono y letra en blanco.
+    pub fn primary(mut self) -> Self {
+        self.primary = true;
         self
     }
 
@@ -1224,7 +1231,12 @@ impl Widget for IconButton {
         if ui.is_rect_visible(rect) {
             let v = ui.visuals();
             let radius = CornerRadius::same(if self.small { 4 } else { 6 });
-            if self.selected {
+            let primary = self.primary && enabled;
+            if primary {
+                let c = crate::estilo::acento();
+                let f = if resp.is_pointer_button_down_on() { c.lerp_to_gamma(Color32::BLACK, 0.25) } else if resp.hovered() { c.lerp_to_gamma(Color32::BLACK, 0.12) } else { c };
+                ui.painter().rect(rect, radius, f, Stroke::new(1.0, c.lerp_to_gamma(Color32::BLACK, 0.2)), StrokeKind::Inside);
+            } else if self.selected {
                 ui.painter().rect(rect, radius, tint.gamma_multiply(if v.dark_mode { 0.22 } else { 0.16 }), Stroke::new(1.0, tint.gamma_multiply(0.7)), StrokeKind::Inside);
             } else if enabled && (resp.hovered() || resp.has_focus()) {
                 let f = if resp.is_pointer_button_down_on() { v.widgets.active.weak_bg_fill } else { v.widgets.hovered.weak_bg_fill };
@@ -1240,11 +1252,13 @@ impl Widget for IconButton {
                 // Al pulsar, el ícono «se hunde» un píxel.
                 let down = if enabled && resp.is_pointer_button_down_on() { 1.0 } else { 0.0 };
                 let r = Rect::from_center_size(pos2(x + s / 2.0, rect.center().y + down), Vec2::splat(s));
-                paint_look(ui.painter(), r, icon, if enabled { Look::Color } else { Look::Disabled });
+                paint_look(ui.painter(), r, icon, if primary { Look::Tint(Color32::WHITE) } else if enabled { Look::Color } else { Look::Disabled });
                 x += s + gap;
             }
             if let Some(g) = galley {
-                let tc = if !enabled {
+                let tc = if primary {
+                    Color32::WHITE
+                } else if !enabled {
                     v.weak_text_color().gamma_multiply(0.7)
                 } else if self.selected {
                     v.strong_text_color()

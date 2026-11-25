@@ -237,7 +237,8 @@ pub fn insignia(ui: &mut Ui, texto: &str, color: Color32) -> eframe::egui::Respo
         .fill(color.gamma_multiply(if ui.visuals().dark_mode { 0.22 } else { 0.14 }))
         .corner_radius(9.0)
         .inner_margin(eframe::egui::Margin::symmetric(8, 2))
-        .show(ui, |ui| ui.label(RichText::new(texto).small().strong().color(color)))
+        // Recortada si no cabe (p. ej. en una barra que se queda sin sitio).
+        .show(ui, |ui| ui.add(Label::new(RichText::new(texto).small().strong().color(color)).truncate()))
         .inner
 }
 
@@ -413,7 +414,7 @@ pub fn seccion(ui: &mut Ui, titulo: &str) {
     ui.add_space(2.0);
 }
 
-fn acento_texto(ui: &Ui) -> Color32 {
+pub fn acento_texto(ui: &Ui) -> Color32 {
     let c = acento();
     if ui.visuals().dark_mode { c.lerp_to_gamma(Color32::WHITE, 0.25) } else { c.lerp_to_gamma(Color32::BLACK, 0.15) }
 }
