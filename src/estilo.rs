@@ -107,6 +107,190 @@ pub fn acento() -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
+/// Colores de base al estilo de Tailwind (grises «zinc»): todo es una
+/// constante de color; no cuesta memoria porque egui dibuja cada fotograma.
+#[derive(Clone, Copy)]
+pub struct Paleta {
+    /// Fondo de los paneles.
+    pub fondo: Color32,
+    /// Fondo de tarjetas y ventanas.
+    pub tarjeta: Color32,
+    /// Fondo de campos de texto y bloques de código.
+    pub campo: Color32,
+    pub codigo: Color32,
+    pub borde: Color32,
+    pub borde_fuerte: Color32,
+    pub texto: Color32,
+    pub apagado: Color32,
+}
+
+const fn hex(v: u32) -> Color32 {
+    Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
+impl Paleta {
+    pub const CLARA: Paleta = Paleta {
+        fondo: hex(0xfafafa),        // zinc-50
+        tarjeta: hex(0xffffff),      // white
+        campo: hex(0xffffff),        // white
+        codigo: hex(0xf4f4f5),       // zinc-100
+        borde: hex(0xe4e4e7),        // zinc-200
+        borde_fuerte: hex(0xd4d4d8), // zinc-300
+        texto: hex(0x18181b),        // zinc-900
+        apagado: hex(0x71717a),      // zinc-500
+    };
+    pub const OSCURA: Paleta = Paleta {
+        fondo: hex(0x18181b),        // zinc-900
+        tarjeta: hex(0x1f1f23),      // entre zinc-900 y zinc-800
+        campo: hex(0x0f0f11),        // casi zinc-950
+        codigo: hex(0x111113),
+        borde: hex(0x2e2e33),        // zinc-800 algo más claro
+        borde_fuerte: hex(0x3f3f46), // zinc-700
+        texto: hex(0xf4f4f5),        // zinc-100
+        apagado: hex(0xa1a1aa),      // zinc-400
+    };
+
+    pub fn de(ui: &Ui) -> Paleta {
+        if ui.visuals().dark_mode { Paleta::OSCURA } else { Paleta::CLARA }
+    }
+}
+
+/// Fondos, bordes, sombras y estados de los controles con la paleta.
+fn paleta_tailwind(v: &mut eframe::egui::Visuals, dark: bool) {
+    use eframe::egui::Shadow;
+    let p = if dark { Paleta::OSCURA } else { Paleta::CLARA };
+    v.panel_fill = p.fondo;
+    v.window_fill = p.tarjeta;
+    v.extreme_bg_color = p.campo;
+    v.text_edit_bg_color = Some(p.campo);
+    v.code_bg_color = p.codigo;
+    v.faint_bg_color = if dark { hex(0x1c1c20) } else { hex(0xf4f4f5) };
+    v.window_stroke = Stroke::new(1.0, p.borde);
+    // Sombras cortas y suaves (las grandes cuestan más triángulos por fotograma).
+    v.window_shadow = Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(if dark { 90 } else { 28 }) };
+    v.popup_shadow = Shadow { offset: [0, 2], blur: 8, spread: 0, color: Color32::from_black_alpha(if dark { 80 } else { 22 }) };
+    v.override_text_color = None;
+    let w = &mut v.widgets;
+    // Sin interacción (marcos, separadores).
+    w.noninteractive.bg_fill = p.fondo;
+    w.noninteractive.weak_bg_fill = p.fondo;
+    w.noninteractive.bg_stroke = Stroke::new(1.0, p.borde);
+    w.noninteractive.fg_stroke = Stroke::new(1.0, p.texto);
+    // Botones y casillas en reposo: como un botón «secundario» (fondo de tarjeta y borde).
+    let (inactivo, encima, pulsado) = if dark { (hex(0x27272a), hex(0x323238), hex(0x3f3f46)) } else { (hex(0xffffff), hex(0xf4f4f5), hex(0xe4e4e7)) };
+    w.inactive.weak_bg_fill = inactivo;
+    w.inactive.bg_fill = inactivo;
+    w.inactive.bg_stroke = Stroke::new(1.0, p.borde);
+    w.inactive.fg_stroke = Stroke::new(1.0, p.texto);
+    w.hovered.weak_bg_fill = encima;
+    w.hovered.bg_fill = encima;
+    w.hovered.bg_stroke = Stroke::new(1.0, p.borde_fuerte);
+    w.hovered.fg_stroke = Stroke::new(1.5, p.texto);
+    w.hovered.expansion = 0.0;
+    w.active.weak_bg_fill = pulsado;
+    w.active.bg_fill = pulsado;
+    w.active.bg_stroke = Stroke::new(1.0, p.borde_fuerte);
+    w.active.fg_stroke = Stroke::new(1.5, p.texto);
+    w.active.expansion = 0.0;
+    w.open.weak_bg_fill = encima;
+    w.open.bg_fill = encima;
+    w.open.bg_stroke = Stroke::new(1.0, p.borde_fuerte);
+    w.open.fg_stroke = Stroke::new(1.0, p.texto);
+}
+
+// ---------------------------------------------------------------- componentes
+
+/// Tarjeta con título pequeño en mayúsculas (como `rounded-lg border p-3`).
+pub fn tarjeta(ui: &mut Ui, titulo: &str, contenido: impl FnOnce(&mut Ui)) {
+    let p = Paleta::de(ui);
+    Frame::new().fill(p.tarjeta).stroke(Stroke::new(1.0, p.borde)).corner_radius(10.0).inner_margin(eframe::egui::Margin::same(12)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        if !titulo.is_empty() {
+            ui.label(RichText::new(titulo.to_uppercase()).size(10.5).strong().color(p.apagado).extra_letter_spacing(0.8));
+            ui.add_space(8.0);
+        }
+        contenido(ui);
+    });
+    ui.add_space(10.0);
+}
+
+/// Campo de solo lectura: etiqueta pequeña y apagada encima del valor (seleccionable).
+pub fn campo(ui: &mut Ui, etiqueta: &str, valor: &str) {
+    let p = Paleta::de(ui);
+    ui.label(RichText::new(etiqueta).small().color(p.apagado));
+    ui.add(Label::new(RichText::new(valor).color(p.texto)).wrap().selectable(true));
+    ui.add_space(6.0);
+}
+
+/// Texto en monoespaciada sobre fondo gris (como `<code>`).
+pub fn codigo(ui: &mut Ui, texto: &str) {
+    let p = Paleta::de(ui);
+    Frame::new().fill(p.codigo).corner_radius(6.0).inner_margin(eframe::egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.add(Label::new(RichText::new(texto).monospace().size(11.5).color(p.texto)).wrap().selectable(true));
+    });
+}
+
+/// Insignia redondeada con fondo muy suave de su color (`rounded-full bg-x-100 text-x-700`).
+pub fn insignia(ui: &mut Ui, texto: &str, color: Color32) -> eframe::egui::Response {
+    Frame::new()
+        .fill(color.gamma_multiply(if ui.visuals().dark_mode { 0.22 } else { 0.14 }))
+        .corner_radius(9.0)
+        .inner_margin(eframe::egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| ui.label(RichText::new(texto).small().strong().color(color)))
+        .inner
+}
+
+/// Etiqueta con borde (nombres, valores cortos).
+pub fn chip(ui: &mut Ui, texto: &str) {
+    let p = Paleta::de(ui);
+    Frame::new().fill(p.codigo).stroke(Stroke::new(1.0, p.borde)).corner_radius(6.0).inner_margin(eframe::egui::Margin::symmetric(6, 2)).show(ui, |ui| {
+        ui.add(Label::new(RichText::new(texto).monospace().size(11.5).color(p.texto)).selectable(true));
+    });
+}
+
+/// Colores de los avisos: (texto e ícono, fondo suave).
+pub fn color_tipo(ui: &Ui, tipo: Tipo) -> Color32 {
+    let dark = ui.visuals().dark_mode;
+    match (tipo, dark) {
+        (Tipo::Info, false) => hex(0x2563eb),  // blue-600
+        (Tipo::Info, true) => hex(0x60a5fa),   // blue-400
+        (Tipo::Exito, false) => hex(0x16a34a), // green-600
+        (Tipo::Exito, true) => hex(0x4ade80),  // green-400
+        (Tipo::Aviso, false) => hex(0xd97706), // amber-600
+        (Tipo::Aviso, true) => hex(0xfbbf24),  // amber-400
+        (Tipo::Error, false) => hex(0xdc2626), // red-600
+        (Tipo::Error, true) => hex(0xf87171),  // red-400
+    }
+}
+
+/// Recuadro de alerta: fondo suave, raya a la izquierda e ícono (`border-l-4 bg-x-50`).
+pub fn alerta(ui: &mut Ui, tipo: Tipo, texto: &str) {
+    let c = color_tipo(ui, tipo);
+    let icono = match tipo {
+        Tipo::Info => crate::icons::Icon::Info,
+        Tipo::Exito => crate::icons::Icon::Check,
+        Tipo::Aviso => crate::icons::Icon::Warning,
+        Tipo::Error => crate::icons::Icon::Error,
+    };
+    let r = Frame::new().fill(c.gamma_multiply(if ui.visuals().dark_mode { 0.14 } else { 0.08 })).corner_radius(6.0).inner_margin(eframe::egui::Margin { left: 12, right: 10, top: 8, bottom: 8 }).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_top(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), eframe::egui::Sense::hover());
+            crate::icons::paint(ui.painter(), rect, icono);
+            ui.add(Label::new(RichText::new(texto).color(Paleta::de(ui).texto)).wrap().selectable(true));
+        });
+    });
+    let rect = r.response.rect;
+    ui.painter().rect_filled(eframe::egui::Rect::from_min_max(rect.min, eframe::egui::pos2(rect.min.x + 3.0, rect.max.y)), CornerRadius { nw: 6, sw: 6, ne: 0, se: 0 }, c);
+}
+
+/// Botón principal: relleno con el acento de la app y letra blanca (`bg-x-600 text-white`).
+pub fn boton_primario(texto: impl Into<String>) -> eframe::egui::Button<'static> {
+    let c = acento();
+    eframe::egui::Button::new(RichText::new(texto.into()).color(Color32::WHITE).strong()).fill(c).stroke(Stroke::new(1.0, c.lerp_to_gamma(Color32::BLACK, 0.15))).corner_radius(6.0)
+}
+
 /// Tipografía y retoques comunes a los dos temas. Llamar una vez al crear la app.
 pub fn aplicar(ctx: &Context) {
     let [r, g, b] = crate::APP.color;
@@ -136,6 +320,7 @@ pub fn aplicar(ctx: &Context) {
             let sel = if dark { Color32::from_rgb(k(r, 0.55), k(g, 0.55), k(b, 0.55)) } else { Color32::from_rgb(mix_white(r, 0.62), mix_white(g, 0.62), mix_white(b, 0.62)) };
             s.visuals.selection.bg_fill = sel;
             s.visuals.selection.stroke = Stroke::new(1.0, if dark { Color32::from_rgb(mix_white(r, 0.55), mix_white(g, 0.55), mix_white(b, 0.55)) } else { Color32::from_rgb(k(r, 0.55), k(g, 0.55), k(b, 0.55)) });
+            paleta_tailwind(&mut s.visuals, dark);
             s.visuals.hyperlink_color = if dark { Color32::from_rgb(mix_white(r, 0.35), mix_white(g, 0.35), mix_white(b, 0.35)) } else { Color32::from_rgb(k(r, 0.8), k(g, 0.8), k(b, 0.8)) };
         });
     }
