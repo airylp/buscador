@@ -126,18 +126,79 @@ pub struct Paleta {
     pub central: Color32,
 }
 
-/// «Grafito claro»: variante del tema claro con paneles grises y bordes marcados.
+/// Temas «grafito»: paneles en otro gris que la zona de trabajo y bordes marcados.
 static GRAFITO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Activa o quita «Grafito claro» (cambia los colores del tema claro).
-pub fn grafito(ctx: &Context, activo: bool) {
-    if GRAFITO.swap(activo, std::sync::atomic::Ordering::Relaxed) != activo {
-        ctx.style_mut_of(Theme::Light, |s| paleta_tailwind(&mut s.visuals, false));
-    }
-}
 
 pub fn es_grafito() -> bool {
     GRAFITO.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Tema elegido en «Ajustes» (igual en las cuatro apps).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Tema {
+    #[default]
+    Sistema,
+    Claro,
+    GrafitoClaro,
+    Oscuro,
+    GrafitoOscuro,
+}
+
+impl Tema {
+    pub const TODOS: [Tema; 5] = [Tema::Sistema, Tema::Claro, Tema::GrafitoClaro, Tema::Oscuro, Tema::GrafitoOscuro];
+
+    /// Valor guardado en los ajustes (`None` = el del sistema).
+    pub fn clave(self) -> Option<&'static str> {
+        match self {
+            Tema::Sistema => None,
+            Tema::Claro => Some("claro"),
+            Tema::GrafitoClaro => Some("grafito"),
+            Tema::Oscuro => Some("oscuro"),
+            Tema::GrafitoOscuro => Some("grafito-oscuro"),
+        }
+    }
+
+    pub fn de_clave(v: &str) -> Tema {
+        Tema::TODOS.into_iter().find(|t| t.clave() == Some(v.trim())).unwrap_or_default()
+    }
+
+    pub fn nombre(self) -> &'static str {
+        match self {
+            Tema::Sistema => t!("Sistema"),
+            Tema::Claro => t!("Claro"),
+            Tema::GrafitoClaro => t!("Grafito claro"),
+            Tema::Oscuro => t!("Oscuro"),
+            Tema::GrafitoOscuro => t!("Grafito oscuro"),
+        }
+    }
+
+    pub fn grafito(self) -> bool {
+        matches!(self, Tema::GrafitoClaro | Tema::GrafitoOscuro)
+    }
+
+    pub fn preferencia(self) -> ThemePreference {
+        match self {
+            Tema::Sistema => ThemePreference::System,
+            Tema::Claro | Tema::GrafitoClaro => ThemePreference::Light,
+            Tema::Oscuro | Tema::GrafitoOscuro => ThemePreference::Dark,
+        }
+    }
+}
+
+/// Aplica el tema: colores (grafito o no) y claro/oscuro/sistema.
+pub fn aplicar_tema(ctx: &Context, tema: Tema) {
+    let g = tema.grafito();
+    if GRAFITO.swap(g, std::sync::atomic::Ordering::Relaxed) != g {
+        for theme in [Theme::Dark, Theme::Light] {
+            ctx.style_mut_of(theme, |s| paleta_tailwind(&mut s.visuals, theme == Theme::Dark));
+        }
+    }
+    ctx.set_theme(tema.preferencia());
+}
+
+/// Marco del panel central: en los temas grafito, distinto de los laterales.
+pub fn marco_central(style: &eframe::egui::Style) -> Frame {
+    Frame::central_panel(style).fill(Paleta::del_tema(style.visuals.dark_mode).central)
 }
 
 const fn hex(v: u32) -> Color32 {
@@ -156,7 +217,7 @@ impl Paleta {
         apagado: hex(0x71717a),      // zinc-500
         central: hex(0xfafafa),
     };
-    pub const GRAFITO: Paleta = Paleta {
+    pub const GRAFITO_CLARA: Paleta = Paleta {
         fondo: hex(0xd9d9de),        // paneles laterales y barras: gris grafito claro
         tarjeta: hex(0xf7f7f8),
         campo: hex(0xffffff),
@@ -178,18 +239,28 @@ impl Paleta {
         apagado: hex(0xa1a1aa),      // zinc-400
         central: hex(0x18181b),
     };
+    pub const GRAFITO_OSCURA: Paleta = Paleta {
+        fondo: hex(0x2c2c31),        // paneles laterales y barras: grafito
+        tarjeta: hex(0x26262b),
+        campo: hex(0x111113),
+        codigo: hex(0x161619),
+        borde: hex(0x4d4d55),        // separaciones bien visibles
+        borde_fuerte: hex(0x63636c),
+        texto: hex(0xf4f4f5),
+        apagado: hex(0xa8a8b1),
+        central: hex(0x1a1a1d),      // zona de trabajo más oscura que los paneles
+    };
 
     pub fn de(ui: &Ui) -> Paleta {
         Paleta::del_tema(ui.visuals().dark_mode)
     }
 
     pub fn del_tema(dark: bool) -> Paleta {
-        if dark {
-            Paleta::OSCURA
-        } else if es_grafito() {
-            Paleta::GRAFITO
-        } else {
-            Paleta::CLARA
+        match (dark, es_grafito()) {
+            (true, false) => Paleta::OSCURA,
+            (true, true) => Paleta::GRAFITO_OSCURA,
+            (false, true) => Paleta::GRAFITO_CLARA,
+            (false, false) => Paleta::CLARA,
         }
     }
 }
@@ -198,13 +269,18 @@ impl Paleta {
 fn paleta_tailwind(v: &mut eframe::egui::Visuals, dark: bool) {
     use eframe::egui::Shadow;
     let p = Paleta::del_tema(dark);
-    let g = !dark && es_grafito();
+    let g = es_grafito();
     v.panel_fill = p.fondo;
     v.window_fill = p.tarjeta;
     v.extreme_bg_color = p.campo;
     v.text_edit_bg_color = Some(p.campo);
     v.code_bg_color = p.codigo;
-    v.faint_bg_color = if dark { hex(0x1c1c20) } else if g { hex(0xe6e6ea) } else { hex(0xf4f4f5) };
+    v.faint_bg_color = match (dark, g) {
+        (true, false) => hex(0x1c1c20),
+        (true, true) => hex(0x222226),
+        (false, true) => hex(0xe6e6ea),
+        (false, false) => hex(0xf4f4f5),
+    };
     v.window_stroke = Stroke::new(1.0, p.borde);
     // Sombras cortas y suaves (las grandes cuestan más triángulos por fotograma).
     v.window_shadow = Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(if dark { 90 } else { 28 }) };
@@ -217,7 +293,9 @@ fn paleta_tailwind(v: &mut eframe::egui::Visuals, dark: bool) {
     w.noninteractive.bg_stroke = Stroke::new(1.0, p.borde);
     w.noninteractive.fg_stroke = Stroke::new(1.0, p.texto);
     // Botones y casillas en reposo: como un botón «secundario» (fondo de tarjeta y borde).
-    let (inactivo, encima, pulsado) = if dark {
+    let (inactivo, encima, pulsado) = if dark && g {
+        (hex(0x34343a), hex(0x404047), hex(0x4c4c54))
+    } else if dark {
         (hex(0x27272a), hex(0x323238), hex(0x3f3f46))
     } else if g {
         (hex(0xf7f7f8), hex(0xe9e9ec), hex(0xd4d4d8))
@@ -370,35 +448,48 @@ pub fn boton_primario(texto: impl Into<String>) -> eframe::egui::Button<'static>
     eframe::egui::Button::new(RichText::new(texto.into()).color(Color32::WHITE).strong()).fill(c).stroke(Stroke::new(1.0, c.lerp_to_gamma(Color32::BLACK, 0.15))).corner_radius(6.0)
 }
 
-/// Eventos de portapapeles que faltan en macOS: egui solo convierte Cmd+C/X/V en
-/// copiar/cortar/pegar; Ctrl+C/X/V (costumbre de Windows y Linux) no hacían nada en
-/// las cajas de texto. Devuelve los eventos a añadir y si hay que pedir el pegado.
-pub fn ctrl_portapapeles(events: &[eframe::egui::Event], mac: bool) -> (Vec<eframe::egui::Event>, bool) {
-    use eframe::egui::{Event, Key};
-    let (mut extra, mut pegar) = (Vec::new(), false);
+/// En macOS los atajos van con Cmd; quien viene de Windows o Linux pulsa Ctrl. Aquí
+/// Ctrl+tecla se convierte en Cmd+tecla (Ctrl+B, Ctrl+S, Ctrl+Enter, Ctrl+A…) y
+/// Ctrl+C/X/V además en copiar/cortar/pegar (egui solo los saca de Cmd). Devuelve si
+/// hay que pedir el pegado. `mac` = false no cambia nada.
+pub fn ctrl_como_cmd(events: &mut Vec<eframe::egui::Event>, mac: bool) -> bool {
+    use eframe::egui::{Event, Key, Modifiers};
     if !mac {
-        return (extra, pegar);
+        return false;
     }
-    for e in events {
-        if let Event::Key { key, pressed: true, modifiers, .. } = e {
-            if modifiers.ctrl && !modifiers.mac_cmd && !modifiers.alt {
-                match key {
-                    Key::C => extra.push(Event::Copy),
-                    Key::X => extra.push(Event::Cut),
-                    Key::V => pegar = true,
-                    _ => {}
+    let cmd = |m: &mut Modifiers| {
+        if m.ctrl && !m.mac_cmd {
+            m.ctrl = false;
+            m.mac_cmd = true;
+            m.command = true;
+        }
+    };
+    let mut pegar = false;
+    let mut extra = Vec::new();
+    for e in events.iter_mut() {
+        match e {
+            Event::Key { key, pressed, modifiers, .. } if modifiers.ctrl && !modifiers.mac_cmd => {
+                if *pressed && !modifiers.alt {
+                    match key {
+                        Key::C => extra.push(Event::Copy),
+                        Key::X => extra.push(Event::Cut),
+                        Key::V => pegar = true,
+                        _ => {}
+                    }
                 }
+                cmd(modifiers);
             }
+            Event::PointerButton { modifiers, .. } | Event::ModifiersChanged(modifiers) => cmd(modifiers),
+            _ => {}
         }
     }
-    (extra, pegar)
+    events.extend(extra);
+    pegar
 }
 
-/// Llamar desde `raw_input_hook`: en macOS, Ctrl+C/X/V también copian, cortan y pegan.
-pub fn portapapeles_mac(ctx: &Context, raw: &mut eframe::egui::RawInput) {
-    let (extra, pegar) = ctrl_portapapeles(&raw.events, cfg!(target_os = "macos"));
-    raw.events.extend(extra);
-    if pegar {
+/// Llamar desde `raw_input_hook`: en macOS, Ctrl hace de Cmd en atajos y portapapeles.
+pub fn ctrl_mac(ctx: &Context, raw: &mut eframe::egui::RawInput) {
+    if ctrl_como_cmd(&mut raw.events, cfg!(target_os = "macos")) {
         ctx.send_viewport_cmd(eframe::egui::ViewportCommand::RequestPaste);
     }
 }
@@ -565,19 +656,17 @@ pub fn fila_idioma(ui: &mut Ui) -> Option<crate::i18n::Lang> {
 }
 
 /// Fila «Tema»: cambia `tema` y lo aplica; devuelve true si cambió.
-pub fn fila_tema(ui: &mut Ui, tema: &mut ThemePreference) -> bool {
+pub fn fila_tema(ui: &mut Ui, tema: &mut Tema) -> bool {
     let antes = *tema;
-    fila(ui, t!("Tema"), None, |ui| {
-        ui.radio_value(tema, ThemePreference::System, t!("Sistema"));
-        ui.radio_value(tema, ThemePreference::Light, t!("Claro"));
-        ui.radio_value(tema, ThemePreference::Dark, t!("Oscuro"));
+    fila(ui, t!("Tema"), Some(t!("Grafito: paneles en otro gris y separaciones marcadas")), |ui| {
+        for t in Tema::TODOS {
+            ui.radio_value(tema, t, t.nombre());
+        }
     });
     if *tema != antes {
-        ui.ctx().set_theme(*tema);
-        true
-    } else {
-        false
+        aplicar_tema(ui.ctx(), *tema);
     }
+    *tema != antes
 }
 
 /// Ventana «Acerca de» común. `extra` añade filas propias a la rejilla (usar

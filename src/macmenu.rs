@@ -5,7 +5,7 @@
 //! evento de teclado que recibiría egui: el editor, las cajas de texto y los
 //! atajos funcionan exactamente igual que sin menú.
 
-use eframe::egui::{Context, Event, Key, Modifiers, ViewportCommand};
+use eframe::egui::{Context, Event, Key, Modifiers, RawInput, ViewportCommand};
 use muda::accelerator::Accelerator;
 use muda::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use std::sync::mpsc::{Receiver, channel};
@@ -243,15 +243,16 @@ impl MacMenu {
     }
 }
 
-/// Mete el comando en la entrada de egui de este fotograma.
-pub fn inject(ctx: &Context, c: Cmd) {
+/// Mete el comando en la entrada de egui ANTES del fotograma (desde `raw_input_hook`):
+/// así lo ven todos los controles, también en las pasadas repetidas de egui.
+/// Devuelve los que no son teclas ni portapapeles (los atiende la app).
+pub fn inject(ctx: &Context, raw: &mut RawInput, c: Cmd) -> Option<Cmd> {
     match c {
-        Cmd::Key(modifiers, key) => ctx.input_mut(|i| {
-            i.events.push(Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
-        }),
-        Cmd::Copy => ctx.input_mut(|i| i.events.push(Event::Copy)),
-        Cmd::Cut => ctx.input_mut(|i| i.events.push(Event::Cut)),
+        Cmd::Key(modifiers, key) => raw.events.push(Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }),
+        Cmd::Copy => raw.events.push(Event::Copy),
+        Cmd::Cut => raw.events.push(Event::Cut),
         Cmd::Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
-        Cmd::ToggleResults | Cmd::ToggleDetail | Cmd::ToggleHeader | Cmd::Settings | Cmd::Update | Cmd::OpenRecent(_) | Cmd::ClearRecent | Cmd::Recode | Cmd::About => {}
+        Cmd::ToggleResults | Cmd::ToggleDetail | Cmd::ToggleHeader | Cmd::Settings | Cmd::Update | Cmd::OpenRecent(_) | Cmd::ClearRecent | Cmd::Recode | Cmd::About => return Some(c),
     }
+    None
 }

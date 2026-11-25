@@ -1,12 +1,12 @@
 //! Ajustes persistentes (tema, tamaño de letra) en un archivo de texto
 //! `clave=valor` en la carpeta de configuración del sistema.
 
-use eframe::egui::ThemePreference;
+use crate::estilo::Tema;
 use std::path::PathBuf;
 
 #[derive(Clone, PartialEq)]
 pub struct Settings {
-    pub theme: ThemePreference,
+    pub theme: Tema,
     pub font_size: f32,
     /// Tipo de letra del texto (nombre de `fonts::OPTIONS`).
     pub font: String,
@@ -38,7 +38,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { theme: ThemePreference::System, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0, lang: None, minimap: false, tab_width: 4, show_ws: false, undo_steps: 100, header: true, levels: true, check_updates: true }
+        Settings { theme: Tema::Sistema, font_size: 13.0, font: crate::fonts::DEFAULT.into(), colors: None, syntax: true, wrap: "no".into(), borders: 0, lang: None, minimap: false, tab_width: 4, show_ws: false, undo_steps: 100, header: true, levels: true, check_updates: true }
     }
 }
 
@@ -179,9 +179,7 @@ impl Settings {
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             match (k.trim(), v.trim()) {
-                ("tema", "claro") => s.theme = ThemePreference::Light,
-                ("tema", "oscuro") => s.theme = ThemePreference::Dark,
-                ("tema", _) => s.theme = ThemePreference::System,
+                ("tema", v) => s.theme = Tema::de_clave(v),
                 ("fuente", v) if !v.is_empty() => s.font = v.to_string(),
                 ("resaltar", v) => s.syntax = v != "no",
                 ("ajuste", v) => s.wrap = v.to_string(),
@@ -215,11 +213,7 @@ impl Settings {
         if let Some(dir) = p.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        let theme = match self.theme {
-            ThemePreference::Light => "claro",
-            ThemePreference::Dark => "oscuro",
-            ThemePreference::System => "sistema",
-        };
+        let theme = self.theme.clave().unwrap_or("sistema");
         let mut text = format!(
             "tema={theme}\nletra={}\nfuente={}\nresaltar={}\najuste={}\nbordes={}\n",
             self.font_size,

@@ -2068,7 +2068,7 @@ pub struct App {
     case_sensitive: bool,
     goto: String,
     font_size: f32,
-    theme: ThemePreference,
+    theme: crate::estilo::Tema,
     /// Tipo de letra del texto y fuentes de respaldo ya leídas.
     text_font: String,
     /// Colores propios del texto (tienen prioridad sobre el tema).
@@ -2170,6 +2170,9 @@ pub struct App {
     reveal_row: bool,
     #[cfg(target_os = "macos")]
     menu: crate::macmenu::MacMenu,
+    /// Opciones del menú recogidas en `raw_input_hook` que atiende `mac_menu`.
+    #[cfg(target_os = "macos")]
+    menu_cmds: Vec<crate::macmenu::Cmd>,
 }
 
 impl App {
@@ -2189,9 +2192,9 @@ impl App {
         clean_old_untitled();
         let fallbacks = crate::fonts::load_fallbacks();
         cc.egui_ctx.set_fonts(crate::fonts::build(&settings.font, &fallbacks).0);
-        cc.egui_ctx.set_theme(settings.theme);
-        apply_borders(&cc.egui_ctx, settings.borders);
         apply_style(&cc.egui_ctx);
+        crate::estilo::aplicar_tema(&cc.egui_ctx, settings.theme);
+        apply_borders(&cc.egui_ctx, settings.borders);
         let mut app = App {
             tabs: Vec::new(),
             active: 0,
@@ -2288,6 +2291,8 @@ impl App {
             reveal_row: false,
             #[cfg(target_os = "macos")]
             menu: crate::macmenu::MacMenu::new(&cc.egui_ctx),
+            #[cfg(target_os = "macos")]
+            menu_cmds: Vec::new(),
         };
         // Sesión anterior: se recupera salvo en ventanas nuevas («--sin-sesion»)
         // o en el modo de pruebas.
@@ -3353,8 +3358,8 @@ impl App {
     /// Opciones elegidas en el menú de macOS y estado de sus marcas.
     #[cfg(target_os = "macos")]
     fn mac_menu(&mut self, ctx: &Context) {
-        use crate::macmenu::{Cmd, inject};
-        for c in self.menu.poll() {
+        use crate::macmenu::Cmd;
+        for c in std::mem::take(&mut self.menu_cmds) {
             match c {
                 Cmd::Settings => self.show_settings = true,
                 Cmd::Recode => self.open_recode(),
@@ -3368,7 +3373,7 @@ impl App {
                 }
                 Cmd::OpenRecent(i) => self.open_recent(i),
                 Cmd::ClearRecent => self.clear_recent(),
-                c => inject(ctx, c),
+                _ => {}
             }
         }
         let t = self.tabs.get(self.active);
@@ -4690,7 +4695,8 @@ impl App {
         }
         if self.debug_frames == 2 {
             if let Ok(t) = std::env::var("BUSCADOR_THEME") {
-                ctx.set_theme(if t == "oscuro" { ThemePreference::Dark } else { ThemePreference::Light });
+                crate::estilo::aplicar_tema(ctx, crate::estilo::Tema::de_clave(&t));
+                apply_borders(ctx, self.borders);
             }
             self.show_settings = std::env::var("BUSCADOR_SETTINGS").is_ok();
             self.show_keys = std::env::var("BUSCADOR_KEYS").is_ok();
@@ -4931,7 +4937,16 @@ impl eframe::App for App {
     /// (d), lo suelta (u), escribe o pulsa Enter/Escape, una tecla (k:Ctrl+S,
     /// k:Shift+ArrowDown) o espera hasta un momento (p:2500 ms desde el
     /// arranque): un paso por fotograma desde el fotograma 30 de la captura.
-    fn raw_input_hook(&mut self, _ctx: &Context, raw: &mut RawInput) {
+    fn raw_input_hook(&mut self, ctx: &Context, raw: &mut RawInput) {
+        // Menú de macOS (antes del fotograma, para que lo vean todos los controles) y
+        // Ctrl como Cmd en macOS.
+        #[cfg(target_os = "macos")]
+        for c in self.menu.poll() {
+            if let Some(c) = crate::macmenu::inject(ctx, raw, c) {
+                self.menu_cmds.push(c);
+            }
+        }
+        crate::estilo::ctrl_mac(ctx, raw);
         if !(30..1000).contains(&self.debug_frames) {
             return;
         }
@@ -6368,7 +6383,8 @@ fn block_range(b: &Block, mode: CopyMode) -> (Pos, Pos) {
 fn apply_borders(ctx: &Context, level: u8) {
     for theme in [Theme::Dark, Theme::Light] {
         ctx.style_mut_of(theme, |s| {
-            let base = if theme == Theme::Dark { Visuals::dark() } else { Visuals::light() };
+            // Normales: los de la paleta común (cambian con los temas grafito).
+            let borde = Stroke::new(1.0, crate::estilo::Paleta::del_tema(theme == Theme::Dark).borde);
             let (gray, width) = match (theme, level) {
                 (_, 0) => (None, 1.0),
                 (Theme::Dark, 1) => (Some(105), 1.0),
@@ -6377,8 +6393,8 @@ fn apply_borders(ctx: &Context, level: u8) {
                 (Theme::Light, _) => (Some(95), 1.5),
             };
             let stroke = |def: Stroke| gray.map_or(def, |g| Stroke::new(width, Color32::from_gray(g)));
-            s.visuals.widgets.noninteractive.bg_stroke = stroke(base.widgets.noninteractive.bg_stroke);
-            s.visuals.window_stroke = stroke(base.window_stroke);
+            s.visuals.widgets.noninteractive.bg_stroke = stroke(borde);
+            s.visuals.window_stroke = stroke(borde);
         });
     }
 }
@@ -6565,7 +6581,7 @@ impl App {
         if reset {
             let d = Settings::default();
             self.theme = d.theme;
-            ctx.set_theme(d.theme);
+            crate::estilo::aplicar_tema(ctx, d.theme);
             self.font_size = d.font_size;
             self.text_font = d.font;
             ctx.set_fonts(crate::fonts::build(&self.text_font, &self.fallback_fonts).0);
@@ -6656,7 +6672,8 @@ impl App {
         }
         if theme != self.theme {
             self.theme = theme;
-            ctx.set_theme(theme);
+            crate::estilo::aplicar_tema(ctx, theme);
+            apply_borders(ctx, self.borders);
             self.persist();
         }
         if font != self.font_size {
