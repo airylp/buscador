@@ -122,6 +122,22 @@ pub struct Paleta {
     pub borde_fuerte: Color32,
     pub texto: Color32,
     pub apagado: Color32,
+    /// Fondo de la zona de trabajo (panel central); igual a `fondo` salvo en «Grafito claro».
+    pub central: Color32,
+}
+
+/// «Grafito claro»: variante del tema claro con paneles grises y bordes marcados.
+static GRAFITO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Activa o quita «Grafito claro» (cambia los colores del tema claro).
+pub fn grafito(ctx: &Context, activo: bool) {
+    if GRAFITO.swap(activo, std::sync::atomic::Ordering::Relaxed) != activo {
+        ctx.style_mut_of(Theme::Light, |s| paleta_tailwind(&mut s.visuals, false));
+    }
+}
+
+pub fn es_grafito() -> bool {
+    GRAFITO.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 const fn hex(v: u32) -> Color32 {
@@ -138,6 +154,18 @@ impl Paleta {
         borde_fuerte: hex(0xd4d4d8), // zinc-300
         texto: hex(0x18181b),        // zinc-900
         apagado: hex(0x71717a),      // zinc-500
+        central: hex(0xfafafa),
+    };
+    pub const GRAFITO: Paleta = Paleta {
+        fondo: hex(0xd9d9de),        // paneles laterales y barras: gris grafito claro
+        tarjeta: hex(0xf7f7f8),
+        campo: hex(0xffffff),
+        codigo: hex(0xe9e9ec),
+        borde: hex(0xa8a8b0),        // separaciones bien visibles
+        borde_fuerte: hex(0x8a8a93),
+        texto: hex(0x18181b),
+        apagado: hex(0x55555d),
+        central: hex(0xf1f1f3),      // zona de trabajo más clara que los paneles
     };
     pub const OSCURA: Paleta = Paleta {
         fondo: hex(0x18181b),        // zinc-900
@@ -148,23 +176,35 @@ impl Paleta {
         borde_fuerte: hex(0x3f3f46), // zinc-700
         texto: hex(0xf4f4f5),        // zinc-100
         apagado: hex(0xa1a1aa),      // zinc-400
+        central: hex(0x18181b),
     };
 
     pub fn de(ui: &Ui) -> Paleta {
-        if ui.visuals().dark_mode { Paleta::OSCURA } else { Paleta::CLARA }
+        Paleta::del_tema(ui.visuals().dark_mode)
+    }
+
+    pub fn del_tema(dark: bool) -> Paleta {
+        if dark {
+            Paleta::OSCURA
+        } else if es_grafito() {
+            Paleta::GRAFITO
+        } else {
+            Paleta::CLARA
+        }
     }
 }
 
 /// Fondos, bordes, sombras y estados de los controles con la paleta.
 fn paleta_tailwind(v: &mut eframe::egui::Visuals, dark: bool) {
     use eframe::egui::Shadow;
-    let p = if dark { Paleta::OSCURA } else { Paleta::CLARA };
+    let p = Paleta::del_tema(dark);
+    let g = !dark && es_grafito();
     v.panel_fill = p.fondo;
     v.window_fill = p.tarjeta;
     v.extreme_bg_color = p.campo;
     v.text_edit_bg_color = Some(p.campo);
     v.code_bg_color = p.codigo;
-    v.faint_bg_color = if dark { hex(0x1c1c20) } else { hex(0xf4f4f5) };
+    v.faint_bg_color = if dark { hex(0x1c1c20) } else if g { hex(0xe6e6ea) } else { hex(0xf4f4f5) };
     v.window_stroke = Stroke::new(1.0, p.borde);
     // Sombras cortas y suaves (las grandes cuestan más triángulos por fotograma).
     v.window_shadow = Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(if dark { 90 } else { 28 }) };
@@ -177,7 +217,13 @@ fn paleta_tailwind(v: &mut eframe::egui::Visuals, dark: bool) {
     w.noninteractive.bg_stroke = Stroke::new(1.0, p.borde);
     w.noninteractive.fg_stroke = Stroke::new(1.0, p.texto);
     // Botones y casillas en reposo: como un botón «secundario» (fondo de tarjeta y borde).
-    let (inactivo, encima, pulsado) = if dark { (hex(0x27272a), hex(0x323238), hex(0x3f3f46)) } else { (hex(0xffffff), hex(0xf4f4f5), hex(0xe4e4e7)) };
+    let (inactivo, encima, pulsado) = if dark {
+        (hex(0x27272a), hex(0x323238), hex(0x3f3f46))
+    } else if g {
+        (hex(0xf7f7f8), hex(0xe9e9ec), hex(0xd4d4d8))
+    } else {
+        (hex(0xffffff), hex(0xf4f4f5), hex(0xe4e4e7))
+    };
     w.inactive.weak_bg_fill = inactivo;
     w.inactive.bg_fill = inactivo;
     w.inactive.bg_stroke = Stroke::new(1.0, p.borde);
@@ -454,7 +500,7 @@ pub fn acento_texto(ui: &Ui) -> Color32 {
 /// Rejilla de dos columnas para las filas de un grupo, dentro de una tarjeta.
 pub fn rejilla(ui: &mut Ui, id: &str, filas: impl FnOnce(&mut Ui)) {
     let p = Paleta::de(ui);
-    Frame::new().fill(p.fondo).stroke(Stroke::new(1.0, p.borde)).corner_radius(8.0).inner_margin(eframe::egui::Margin::symmetric(14, 12)).show(ui, |ui| {
+    Frame::new().fill(p.central).stroke(Stroke::new(1.0, p.borde)).corner_radius(8.0).inner_margin(eframe::egui::Margin::symmetric(14, 12)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         Grid::new(id).num_columns(2).spacing([24.0, 12.0]).min_col_width(150.0).show(ui, filas);
     });
