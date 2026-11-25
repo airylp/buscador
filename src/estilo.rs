@@ -407,10 +407,10 @@ pub fn ventana_ajustes(ctx: &Context, abierta: &mut bool, version: &Version, con
     accion
 }
 
-/// Título de un grupo de ajustes.
+/// Título de un grupo de ajustes: pequeño, en mayúsculas y apagado, encima de su tarjeta.
 pub fn seccion(ui: &mut Ui, titulo: &str) {
-    ui.add_space(6.0);
-    ui.label(RichText::new(titulo).heading().size(15.0).color(acento_texto(ui)));
+    ui.add_space(8.0);
+    ui.label(RichText::new(titulo.to_uppercase()).size(11.0).strong().color(Paleta::de(ui).apagado).extra_letter_spacing(0.6));
     ui.add_space(2.0);
 }
 
@@ -419,14 +419,19 @@ pub fn acento_texto(ui: &Ui) -> Color32 {
     if ui.visuals().dark_mode { c.lerp_to_gamma(Color32::WHITE, 0.25) } else { c.lerp_to_gamma(Color32::BLACK, 0.15) }
 }
 
-/// Rejilla de dos columnas para las filas de un grupo.
+/// Rejilla de dos columnas para las filas de un grupo, dentro de una tarjeta.
 pub fn rejilla(ui: &mut Ui, id: &str, filas: impl FnOnce(&mut Ui)) {
-    Grid::new(id).num_columns(2).spacing([24.0, 12.0]).min_col_width(150.0).show(ui, filas);
+    let p = Paleta::de(ui);
+    Frame::new().fill(p.fondo).stroke(Stroke::new(1.0, p.borde)).corner_radius(8.0).inner_margin(eframe::egui::Margin::symmetric(14, 12)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        Grid::new(id).num_columns(2).spacing([24.0, 12.0]).min_col_width(150.0).show(ui, filas);
+    });
 }
 
-/// Una fila: etiqueta en negrita a la izquierda, controles a la derecha.
+/// Una fila: etiqueta a la izquierda (algo más suave que el texto), controles a la derecha.
 pub fn fila(ui: &mut Ui, etiqueta: &str, ayuda: Option<&str>, controles: impl FnOnce(&mut Ui)) {
-    let r = ui.strong(etiqueta);
+    let p = Paleta::de(ui);
+    let r = ui.label(RichText::new(etiqueta).color(p.texto.lerp_to_gamma(p.apagado, 0.3)));
     if let Some(a) = ayuda {
         r.on_hover_text(a);
     }
