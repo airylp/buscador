@@ -267,6 +267,13 @@ pub fn color_tipo(ui: &Ui, tipo: Tipo) -> Color32 {
 
 /// Recuadro de alerta: fondo suave, raya a la izquierda e ícono (`border-l-4 bg-x-50`).
 pub fn alerta(ui: &mut Ui, tipo: Tipo, texto: &str) {
+    alerta_con(ui, tipo, |ui| {
+        ui.add(Label::new(RichText::new(texto).color(Paleta::de(ui).texto)).wrap().selectable(true));
+    });
+}
+
+/// Alerta con contenido propio (p. ej. texto y un campo para escribir).
+pub fn alerta_con(ui: &mut Ui, tipo: Tipo, contenido: impl FnOnce(&mut Ui)) {
     let c = color_tipo(ui, tipo);
     let icono = match tipo {
         Tipo::Info => crate::icons::Icon::Info,
@@ -279,11 +286,36 @@ pub fn alerta(ui: &mut Ui, tipo: Tipo, texto: &str) {
         ui.horizontal_top(|ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), eframe::egui::Sense::hover());
             crate::icons::paint(ui.painter(), rect, icono);
-            ui.add(Label::new(RichText::new(texto).color(Paleta::de(ui).texto)).wrap().selectable(true));
+            ui.vertical(contenido);
         });
     });
     let rect = r.response.rect;
     ui.painter().rect_filled(eframe::egui::Rect::from_min_max(rect.min, eframe::egui::pos2(rect.min.x + 3.0, rect.max.y)), CornerRadius { nw: 6, sw: 6, ne: 0, se: 0 }, c);
+}
+
+/// Botón de una acción destructiva (borrar): rojo con letra blanca.
+pub fn boton_peligro(ui: &Ui, texto: impl Into<String>) -> eframe::egui::Button<'static> {
+    let c = color_tipo(ui, Tipo::Error);
+    let c = if ui.visuals().dark_mode { c.lerp_to_gamma(Color32::BLACK, 0.25) } else { c };
+    eframe::egui::Button::new(RichText::new(texto.into()).color(Color32::WHITE).strong()).fill(c).stroke(Stroke::new(1.0, c.lerp_to_gamma(Color32::BLACK, 0.2))).corner_radius(6.0)
+}
+
+/// Fila de una lista a todo lo ancho: fondo al pasar el ratón; la elegida con
+/// tono del acento y una raya a la izquierda. Se puede pulsar en cualquier parte.
+pub fn fila_lista(ui: &mut Ui, elegida: bool, texto: impl Into<eframe::egui::WidgetText>) -> eframe::egui::Response {
+    use eframe::egui::{Sense, TextWrapMode, pos2};
+    let g = texto.into().into_galley(ui, Some(TextWrapMode::Extend), f32::INFINITY, TextStyle::Body);
+    let w = ui.available_width().max(g.size().x + 20.0);
+    let (rect, r) = ui.allocate_exact_size(vec2(w, g.size().y + 8.0), Sense::click());
+    let v = ui.visuals();
+    if elegida {
+        ui.painter().rect_filled(rect, 6.0, v.selection.bg_fill.gamma_multiply(if v.dark_mode { 0.7 } else { 0.55 }));
+        ui.painter().rect_filled(eframe::egui::Rect::from_min_max(rect.min, pos2(rect.min.x + 3.0, rect.max.y)), CornerRadius { nw: 6, sw: 6, ne: 0, se: 0 }, acento());
+    } else if r.hovered() {
+        ui.painter().rect_filled(rect, 6.0, v.widgets.hovered.weak_bg_fill);
+    }
+    ui.painter().galley(pos2(rect.left() + 10.0, rect.center().y - g.size().y / 2.0), g, v.text_color());
+    r
 }
 
 /// Botón principal: relleno con el acento de la app y letra blanca (`bg-x-600 text-white`).
