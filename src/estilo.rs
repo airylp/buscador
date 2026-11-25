@@ -500,8 +500,21 @@ pub fn ctrl_como_cmd(events: &mut Vec<eframe::egui::Event>, mac: bool) -> bool {
 /// Llamar desde `raw_input_hook`: en macOS, Ctrl hace de Cmd en atajos y portapapeles.
 pub fn ctrl_mac(ctx: &Context, raw: &mut eframe::egui::RawInput) {
     if ctrl_como_cmd(&mut raw.events, cfg!(target_os = "macos")) {
-        ctx.send_viewport_cmd(eframe::egui::ViewportCommand::RequestPaste);
+        pedir_pegado(ctx);
     }
+}
+
+/// Fotogramas que aún hay que provocar para que llegue un pegado pedido.
+static PEGADO: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Pide a eframe el texto del portapapeles (llega como `Event::Paste`). eframe lo
+/// entrega dos fotogramas después sin provocarlos: sin esto, el texto no aparecía
+/// hasta mover el ratón (y, si antes cambiaba el foco, se perdía). Requiere que la
+/// app llame a `atajos_comunes` en cada fotograma.
+pub fn pedir_pegado(ctx: &Context) {
+    ctx.send_viewport_cmd(eframe::egui::ViewportCommand::RequestPaste);
+    PEGADO.store(3, std::sync::atomic::Ordering::Relaxed);
+    ctx.request_repaint();
 }
 
 /// Tipografía y retoques comunes a los dos temas. Llamar una vez al crear la app.
@@ -1039,6 +1052,11 @@ pub fn tecla(s: &str) -> String {
 /// Devuelve (ajustes, atajos) si se pulsaron.
 pub fn atajos_comunes(ctx: &Context) -> (bool, bool) {
     use eframe::egui::{Key, Modifiers};
+    // Pegado pedido: eframe lo entrega dos fotogramas después y no los provoca.
+    if PEGADO.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+        PEGADO.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        ctx.request_repaint();
+    }
     ctx.input_mut(|i| (i.consume_key(Modifiers::COMMAND, Key::Comma), i.consume_key(Modifiers::NONE, Key::F1)))
 }
 

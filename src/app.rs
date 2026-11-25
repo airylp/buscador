@@ -1547,7 +1547,7 @@ impl Tab {
                             None => self.cut(ctx).map(|m| msg = Some(m)),
                         },
                         _ => {
-                            ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+                            crate::estilo::pedir_pegado(ctx);
                             Ok(())
                         }
                     }
@@ -5672,7 +5672,7 @@ fn log_view(
         }
         if ui.add_enabled(tab.editable, Button::new(t!("Pegar (Ctrl+V)"))).clicked() {
             resp.request_focus();
-            ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+            crate::estilo::pedir_pegado(&ctx);
             ui.close();
         }
         if ui.add_enabled(tab.editable && (has_sel || tab.block().is_some()), Button::new(t!("Borrar selección"))).clicked() {

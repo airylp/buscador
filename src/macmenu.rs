@@ -5,7 +5,7 @@
 //! evento de teclado que recibiría egui: el editor, las cajas de texto y los
 //! atajos funcionan exactamente igual que sin menú.
 
-use eframe::egui::{Context, Event, Key, Modifiers, RawInput, ViewportCommand};
+use eframe::egui::{Context, Event, Key, Modifiers, RawInput};
 use muda::accelerator::Accelerator;
 use muda::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use std::sync::mpsc::{Receiver, channel};
@@ -107,9 +107,11 @@ impl MacMenu {
 
         let undo = item(t!("Deshacer"), "Cmd+Z", cmd(Key::Z));
         let redo = item(t!("Rehacer"), "Cmd+Shift+Z", cmd_shift(Key::Z));
-        let cut = item(t!("Cortar"), "Cmd+X", Cmd::Cut);
-        let copy = item(t!("Copiar"), "Cmd+C", Cmd::Copy);
-        let paste = item(t!("Pegar"), "Cmd+V", Cmd::Paste);
+        // Sin atajo: Cmd+X/C/V llegan así a egui, que copia y pega al momento. Con el
+        // atajo en el menú, macOS se quedaba la tecla y el pegado llegaba tarde o se perdía.
+        let cut = item(t!("Cortar"), "", Cmd::Cut);
+        let copy = item(t!("Copiar"), "", Cmd::Copy);
+        let paste = item(t!("Pegar"), "", Cmd::Paste);
         let all = item(t!("Seleccionar todo"), "Cmd+A", cmd(Key::A));
         let beautify = item(t!("Embellecer JSON / XML"), "Cmd+Shift+B", cmd_shift(Key::B));
         let convert = item(t!("Convertir Base64 / hexadecimal…"), "Cmd+Shift+K", cmd_shift(Key::K));
@@ -251,7 +253,7 @@ pub fn inject(ctx: &Context, raw: &mut RawInput, c: Cmd) -> Option<Cmd> {
         Cmd::Key(modifiers, key) => raw.events.push(Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }),
         Cmd::Copy => raw.events.push(Event::Copy),
         Cmd::Cut => raw.events.push(Event::Cut),
-        Cmd::Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
+        Cmd::Paste => crate::estilo::pedir_pegado(ctx),
         Cmd::ToggleResults | Cmd::ToggleDetail | Cmd::ToggleHeader | Cmd::Settings | Cmd::Update | Cmd::OpenRecent(_) | Cmd::ClearRecent | Cmd::Recode | Cmd::About => return Some(c),
     }
     None
