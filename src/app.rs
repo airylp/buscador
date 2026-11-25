@@ -5766,6 +5766,12 @@ fn log_view(
         rows.push((n, t, g, y_acc, h, start, len));
         y_acc += h;
     }
+    // Si el documento se acaba antes del final del área, lo que queda libre
+    // también cuenta: si no, al escribir o pegar al final de un archivo corto
+    // (con ajuste) la vista se desplazaba hacia arriba sin necesidad.
+    if y_acc < text_area.height() {
+        lines_shown += ((text_area.height() - y_acc) / row_h).floor() as u64;
+    }
     tab.lines_shown = lines_shown.max(1);
     tab.layout_map = rows.iter().map(|r| (r.0, r.3, r.4)).collect();
     // Posición (en la maquetación) de una columna: x e y de su fila.
@@ -8948,6 +8954,39 @@ mod copy_keeps_selection {
         );
         assert_eq!(copied.as_deref(), Some("hola
 segu"));
+    }
+
+    #[test]
+    fn paste_at_end_keeps_view_when_there_is_room() {
+        let text: String = (0..10).map(|i| format!("línea {i}\n")).collect();
+        for wrap in [Wrap::Window, Wrap::Off] {
+            let (mut t, _p) = super::tests::tab_with("pegar-final.txt", &text);
+            t.editable = true;
+            let ctx = Context::default();
+            let font = FontId::monospace(13.0);
+            let screen = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+            let below = pos2(200.0, 500.0);
+            let frames = vec![
+                vec![],
+                vec![Event::PointerMoved(below)],
+                vec![Event::PointerButton { pos: below, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }],
+                vec![Event::PointerButton { pos: below, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }],
+                vec![key(Key::End, Modifiers::NONE, true)],
+                vec![Event::Paste("\nuna línea pegada".into())],
+                vec![Event::Paste("\notra más\ny otra".into())],
+                vec![],
+                vec![],
+            ];
+            let mut show = false;
+            for (k, events) in frames.into_iter().enumerate() {
+                let input = RawInput { screen_rect: Some(screen), events, time: Some(k as f64 * 0.05), ..Default::default() };
+                let _ = ctx.run_ui(input, |ui| {
+                    log_view(ui, &mut t, &font, &mut show, false, None, true, wrap);
+                });
+            }
+            assert!(t.total() >= 13, "{wrap:?}: se pegó ({} líneas)", t.total());
+            assert_eq!(t.top, 0, "{wrap:?}: la vista no debe subir si cabe todo");
+        }
     }
 
     #[test]
