@@ -30,12 +30,14 @@ pub const LETRA_B: [&str; 7] = ["####.", "#...#", "#...#", "####.", "#...#", "#.
 pub const LETRA_C: [&str; 7] = [".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."];
 pub const LETRA_P: [&str; 7] = ["####.", "#...#", "#...#", "####.", "#....", "#....", "#...."];
 pub const LETRA_K: [&str; 7] = ["#...#", "#..##", "#.##.", "###..", "#.##.", "#..##", "#...#"];
+pub const LETRA_D: [&str; 7] = ["###..", "#..#.", "#...#", "#...#", "#...#", "#..#.", "###.."];
 
 /// Colores de las aplicaciones: bien distintos entre sí.
 pub const AZUL: [u8; 3] = [0x2f, 0x7c, 0xf6];
 pub const VERDE: [u8; 3] = [0x1f, 0xb3, 0x55];
 pub const NARANJA: [u8; 3] = [0xf5, 0x7a, 0x14];
 pub const MORADO: [u8; 3] = [0x8e, 0x4b, 0xe6];
+pub const ROJO: [u8; 3] = [0xe1, 0x3b, 0x4f];
 
 /// Grosor extra de la letra: cada cubo crece esta fracción de celda por lado.
 const BOLD: f32 = 0.18;
@@ -374,7 +376,7 @@ mod tests {
         assert_eq!(&p[..8], b"\x89PNG\r\n\x1a\n");
         // LOGO_PNG=carpeta guarda los logotipos de las tres aplicaciones para verlos.
         if let Ok(dir) = std::env::var("LOGO_PNG") {
-            for (n, l, c) in [("b", LETRA_B, AZUL), ("c", LETRA_C, VERDE), ("p", LETRA_P, NARANJA), ("k", LETRA_K, MORADO)] {
+            for (n, l, c) in [("b", LETRA_B, AZUL), ("c", LETRA_C, VERDE), ("p", LETRA_P, NARANJA), ("k", LETRA_K, MORADO), ("d", LETRA_D, ROJO)] {
                 let m = Marca { nombre: n, descripcion: || "", letra: l, color: c, hecho_con: "" };
                 for s in [512, 64, 32, 16] {
                     std::fs::write(format!("{dir}/{n}{s}.png"), png_of(&render_marca(&m, s), s)).unwrap();
