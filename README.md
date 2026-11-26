@@ -62,9 +62,9 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 
 ## Capturas
 
-| Detalle con JSON (grafito oscuro) | Búsqueda avanzada por bloques |
+| Detalle con JSON | Búsqueda avanzada por bloques |
 |---|---|
-| ![Detalle de una línea con JSON embellecido](docs/buscador-oscuro.png) | ![Búsqueda avanzada «desde… hasta…» con minimapa](docs/buscador-avanzada.png) |
+| ![Detalle de una línea con JSON embellecido](docs/buscador-detalle.png) | ![Búsqueda avanzada «desde… hasta…» con minimapa](docs/buscador-avanzada.png) |
 
 ## Instalar, actualizar y desinstalar
 
