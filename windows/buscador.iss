@@ -1,5 +1,5 @@
 ; Instalador de buscador para Windows (Inno Setup 6).
-; Lo compila .github/workflows/windows.yml:  iscc /DAppVersion=0.2.0 windows\buscador.iss
+; Lo compila .github/workflows/release.yml:  iscc /DAppVersion=0.2.0 windows\buscador.iss
 ; Necesita target\release\buscador.exe ya compilado.
 ;
 ; Se instala para el usuario (sin pedir permisos de administrador), en
