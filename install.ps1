@@ -2,7 +2,7 @@
 #
 #   [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; irm https://raw.githubusercontent.com/airylp/buscador/main/install.ps1 | iex
 #
-# El instalador lo crea .github/workflows/windows.yml en GitHub Releases.
+# El instalador lo crea .github/workflows/release.yml en GitHub Releases.
 # Descargado así no lleva la marca «de Internet», así que Windows no muestra
 # el aviso de SmartScreen.
 

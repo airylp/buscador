@@ -5,6 +5,8 @@ escrito en Rust (egui). El archivo se abre con `mmap` y un índice disperso de
 líneas, así que no se carga en RAM: un log de 2.3 GB / 22 M de líneas usa ~3 MB
 de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 
+![buscador con un log abierto y los resultados de una búsqueda (tema grafito claro)](docs/buscador-claro.png)
+
 - Varios archivos, con un panel lateral ocultable (Ctrl+B)
 - Búsqueda en segundo plano: texto o regex, con/sin mayúsculas (Ctrl+F, Enter/F3, Shift+F3)
 - Encodings: UTF-8, UTF-16 LE/BE (con o sin BOM), Latin-1/Windows-1252, Shift_JIS, GBK, Big5… detección automática y cambio manual
@@ -27,7 +29,7 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
 - Botón «?» (o F1) con todos los atajos de teclado
 - Ajuste de línea (↩ en la barra de estado o Ctrl+Alt+Z): al ancho de la ventana o a N columnas
 - Al abrir se recuperan los archivos de la sesión anterior, cada uno en su posición
-- Ajustes (⚙): tema Sistema / Claro / Oscuro, tipo de letra del texto (monoespaciadas como Hack, Menlo,
+- Ajustes (⚙): tema Sistema / Claro / Oscuro / Grafito claro / Grafito oscuro, tipo de letra del texto (monoespaciadas como Hack, Menlo,
   SF Mono, Monaco, Consolas… o proporcionales) y tamaño; se recuerdan
 - Resaltado de sintaxis según la extensión (Java, Kotlin, JS/TS, Rust, Go, C/C++, C#, Swift, Python, Markdown,
   shell, SQL, JSON, XML/HTML, YAML, TOML/INI, CSS) y en los logs: niveles (ERROR, WARN, INFO, DEBUG),
@@ -58,23 +60,34 @@ de memoria propia. Al editar, sólo las líneas modificadas ocupan memoria.
   ventana aparte (otra pantalla)
 - «Acerca de» (ℹ en la barra de estado): versión, licencia y enlaces al proyecto en GitHub
 
+## Capturas
+
+| Detalle con JSON (grafito oscuro) | Búsqueda avanzada por bloques |
+|---|---|
+| ![Detalle de una línea con JSON embellecido](docs/buscador-oscuro.png) | ![Búsqueda avanzada «desde… hasta…» con minimapa](docs/buscador-avanzada.png) |
+
 ## Instalar, actualizar y desinstalar
 
-Todo con un solo comando (macOS; instala Rust con rustup si hace falta):
+macOS y Linux, con un solo comando (descarga la última versión publicada; tarda segundos y no
+necesita Rust):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/airylp/buscador/main/install.sh | sh
 ```
 
-Si buscador no está instalado, pregunta si instalarlo en /Applications; si ya lo está, ofrece
-**actualizar** o **desinstalar** (y al desinstalar pregunta si borrar también la configuración).
+Si buscador no está instalado, pregunta si instalarlo (macOS: /Applications; Linux:
+`~/.local/bin` con entrada en el menú de aplicaciones); si ya lo está, ofrece **actualizar** o
+**desinstalar** (y al desinstalar pregunta si borrar también la configuración).
 Sin preguntas: `… | sh -s -- instalar` o `… | sh -s -- desinstalar`.
 
-Una vez instalada, se actualiza desde la propia app: ⚙ Ajustes → «Buscar actualizaciones…»
-(o el menú buscador). Descarga la última versión, la compila y reemplaza la app; luego ofrece
-reiniciar.
+Para compilarlo en tu equipo con lo último de `main` (instala Rust con rustup si falta):
+`… | sh -s -- compilar`. Si no hay versión publicada para tu equipo (p. ej. Linux ARM), el
+instalador compila automáticamente.
 
-Requisitos: `curl` y las herramientas de línea de comandos de Xcode (`xcode-select --install`).
+Una vez instalada, se actualiza desde la propia app: ⚙ Ajustes → «Buscar actualizaciones…»
+(o ⬇ en la barra; un punto verde avisa si hay versión nueva). La app de macOS no está firmada:
+si la descargas a mano desde [Releases](https://github.com/airylp/buscador/releases/latest),
+ábrela la primera vez con clic derecho → Abrir.
 
 ### Windows
 
@@ -95,7 +108,8 @@ El instalador no está firmado: si Windows muestra «Windows protegió su PC», 
 
 ### Desde el código
 
-Desde una copia del repositorio también se puede usar `./empaquetar-mac.sh` (menú: crear,
+Las versiones las publica `.github/workflows/release.yml` al subir un tag `v*`. Desde una copia
+del repositorio también se puede usar `./empaquetar-mac.sh` (menú: crear,
 instalar, actualizar, desinstalar) o compilar a mano:
 
 ```sh

@@ -1,14 +1,14 @@
 //! Actualizar buscador desde la propia interfaz.
 //!
-//! macOS y Linux: comprueba en GitHub si hay commits nuevos y, si se pide,
-//! ejecuta el mismo `install.sh` que se usa para instalar: descarga el código a
-//! una carpeta temporal, lo compila (con caché, para que la siguiente vez tarde
-//! menos) y reemplaza la app instalada. La app abierta sigue funcionando hasta
-//! que se reinicia.
+//! Compara la versión con la última publicada en GitHub Releases (la crea
+//! `.github/workflows/release.yml` al subir un tag `v*`).
 //!
-//! Windows: compara con la última versión publicada (GitHub Releases, la crea
-//! `.github/workflows/windows.yml`), descarga su instalador y lo ejecuta en
-//! silencio cuando la app se cierra; el instalador la vuelve a abrir.
+//! macOS y Linux: si se pide, ejecuta el mismo `install.sh` que se usa para
+//! instalar (descarga la versión publicada y reemplaza la app instalada). La app
+//! abierta sigue funcionando hasta que se reinicia.
+//!
+//! Windows: descarga el instalador publicado (`…-setup.exe`) y lo ejecuta en
+//! silencio cuando la app se cierra.
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -27,12 +27,23 @@ pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux", w
 pub const WINDOWS: bool = cfg!(windows);
 
 /// Actualizar compila el código (buscador, conector) o descarga lo publicado (peticiones).
-pub const COMPILES: bool = true;
+pub const COMPILES: bool = false;
 
-/// Versión publicada con la que se compiló (tag, p. ej. «v0.2.0»; la graba el
-/// flujo de GitHub que crea el instalador de Windows).
+/// Versión publicada que corre (tag, p. ej. «v0.2.0»): la graba el flujo de
+/// GitHub al compilar o, si se compiló en el equipo, la que dejó install.sh.
 pub fn current_version() -> Option<&'static str> {
-    option_env!("BUSCADOR_VERSION").filter(|s| !s.is_empty())
+    use std::sync::OnceLock;
+    static V: OnceLock<Option<&'static str>> = OnceLock::new();
+    *V.get_or_init(|| {
+        if let Some(v) = option_env!("BUSCADOR_VERSION").filter(|s| !s.is_empty()) {
+            return Some(v);
+        }
+        // Instalada con install.sh: la versión que dejó en la configuración.
+        install_dir()?;
+        let v = std::fs::read_to_string(crate::settings::config_dir()?.join("version-instalada")).ok()?;
+        let v = v.trim();
+        (v.starts_with('v') && !v.contains('@')).then(|| &*Box::leak(v.to_string().into_boxed_str()))
+    })
 }
 
 /// Sin ventana de consola (Windows: la app no tiene consola y cada programa
@@ -46,8 +57,9 @@ fn hidden(c: &mut Command) -> &mut Command {
     c
 }
 
-/// De la respuesta JSON de `releases/latest`: (tag, URL del instalador `…setup….exe`).
-fn parse_release(json: &str) -> Option<(String, String)> {
+/// De la respuesta JSON de `releases/latest`: tag y URL de su instalador de
+/// Windows (`…setup….exe`), si hay.
+fn parse_release(json: &str) -> Option<(String, Option<String>)> {
     let field = |from: &str, key: &str| -> Option<String> {
         let i = from.find(&format!("\"{key}\""))?;
         let rest = from[i + key.len() + 2..].trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
@@ -57,12 +69,13 @@ fn parse_release(json: &str) -> Option<(String, String)> {
     let mut rest = json;
     while let Some(i) = rest.find("\"browser_download_url\"") {
         let url = field(&rest[i..], "browser_download_url")?;
-        if url.to_ascii_lowercase().ends_with(".exe") && url.to_ascii_lowercase().contains("setup") {
-            return Some((tag, url));
+        let l = url.to_ascii_lowercase();
+        if url.contains(&format!("/download/{tag}/")) && l.ends_with(".exe") && l.contains("setup") {
+            return Some((tag, Some(url)));
         }
         rest = &rest[i + 1..];
     }
-    None
+    Some((tag, None))
 }
 
 /// Commit con el que se compiló (lo graban `install.sh` / `empaquetar-mac.sh`).
@@ -86,7 +99,7 @@ pub fn version_label() -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Stage {
     Checking,
-    /// Hay una versión más nueva (commit remoto).
+    /// Hay una versión publicada distinta de la instalada (su tag).
     Available(String),
     UpToDate(String),
     Running,
@@ -104,6 +117,9 @@ pub struct Updater {
 
 /// PATH con cargo y Homebrew: al abrir la app desde el escritorio el PATH es mínimo.
 fn path_env() -> String {
+    if WINDOWS {
+        return std::env::var("PATH").unwrap_or_default();
+    }
     let home = std::env::var("HOME").unwrap_or_default();
     format!("{home}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:{}", std::env::var("PATH").unwrap_or_default())
 }
@@ -145,48 +161,18 @@ impl Updater {
     /// Empieza comprobando la versión publicada.
     pub fn check(ctx: eframe::egui::Context) -> Self {
         let u = Updater { stage: Arc::new(Mutex::new(Stage::Checking)), log: Default::default(), installer: Default::default() };
-        let stage = u.stage.clone();
-        if WINDOWS {
-            let installer = u.installer.clone();
-            std::thread::spawn(move || {
-                let url = format!("https://api.github.com/repos/{}/releases/latest", repo());
-                let out = hidden(Command::new("curl").args(["-fsSL", "-H", "Accept: application/vnd.github+json", &url])).output();
-                let new = match out {
-                    Ok(o) if o.status.success() => match parse_release(&String::from_utf8_lossy(&o.stdout)) {
-                        Some((tag, setup)) => {
-                            *installer.lock().unwrap() = Some(setup);
-                            if current_version() == Some(tag.as_str()) { Stage::UpToDate(tag) } else { Stage::Available(tag) }
-                        }
-                        None => Stage::Failed(t!("respuesta inesperada de GitHub").into()),
-                    },
-                    Ok(o) => Stage::Failed(tf!("no se pudo consultar GitHub: {e}", e = String::from_utf8_lossy(&o.stderr).trim())),
-                    Err(e) => Stage::Failed(tf!("no se pudo ejecutar curl: {e}", e = e)),
-                };
-                *stage.lock().unwrap() = new;
-                ctx.request_repaint();
-            });
-            return u;
-        }
+        let (stage, installer) = (u.stage.clone(), u.installer.clone());
         std::thread::spawn(move || {
-            let url = format!("https://api.github.com/repos/{}/commits/main", repo());
-            let out = Command::new("curl")
-                .args(["-fsSL", "-H", "Accept: application/vnd.github.sha", &url])
-                .env("PATH", path_env())
-                .output();
+            let url = format!("https://api.github.com/repos/{}/releases/latest", repo());
+            let out = hidden(Command::new("curl").args(["-fsSL", "-H", "Accept: application/vnd.github+json", &url]).env("PATH", path_env())).output();
             let new = match out {
-                Ok(o) if o.status.success() => {
-                    let h = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if h.len() >= 7 && h.chars().all(|c| c.is_ascii_hexdigit()) {
-                        let short = h[..7].to_string();
-                        if current_commit().is_some_and(|c| short.starts_with(c) || c.starts_with(&short)) {
-                            Stage::UpToDate(short)
-                        } else {
-                            Stage::Available(short)
-                        }
-                    } else {
-                        Stage::Failed(t!("respuesta inesperada de GitHub").into())
+                Ok(o) if o.status.success() => match parse_release(&String::from_utf8_lossy(&o.stdout)) {
+                    Some((tag, setup)) => {
+                        *installer.lock().unwrap() = setup;
+                        if current_version() == Some(tag.as_str()) { Stage::UpToDate(tag) } else { Stage::Available(tag) }
                     }
-                }
+                    None => Stage::Failed(t!("respuesta inesperada de GitHub").into()),
+                },
                 Ok(o) => Stage::Failed(tf!("no se pudo consultar GitHub: {e}", e = String::from_utf8_lossy(&o.stderr).trim())),
                 Err(e) => Stage::Failed(tf!("no se pudo ejecutar curl: {e}", e = e)),
             };
@@ -196,7 +182,7 @@ impl Updater {
         u
     }
 
-    /// Descarga, compila e instala con `install.sh` (en segundo plano, con registro).
+    /// Descarga e instala con `install.sh` (en segundo plano, con registro).
     pub fn run(&self, ctx: eframe::egui::Context) {
         *self.stage.lock().unwrap() = Stage::Running;
         self.log.lock().unwrap().clear();
@@ -266,8 +252,12 @@ impl Updater {
                     }
                     let text = strip_ansi(&String::from_utf8_lossy(&buf));
                     let line = text.trim_end_matches(['\n', '\r']).rsplit('\r').next().unwrap_or("").to_string();
-                    // macOS (empaquetar-mac.sh) y Linux (install.sh) anuncian dónde quedó.
-                    if let Some(p) = line.strip_prefix("==> Instalada en ") {
+                    // install.sh anuncia dónde quedó (línea sin traducir; las otras
+                    // dos son de versiones anteriores del script).
+                    if let Some(p) = line.strip_prefix("RUTA_INSTALADA=") {
+                        installed = Some(PathBuf::from(p.trim()));
+                        continue;
+                    } else if let Some(p) = line.strip_prefix("==> Instalada en ") {
                         installed = Some(PathBuf::from(p.trim()));
                     } else if let Some(p) = line.strip_prefix("==> Instalado: ") {
                         installed = Some(PathBuf::from(p.split(" (").next().unwrap_or(p).trim()));
@@ -381,13 +371,14 @@ mod tests {
 
     #[test]
     fn release_json() {
-        let j = r#"{"url":"x","tag_name": "v0.2.0","assets":[{"name":"a.zip","browser_download_url":"https://h/a.zip"},
+        let j = r#"{"url":"x","tag_name": "v0.2.0","assets":[{"name":"a.zip","browser_download_url":"https://h/releases/download/v0.2.0/a.zip"},
             {"name":"buscador-setup.exe","browser_download_url":"https://github.com/airylp/buscador/releases/download/v0.2.0/buscador-0.2.0-setup.exe"}]}"#;
         assert_eq!(
             parse_release(j),
-            Some(("v0.2.0".into(), "https://github.com/airylp/buscador/releases/download/v0.2.0/buscador-0.2.0-setup.exe".into()))
+            Some(("v0.2.0".into(), Some("https://github.com/airylp/buscador/releases/download/v0.2.0/buscador-0.2.0-setup.exe".into())))
         );
-        assert_eq!(parse_release(r#"{"tag_name":"v1","assets":[]}"#), None);
+        assert_eq!(parse_release(r#"{"tag_name":"v1","assets":[]}"#), Some(("v1".into(), None)));
+        assert_eq!(parse_release("{}"), None);
     }
 
     #[test]
@@ -395,7 +386,7 @@ mod tests {
         assert_eq!(strip_ansi("\u{1b}[1;34m==>\u{1b}[0m Instalado: /x/buscador"), "==> Instalado: /x/buscador");
     }
 
-    /// Prueba completa (tarda: compila todo) con un install.sh local, instalando
+    /// Prueba completa (descarga la última versión publicada) con un install.sh local, instalando
     /// en una carpeta temporal:
     /// BUSCADOR_INSTALL_SH=$PWD/install.sh BUSCADOR_DESTINO=/tmp/x \
     ///   cargo test --release actualizar -- --ignored --nocapture

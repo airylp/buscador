@@ -1,0 +1,125 @@
+# Versiones: al subir un tag «v*» (p. ej. `git tag v0.2.0 && git push origin v0.2.0`)
+# compila buscador en Linux, macOS (universal: Apple Silicon + Intel) y Windows y
+# publica los archivos en GitHub Releases (install.sh, install.ps1 y el
+# actualizador de la app descargan de ahí). «Run workflow» (a mano) solo compila
+# y deja los archivos como artefactos, sin publicar nada.
+name: Versiones
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux-x86_64
+          - os: macos-latest
+            name: macos-universal
+          - os: windows-latest
+            name: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencias (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libssl-dev
+
+      - name: Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal && rustup default stable
+          if [ "$RUNNER_OS" = macOS ]; then rustup target add x86_64-apple-darwin aarch64-apple-darwin; fi
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Versión
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF_NAME#v}"; else V="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)-prueba"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          # Los lee la app al compilar (update.rs): versión y commit publicados.
+          echo "BUSCADOR_VERSION=v$V" >> "$GITHUB_ENV"
+          echo "BUSCADOR_COMMIT=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Tests
+        if: runner.os == 'Linux'
+        # Informativos: un fallo del entorno de GitHub no impide publicar.
+        continue-on-error: true
+        run: cargo test --release --locked
+
+      - name: Compilar y empaquetar (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release --locked
+          mkdir -p dist/buscador-$VERSION-linux-x86_64
+          cp target/release/buscador README.md LICENSE dist/buscador-$VERSION-linux-x86_64/
+          tar -C dist -czf dist/buscador-$VERSION-linux-x86_64.tar.gz buscador-$VERSION-linux-x86_64
+
+      - name: Compilar y empaquetar (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create -output dist/buscador target/aarch64-apple-darwin/release/buscador target/x86_64-apple-darwin/release/buscador
+          # El mismo paquete que al compilar en un Mac (ícono, Info.plist, firma local).
+          BINARIO="$PWD/dist/buscador" sh empaquetar-mac.sh crear
+          ditto -c -k --keepParent target/release/buscador.app dist/buscador-$VERSION-macos-universal.zip
+          rm dist/buscador
+
+      - name: Compilar y empaquetar (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --release --locked
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path target\release\buscador.exe, README.md, LICENSE -DestinationPath "dist\buscador-$env:VERSION-windows-x86_64.zip"
+          # Instalador (Inno Setup, windows/buscador.iss): lo usan install.ps1 y el actualizador.
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=$env:VERSION" windows\buscador.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item target\instalador\*.exe dist\
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buscador-${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.exe
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publicar en Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          notes="buscador: visor y editor de archivos de texto de varios GB.
+
+          - **Linux y macOS**: \`curl -fsSL https://raw.githubusercontent.com/airylp/buscador/main/install.sh | sh\` (instala, actualiza o desinstala).
+          - **macOS** (Apple Silicon e Intel) a mano: descarga \`buscador-*-macos-universal.zip\`, descomprímelo y mueve *buscador.app* a Aplicaciones. No está firmada: la primera vez usa clic derecho → Abrir, o \`xattr -dr com.apple.quarantine /Applications/buscador.app\`.
+          - **Windows** 10/11: abre \`buscador-*-setup.exe\` (o, en PowerShell, \`irm https://raw.githubusercontent.com/airylp/buscador/main/install.ps1 | iex\`). Versión portátil: \`buscador-*-windows-x86_64.zip\`. SmartScreen: «Más información» → «Ejecutar de todas formas».
+          - **Linux** x86_64 a mano: \`tar xzf buscador-*-linux-x86_64.tar.gz\` y ejecuta \`./buscador\`."
+          if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --title "buscador $GITHUB_REF_NAME" --notes "$notes" -R "$GITHUB_REPOSITORY"
+          fi
