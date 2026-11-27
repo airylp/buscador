@@ -106,6 +106,50 @@ impl Canvas {
 
 /// RGBA del logotipo de `m` a `size` px (con su sombra: no añadir otra al dibujarlo).
 fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
+    render_con(m, size, PLACA_DEGRADADA)
+}
+
+/// Placa con degradado y luz de borde (propuesta estética); `false` = blanco plano.
+const PLACA_DEGRADADA: bool = true;
+
+/// Desenfoque de caja (3 pasadas ≈ gaussiano) del canal `a` de un lienzo `w`×`w`.
+fn desenfocar(a: &mut [f32], w: usize, r: usize) {
+    if r == 0 {
+        return;
+    }
+    let mut t = vec![0.0f32; a.len()];
+    for _ in 0..3 {
+        for y in 0..w {
+            let fila = &a[y * w..(y + 1) * w];
+            let mut suma: f32 = fila[..=r.min(w - 1)].iter().sum();
+            for x in 0..w {
+                let n = (x + r).min(w - 1) - x.saturating_sub(r) + 1;
+                t[y * w + x] = suma / n as f32;
+                if x + r + 1 < w {
+                    suma += fila[x + r + 1];
+                }
+                if x >= r {
+                    suma -= fila[x - r];
+                }
+            }
+        }
+        for x in 0..w {
+            let mut suma: f32 = (0..=r.min(w - 1)).map(|y| t[y * w + x]).sum();
+            for y in 0..w {
+                let n = (y + r).min(w - 1) - y.saturating_sub(r) + 1;
+                a[y * w + x] = suma / n as f32;
+                if y + r + 1 < w {
+                    suma += t[(y + r + 1) * w + x];
+                }
+                if y >= r {
+                    suma -= t[(y - r) * w + x];
+                }
+            }
+        }
+    }
+}
+
+fn render_con(m: &Marca, size: usize, degradado: bool) -> Vec<u8> {
     // Sobremuestreo: bordes suaves sin depender de nada más.
     let ss = if size <= 64 { 4 } else if size <= 256 { 3 } else { 2 };
     let w = size * ss;
@@ -124,13 +168,17 @@ fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
     };
     // Sombra suave bajo el cuadrado (parece que flota): el mismo cuadrado algo más
     // abajo, difuminado, en el margen transparente. En 16 px solo ensuciaría.
-    let (sombra_y, difuso, opacidad) = (s * 0.022, s * 0.028, if size >= 24 { 0.42 } else { 0.0 });
+    // Dos capas: una amplia y difusa (ambiente) y otra corta y más oscura (contacto); antes era
+    // una sola muy tenue (0,42 en 2,8 %) y no se veía.
+    let k = if size >= 24 { 1.0 } else { 0.0 };
     for y in 0..w {
         for x in 0..w {
-            let d = inside(x as f32 + 0.5, y as f32 + 0.5 - sombra_y);
-            let a = opacidad / (1.0 + (d / (difuso * 0.45)).exp());
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let amb = 0.55 * k / (1.0 + (inside(px, py - s * 0.030) / (s * 0.017)).exp());
+            let cto = 0.45 * k / (1.0 + (inside(px, py - s * 0.009) / (s * 0.005)).exp());
+            let a = 1.0 - (1.0 - amb) * (1.0 - cto);
             if a > 0.002 {
-                cv.px[y * w + x] = [12.0, 14.0, 22.0, a];
+                cv.px[y * w + x] = [8.0, 10.0, 18.0, a];
             }
         }
     }
@@ -140,8 +188,22 @@ fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
             if d <= 0.0 {
                 // Filo gris muy suave: se distingue sobre fondos blancos.
                 let edge = (-d / (s * 0.010)).clamp(0.0, 1.0);
-                let g = 255.0 - (1.0 - edge) * 38.0;
-                cv.px[y * w + x] = [g, g, g, 1.0];
+                if degradado {
+                    // De blanco arriba a un gris frío con un toque del color de la app abajo, y una
+                    // luz fina en el borde de arriba (como los íconos de macOS).
+                    let v = ((y as f32 - (center - half)) / (2.0 * half)).clamp(0.0, 1.0);
+                    let abajo = [232.0 + 0.04 * m.color[0] as f32, 234.0 + 0.04 * m.color[1] as f32, 240.0 + 0.04 * m.color[2] as f32];
+                    let luz = if v < 0.5 { (1.0 - (-d / (s * 0.006)).clamp(0.0, 1.0)) * (1.0 - 2.0 * v) } else { 0.0 };
+                    let mut c = [0.0; 3];
+                    for (i, ci) in c.iter_mut().enumerate() {
+                        let base = 255.0 + (abajo[i].min(255.0) - 255.0) * v * v;
+                        *ci = (base - (1.0 - edge) * 30.0 * (1.0 - luz)).min(255.0);
+                    }
+                    cv.px[y * w + x] = [c[0], c[1], c[2], 1.0];
+                } else {
+                    let g = 255.0 - (1.0 - edge) * 38.0;
+                    cv.px[y * w + x] = [g, g, g, 1.0];
+                }
             }
         }
     }
@@ -184,14 +246,29 @@ fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
         [(col[0] * k).min(255.0), (col[1] * k).min(255.0), (col[2] * k).min(255.0)]
     };
 
-    // Sombra en el suelo blanco (abajo, algo desplazada a la izquierda).
-    let sh = [206.0, 209.0, 218.0];
-    for r in 0..7isize {
-        for c in 0..5isize {
-            if on(r, c) {
-                let x = ox + (c as f32 - BOLD) * cell - cell * 0.30;
-                let y = oy + (r as f32 - BOLD) * cell + cell * 0.30;
-                cv.fill(&[(x, y), (x + cs, y), (x + cs, y + cs), (x, y + cs)], &|_, _| sh);
+    // Sombra de la letra sobre la placa: la luz viene de arriba a la izquierda (se ven las caras de
+    // arriba y de la izquierda), así que cae abajo a la derecha, difuminada y teñida del color.
+    if size >= 24 {
+        let mut mask = Canvas { w, px: vec![[0.0; 4]; w * w] };
+        let (sx, sy) = (cell * 0.45, cell * 0.65);
+        for r in 0..7isize {
+            for c in 0..5isize {
+                if on(r, c) {
+                    let x = ox + (c as f32 - BOLD) * cell + sx;
+                    let y = oy + (r as f32 - BOLD) * cell + sy;
+                    mask.fill(&[(x, y), (x + cs, y), (x + cs, y + cs), (x, y + cs)], &|_, _| [0.0; 3]);
+                }
+            }
+        }
+        let mut a: Vec<f32> = mask.px.iter().map(|p| p[3]).collect();
+        desenfocar(&mut a, w, (cell * 0.35) as usize);
+        let tinte = shade(base, 0.35);
+        for (i, &al) in a.iter().enumerate() {
+            let al = al * 0.42;
+            if al > 0.003 && cv.px[i][3] > 0.99 {
+                for k in 0..3 {
+                    cv.px[i][k] = cv.px[i][k] * (1.0 - al) + tinte[k] * al;
+                }
             }
         }
     }
@@ -383,7 +460,7 @@ mod tests {
         assert_eq!(ic.rgba[3], 0, "esquina transparente");
         // Fondo blanco y opaco junto al borde interior.
         let i = (60 * 512 + 256) * 4;
-        assert_eq!(&ic.rgba[i..i + 4], &[255, 255, 255, 255]);
+        assert!(ic.rgba[i..i + 3].iter().all(|&v| v >= 248) && ic.rgba[i + 3] == 255, "{:?}", &ic.rgba[i..i + 4]);
         let p = png(32);
         assert_eq!(&p[..8], b"\x89PNG\r\n\x1a\n");
         // LOGO_PNG=carpeta guarda los logotipos de las tres aplicaciones para verlos.
@@ -392,6 +469,7 @@ mod tests {
                 let m = Marca { nombre: n, descripcion: || "", letra: l, color: c, hecho_con: "" };
                 for s in [512, 64, 32, 16] {
                     std::fs::write(format!("{dir}/{n}{s}.png"), png_of(&render_marca(&m, s), s)).unwrap();
+                    std::fs::write(format!("{dir}/{n}{s}-plano.png"), png_of(&render_con(&m, s, false), s)).unwrap();
                 }
             }
         }
