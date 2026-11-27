@@ -3006,8 +3006,11 @@ impl App {
         let full = Rect::from_min_size(full.min, vec2(full.width(), h));
         ui.allocate_rect(full, Sense::hover());
         let narrow = full.width() < 1150.0;
-        let right_w = if narrow { 275.0 } else { 470.0 };
-        let enc_w = if narrow { 60.0 } else { 150.0 };
+        // Con poco espacio, los botones muestran solo el ícono (el texto queda en el tooltip).
+        let compact = full.width() < 1480.0;
+        // El selector de encoding se estrecha antes que el buscador (con 150 px dejaba «Bus…»).
+        let right_w = if narrow { 275.0 } else if compact { 430.0 } else { 470.0 };
+        let enc_w = if narrow { 60.0 } else if compact { 110.0 } else { 150.0 };
         let right = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
         let left = Rect::from_min_max(full.min, pos2(right.left() - 8.0, full.bottom()));
         // --- A la derecha (se reserva primero): encoding y ajustes ---
@@ -3103,8 +3106,6 @@ impl App {
                 self.set_text_font(ui.ctx(), family);
             }
         });
-        // Con poco espacio, los botones muestran solo el ícono (el texto queda en el tooltip).
-        let compact = full.width() < 1480.0;
         let lb = |text: &str| if compact { String::new() } else { text.to_string() };
         ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.set_clip_rect(left.intersect(ui.clip_rect()));
@@ -3208,8 +3209,9 @@ impl App {
             ui.separator();
 
             // --- Búsqueda ---
-            // Lo que va detrás del buscador ocupa ~400 px; el buscador se adapta.
-            let search_w = (ui.available_width() - 372.0).clamp(70.0, 320.0);
+            // Lo que va detrás del buscador ocupa ~370 px (~340 solo con íconos); el buscador se adapta.
+            let detras = if compact { 345.0 } else { 372.0 };
+            let search_w = (ui.available_width() - detras).clamp(70.0, 320.0);
             let r = ui.add(
                 TextEdit::singleline(&mut self.query)
                     .desired_width(search_w)
