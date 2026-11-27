@@ -841,3 +841,16 @@ Versión, sistema y carpetas, para pegarlos al reportar un problema	Version, sys
 OpenGL (wgpu no disponible)	OpenGL (wgpu not available)	OpenGL (wgpu indisponible)
 Recuperación	Recovery	Récupération
 Java encontrados	Java found	Java trouvés
+Descargar	Download	Télécharger
+Instalar	Install	Installer
+Listo	Done	Terminé
+Preparando…	Preparing…	Préparation…
+Descargando… {p} %	Downloading… {p} %	Téléchargement… {p} %
+Descargando…	Downloading…	Téléchargement…
+Compilando… ({n} paquetes)	Building… ({n} packages)	Compilation… ({n} paquets)
+Instalando…	Installing…	Installation…
+Puedes seguir usando {app} mientras tanto.	You can keep using {app} meanwhile.	Vous pouvez continuer à utiliser {app} pendant ce temps.
+Ver detalle	Show details	Voir le détail
+Copiar detalle	Copy details	Copier le détail
+Copia el registro para pegarlo en un reporte	Copies the log to paste into a report	Copie le journal pour le coller dans un rapport
+Sin registro.	No log.	Aucun journal.

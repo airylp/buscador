@@ -10,7 +10,7 @@
 //! Windows: descarga el instalador publicado (`…-setup.exe`) y lo ejecuta en
 //! silencio cuando la app se cierra.
 
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -244,14 +244,33 @@ impl Updater {
                 // de leer, el proceso moriría por SIGPIPE). El progreso usa \r.
                 let mut r = BufReader::new(out);
                 let mut buf = Vec::new();
+                // Fragmentos terminados en \n o en \r: curl reescribe su barra de
+                // progreso con \r, y así el porcentaje llega en vivo (reemplaza la
+                // línea anterior en vez de amontonarse).
+                let mut bytes = std::io::Read::bytes(&mut r);
+                let mut parcial = false;
                 loop {
                     buf.clear();
-                    match r.read_until(b'\n', &mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
+                    let mut fin = 0u8;
+                    for b in bytes.by_ref() {
+                        let Ok(b) = b else { break };
+                        if b == b'\n' || b == b'\r' {
+                            fin = b;
+                            break;
+                        }
+                        buf.push(b);
                     }
-                    let text = strip_ansi(&String::from_utf8_lossy(&buf));
-                    let line = text.trim_end_matches(['\n', '\r']).rsplit('\r').next().unwrap_or("").to_string();
+                    if fin == 0 && buf.is_empty() {
+                        break;
+                    }
+                    let line = strip_ansi(&String::from_utf8_lossy(&buf));
+                    if line.trim().is_empty() {
+                        if fin == b'\n' {
+                            parcial = false;
+                        }
+                        continue;
+                    }
+                    let reemplaza = std::mem::replace(&mut parcial, fin == b'\r');
                     // install.sh anuncia dónde quedó (línea sin traducir; las otras
                     // dos son de versiones anteriores del script).
                     if let Some(p) = line.strip_prefix("RUTA_INSTALADA=") {
@@ -263,6 +282,9 @@ impl Updater {
                         installed = Some(PathBuf::from(p.split(" (").next().unwrap_or(p).trim()));
                     }
                     let mut l = log.lock().unwrap();
+                    if reemplaza {
+                        l.pop();
+                    }
                     l.push(line);
                     if l.len() > 5000 {
                         l.drain(..1000);

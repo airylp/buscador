@@ -9,7 +9,7 @@
 #![allow(dead_code)]
 
 use eframe::egui::{
-    Align, Align2, Color32, ColorImage, Context, CornerRadius, FontFamily, FontId, Frame, Grid, Id, Image, Label, Layout,
+    Align, Align2, Color32, ColorImage, Context, CornerRadius, FontFamily, FontId, Frame, Grid, Id, Label, Layout,
     Modal, RichText, ScrollArea, Stroke, TextStyle, TextureHandle, TextureOptions, Theme, ThemePreference, Ui, Window, vec2,
 };
 
@@ -596,6 +596,18 @@ pub fn logo(ctx: &Context, cache: &mut Option<TextureHandle>) -> TextureHandle {
         .clone()
 }
 
+/// El logotipo a `lado` puntos, con una sombra suave debajo (como un ícono
+/// apoyado en la ventana).
+pub fn imagen_logo(ui: &mut Ui, logo: &TextureHandle, lado: f32) -> eframe::egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(lado, lado), eframe::egui::Sense::hover());
+    // El cuadrado blanco ocupa el 82 % central del lienzo (márgenes de macOS).
+    let cuadro = rect.shrink(lado * 0.09);
+    let sombra = eframe::egui::epaint::Shadow { offset: [0, (lado * 0.05) as i8], blur: (lado * 0.14) as u8, spread: 0, color: Color32::from_black_alpha(if ui.visuals().dark_mode { 110 } else { 55 }) };
+    ui.painter().add(sombra.as_shape(cuadro, eframe::egui::CornerRadius::same((cuadro.width() * 0.225) as u8)));
+    ui.painter().image(logo.id(), rect, eframe::egui::Rect::from_min_max(eframe::egui::pos2(0.0, 0.0), eframe::egui::pos2(1.0, 1.0)), Color32::WHITE);
+    resp
+}
+
 /// Lo que se pidió en «Ajustes» o «Acerca de».
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Accion {
@@ -842,7 +854,7 @@ pub fn acerca(ctx: &Context, abierta: &mut bool, logo: &TextureHandle, version: 
         let p = Paleta::de(ui);
         // Cabecera.
         ui.horizontal(|ui| {
-            ui.add(Image::new(logo).fit_to_exact_size(vec2(72.0, 72.0)));
+            imagen_logo(ui, logo, 72.0);
             ui.add_space(6.0);
             ui.vertical(|ui| {
                 ui.add_space(4.0);
@@ -982,37 +994,166 @@ pub fn id_actualizar() -> Id {
     Id::NULL.with("ventana_actualizar_comun")
 }
 
-/// Ventana «Actualizar <app>», común a las tres: versión instalada, estado de la
-/// comprobación, botón para instalar, registro y «Reiniciar ahora». `nota`
-/// se muestra tras instalar (p. ej. «hay cambios sin guardar»).
+/// Etapa de una actualización en curso, deducida del registro de install.sh.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Fase {
+    Preparando,
+    Descargando,
+    Compilando,
+    Instalando,
+}
+
+/// Avance según el registro: fase, porcentaje de la descarga (barra de curl) y
+/// paquetes compilados.
+fn avance(log: &[String]) -> (Fase, Option<f32>, usize) {
+    let mut fase = Fase::Preparando;
+    let mut pct = None;
+    let mut paquetes = 0;
+    for l in log {
+        let t = l.trim();
+        if t.starts_with("Compiling ") {
+            paquetes += 1;
+            fase = Fase::Compilando;
+        } else if let Some(n) = t.strip_suffix('%').and_then(|x| x.rsplit(|c: char| c.is_whitespace() || c == '#').next()).and_then(|x| x.replace(',', ".").parse::<f32>().ok()) {
+            pct = Some((n / 100.0).clamp(0.0, 1.0));
+            fase = if n >= 100.0 { Fase::Instalando } else { Fase::Descargando };
+        } else if t.starts_with("curl ") {
+            fase = Fase::Descargando;
+        } else if t.starts_with("Finished ") || t.contains("==> Instalad") {
+            fase = Fase::Instalando;
+        }
+    }
+    (fase, pct, paquetes)
+}
+
+/// Barra de progreso redondeada con el color de la app. `fraccion` = None:
+/// indeterminada (un tramo que va y viene).
+pub fn barra_progreso(ui: &mut Ui, fraccion: Option<f32>, color: Color32) {
+    let alto = 8.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), alto), eframe::egui::Sense::hover());
+    let p = ui.painter();
+    let r = CornerRadius::same((alto / 2.0) as u8);
+    p.rect_filled(rect, r, ui.visuals().extreme_bg_color);
+    p.rect_stroke(rect, r, eframe::egui::Stroke::new(1.0, Paleta::de(ui).borde), eframe::egui::StrokeKind::Inside);
+    let lleno = |x0: f32, x1: f32| {
+        let x0 = rect.left() + rect.width() * x0.clamp(0.0, 1.0);
+        let x1 = rect.left() + rect.width() * x1.clamp(0.0, 1.0);
+        if x1 - x0 > 0.5 {
+            let rr = eframe::egui::Rect::from_min_max(eframe::egui::pos2(x0, rect.top()), eframe::egui::pos2(x1, rect.bottom()));
+            p.rect_filled(rr, r, color);
+            // Brillo arriba: la barra se ve con volumen.
+            let brillo = eframe::egui::Rect::from_min_max(rr.min + vec2(2.0, 1.5), eframe::egui::pos2(rr.right() - 2.0, rr.top() + 3.0));
+            if brillo.width() > 0.0 {
+                p.rect_filled(brillo, CornerRadius::same(1), Color32::from_white_alpha(60));
+            }
+        }
+    };
+    match fraccion {
+        Some(f) => lleno(0.0, f),
+        None => {
+            let t = ui.input(|i| i.time) as f32;
+            let x = (t * 0.7).fract();
+            let ida = if (t * 0.7) as i64 % 2 == 0 { x } else { 1.0 - x };
+            let centro = -0.15 + ida * 1.3;
+            lleno(centro - 0.15, centro + 0.15);
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+/// Pasos de la actualización (Buscar · Descargar · Instalar · Listo): los hechos
+/// con ✔ y el actual resaltado.
+fn pasos(ui: &mut Ui, actual: usize, error: bool) {
+    let nombres = [t!("Buscar"), t!("Descargar"), t!("Instalar"), t!("Listo")];
+    let acento = acento_texto(ui);
+    ui.horizontal(|ui| {
+        for (i, n) in nombres.iter().enumerate() {
+            if i > 0 {
+                ui.label(RichText::new("—").weak());
+            }
+            let txt = if i < actual { format!("✔ {n}") } else { n.to_string() };
+            let rt = RichText::new(txt).small();
+            let rt = if i == actual && error {
+                rt.color(ui.visuals().error_fg_color).strong()
+            } else if i == actual {
+                rt.color(acento).strong()
+            } else if i < actual {
+                rt.color(Color32::from_rgb(40, 170, 80))
+            } else {
+                rt.weak()
+            };
+            ui.label(rt);
+        }
+    });
+}
+
+/// Ventana «Actualizar <app>», común a todas: versión instalada, pasos, barra
+/// de progreso, botón para instalar y «Reiniciar ahora». «Ver detalle» muestra
+/// el registro (se abre solo si algo falla, con «Copiar detalle»). `nota` se
+/// muestra tras instalar (p. ej. «hay cambios sin guardar»).
 pub fn ventana_actualizar(ctx: &Context, u: &crate::update::Updater, abierta: &mut bool, nota: Option<&str>) -> AccionActualizar {
     use crate::icons::{Icon, IconButton, Tone};
     use crate::update::Stage;
     let stage = u.stage();
     let mut accion = AccionActualizar::Nada;
     let app = crate::APP.nombre;
+    let id_detalle = id_actualizar().with("detalle");
     Window::new(tf!("Actualizar {app}", app = app))
         .id(id_actualizar())
         .open(abierta)
         .collapsible(false)
         .resizable(true)
-        .default_size([560.0, 300.0])
+        .default_size([560.0, 260.0])
         .pivot(Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .frame(Frame::window(&ctx.global_style()).inner_margin(16.0))
         .show(ctx, |ui| {
-            ui.label(tf!("Versión instalada: {v}", v = crate::update::version_label()));
-            ui.add_space(6.0);
+            ui.set_min_width(480.0);
+            ui.label(RichText::new(tf!("Versión instalada: {v}", v = crate::update::version_label())).weak());
+            ui.add_space(8.0);
             let ok = Color32::from_rgb(40, 170, 80);
-            match &stage {
-                Stage::Checking => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(t!("Buscando la última versión en GitHub…"));
-                    });
+            let log: Vec<String> = u.log.lock().unwrap().clone();
+            let error = matches!(stage, Stage::Failed(_));
+            // Pasos y barra.
+            let (paso, fraccion, texto, color) = match &stage {
+                Stage::Checking => (0, None, t!("Buscando la última versión en GitHub…").to_string(), acento()),
+                Stage::UpToDate(_) | Stage::Available(_) => (1, Some(0.0), String::new(), acento()),
+                Stage::Running => {
+                    let (fase, pct, paquetes) = avance(&log);
+                    match fase {
+                        Fase::Preparando => (1, None, t!("Preparando…").to_string(), acento()),
+                        Fase::Descargando => (1, pct, match pct {
+                            Some(p) => tf!("Descargando… {p} %", p = format!("{:.0}", p * 100.0)),
+                            None => t!("Descargando…").to_string(),
+                        }, acento()),
+                        Fase::Compilando => (2, None, tf!("Compilando… ({n} paquetes)", n = paquetes), acento()),
+                        Fase::Instalando => (2, None, t!("Instalando…").to_string(), acento()),
+                    }
                 }
+                Stage::Done(_) => (4, Some(1.0), t!("Listo").to_string(), ok),
+                Stage::Failed(_) => {
+                    let (fase, _, _) = avance(&log);
+                    let paso = if log.is_empty() { 0 } else if matches!(fase, Fase::Compilando | Fase::Instalando) { 2 } else { 1 };
+                    (paso, None, String::new(), ui.visuals().error_fg_color)
+                }
+            };
+            let mostrar_barra = matches!(stage, Stage::Checking | Stage::Running | Stage::Done(_));
+            if !matches!(stage, Stage::UpToDate(_)) {
+                pasos(ui, paso, error);
+                ui.add_space(6.0);
+            }
+            if mostrar_barra {
+                if !texto.is_empty() {
+                    ui.label(&texto);
+                }
+                barra_progreso(ui, fraccion, color);
+                ui.add_space(8.0);
+            }
+            match &stage {
+                Stage::Checking => {}
                 Stage::UpToDate(v) => {
                     ui.colored_label(ok, tf!("✔ Ya tienes la última versión ({v}).", v = v));
+                    ui.add_space(4.0);
                     if ui.add(IconButton::new(Icon::Reload, Tone::Neutral).label(t!("Reinstalar de todos modos"))).clicked() {
                         accion = AccionActualizar::Ejecutar;
                     }
@@ -1026,21 +1167,19 @@ pub fn ventana_actualizar(ctx: &Context, u: &crate::update::Updater, abierta: &m
                     } else {
                         tf!("Se descarga la versión publicada y se reemplaza la app instalada. Puedes seguir usando {app} mientras tanto.", app = app)
                     });
-                    ui.add_space(4.0);
-                    if ui.add(IconButton::new(Icon::Download, Tone::Live).label(t!("Actualizar ahora"))).clicked() {
+                    ui.add_space(6.0);
+                    if ui.add(boton_primario(t!("Actualizar ahora"))).clicked() {
                         accion = AccionActualizar::Ejecutar;
                     }
                 }
                 Stage::Running => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(t!("Actualizando… (puedes seguir trabajando)"));
-                    });
+                    ui.weak(tf!("Puedes seguir usando {app} mientras tanto.", app = app));
                 }
                 Stage::Done(p) => {
                     ui.colored_label(ok, t!("✔ Versión nueva instalada."));
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        if ui.add(IconButton::new(Icon::Reload, Tone::Live).label(t!("Reiniciar ahora"))).clicked() {
+                        if ui.add(boton_primario(t!("Reiniciar ahora"))).clicked() {
                             accion = AccionActualizar::Reiniciar(p.clone());
                         }
                         ui.weak(tf!("o úsala la próxima vez que abras {app}", app = app));
@@ -1050,21 +1189,46 @@ pub fn ventana_actualizar(ctx: &Context, u: &crate::update::Updater, abierta: &m
                     }
                 }
                 Stage::Failed(e) => {
-                    ui.colored_label(ui.visuals().error_fg_color, tf!("No se pudo actualizar: {e}", e = e));
+                    alerta(ui, Tipo::Error, &tf!("No se pudo actualizar: {e}", e = e));
+                    ui.add_space(6.0);
                     if ui.add(IconButton::new(Icon::Reload, Tone::Neutral).label(t!("Reintentar"))).clicked() {
                         accion = AccionActualizar::Ejecutar;
                     }
                 }
             }
-            let log = u.log.lock().unwrap();
-            if !log.is_empty() {
-                ui.add_space(6.0);
-                ui.weak(t!("Registro:"));
-                ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, true]).max_height(220.0).show(ui, |ui| {
-                    for l in log.iter() {
-                        ui.label(RichText::new(l).monospace().small());
+            // Detalle: el registro de lo que se hizo (abierto si falló).
+            if !log.is_empty() || error {
+                ui.add_space(8.0);
+                let mut ver = ui.data(|d| d.get_temp::<bool>(id_detalle)).unwrap_or(false) || (error && ui.data(|d| d.get_temp::<bool>(id_detalle.with("auto"))).is_none());
+                if error {
+                    ui.data_mut(|d| d.insert_temp(id_detalle.with("auto"), true));
+                }
+                ui.horizontal(|ui| {
+                    let flecha = if ver { "⏷" } else { "⏵" };
+                    if ui.add(eframe::egui::Button::new(format!("{flecha} {}", t!("Ver detalle"))).frame(false)).clicked() {
+                        ver = !ver;
+                    }
+                    if ver && !log.is_empty() && ui.small_button(t!("Copiar detalle")).on_hover_text(t!("Copia el registro para pegarlo en un reporte")).clicked() {
+                        let mut txt = log.join("\n");
+                        if let Stage::Failed(e) = &stage {
+                            txt = format!("{}\n\n{txt}", tf!("No se pudo actualizar: {e}", e = e));
+                        }
+                        ui.ctx().copy_text(txt);
                     }
                 });
+                ui.data_mut(|d| d.insert_temp(id_detalle, ver));
+                if ver {
+                    Frame::new().fill(ui.visuals().extreme_bg_color).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
+                        if log.is_empty() {
+                            ui.weak(t!("Sin registro."));
+                        }
+                        ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, true]).max_height(200.0).show(ui, |ui| {
+                            for l in &log {
+                                ui.label(RichText::new(l).monospace().small());
+                            }
+                        });
+                    });
+                }
             }
         });
     accion
@@ -1350,7 +1514,7 @@ pub fn bienvenida(ui: &mut Ui, logo: &TextureHandle, acciones: &[(crate::icons::
     let arriba = ((ui.available_height() - alto) / 2.0 - 20.0).max(10.0);
     ui.vertical_centered(|ui| {
         ui.add_space(arriba);
-        ui.add(Image::new(logo).fit_to_exact_size(vec2(96.0, 96.0)));
+        imagen_logo(ui, logo, 96.0);
         ui.add_space(6.0);
         ui.label(RichText::new(crate::APP.nombre).size(26.0).strong().color(acento_texto(ui)));
         ui.label(RichText::new((crate::APP.descripcion)()).weak());

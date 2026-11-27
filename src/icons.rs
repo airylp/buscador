@@ -12,11 +12,11 @@
 #![allow(dead_code)]
 
 use eframe::egui::{
-    Color32, CornerRadius, Mesh, Painter, Rect, Response, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui, Vec2, Widget,
-    WidgetInfo, WidgetText, pos2, vec2,
+    Color32, ColorImage, CornerRadius, Painter, Rect, Response, Sense, Stroke, StrokeKind, TextStyle, TextureHandle, TextureOptions, Ui, Vec2,
+    Widget, WidgetInfo, WidgetText, pos2, vec2,
 };
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Icon {
@@ -987,15 +987,6 @@ const ART: &str = r"
 ................
 ";
 
-/// Un píxel del ícono ya sombreado.
-#[derive(Clone, Copy)]
-struct Px {
-    x: u8,
-    y: u8,
-    rgb: [u8; 3],
-    alpha: u8,
-}
-
 fn parse_art() -> HashMap<String, Vec<Vec<u8>>> {
     let mut out: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
     let mut cur: Option<String> = None;
@@ -1026,101 +1017,290 @@ fn base(c: u8) -> Option<[u8; 3]> {
     PALETTE.iter().find(|(k, _)| *k == c).map(|(_, v)| *v)
 }
 
-fn mix(c: [u8; 3], f: f32) -> [u8; 3] {
-    let m = |v: u8| -> u8 {
-        let v = v as f32;
-        (if f >= 1.0 { v + (255.0 - v) * (f - 1.0) } else { v * f }).round().clamp(0.0, 255.0) as u8
-    };
-    [m(c[0]), m(c[1]), m(c[2])]
+fn rows_of(icon: Icon) -> Vec<Vec<u8>> {
+    static ARTS: OnceLock<HashMap<String, Vec<Vec<u8>>>> = OnceLock::new();
+    ARTS.get_or_init(parse_art).get(&format!("{icon:?}")).cloned().unwrap_or_default()
 }
 
-/// Píxeles sombreados de `rows`: relieve de cada zona de color, contorno y sombra.
-fn shade(rows: &[Vec<u8>]) -> Vec<Px> {
-    let at = |x: i32, y: i32| -> u8 {
-        if x < 0 || y < 0 || y >= rows.len() as i32 || x >= rows[y as usize].len() as i32 { b'.' } else { rows[y as usize][x as usize] }
+// ---------------------------------------------------------------- relieve 3D
+//
+// Cada dibujo de 16×16 se convierte en volumen: cada zona de color se redondea
+// y se abomba como una almohada (altura según la distancia a su borde), se
+// ilumina desde arriba a la izquierda (difusa + brillo), lleva un contorno
+// fino oscuro y, si se pide, una sombra suave debajo. Se calcula con
+// sobremuestreo 4×4 al tamaño exacto en píxeles de la pantalla y se guarda como
+// textura: nítido a cualquier escala.
+
+/// Píxeles del dibujo alrededor de los 16×16 (contorno y sombra).
+const MARGEN: f32 = 3.0;
+const LADO: f32 = 16.0 + 2.0 * MARGEN;
+const SOBRE: usize = 4;
+
+/// Desenfoque casi gaussiano de una rejilla `n`×`n`: tres pasadas de caja
+/// (sumas acumuladas: el coste no depende del radio).
+fn desenfocar(v: &[f32], n: usize, sigma: f32) -> Vec<f32> {
+    if sigma < 0.3 {
+        return v.to_vec();
+    }
+    // Ancho de caja para que 3 pasadas den esa sigma.
+    let r = ((((12.0 * sigma * sigma / 3.0) + 1.0).sqrt() - 1.0) / 2.0).round().max(1.0) as usize;
+    let mut a = v.to_vec();
+    let mut t = vec![0.0f32; n * n];
+    let mut fila = vec![0.0f32; n + 1];
+    let caja = |src: &[f32], dst: &mut [f32], fila: &mut Vec<f32>, horizontal: bool| {
+        for l in 0..n {
+            let at = |k: usize| if horizontal { src[l * n + k] } else { src[k * n + l] };
+            fila[0] = 0.0;
+            for k in 0..n {
+                fila[k + 1] = fila[k] + at(k);
+            }
+            for k in 0..n {
+                let (i0, i1) = (k.saturating_sub(r), (k + r).min(n - 1));
+                // Fuera de la rejilla cuenta el valor del borde.
+                let antes = r.saturating_sub(k) as f32 * at(0);
+                let despues = (k + r).saturating_sub(n - 1) as f32 * at(n - 1);
+                let v = (fila[i1 + 1] - fila[i0] + antes + despues) / (2 * r + 1) as f32;
+                if horizontal { dst[l * n + k] = v } else { dst[k * n + l] = v }
+            }
+        }
     };
-    let filled = |x: i32, y: i32| base(at(x, y)).is_some();
-    let mut out = Vec::new();
-    for y in 0..16i32 {
-        for x in 0..16i32 {
-            let c = at(x, y);
-            if let Some(b) = base(c) {
-                let lit = at(x, y - 1) != c || at(x - 1, y) != c;
-                let dark = at(x, y + 1) != c || at(x + 1, y) != c;
-                let rgb = match (lit, dark) {
-                    (true, false) => mix(b, 1.40),
-                    (false, true) => mix(b, 0.78),
-                    _ => b,
-                };
-                out.push(Px { x: x as u8, y: y as u8, rgb, alpha: 255 });
-            } else {
-                // Contorno: casilla vacía junto a una llena (4 vecinas) → color oscuro
-                // de la vecina; si no, sombra proyectada si la de arriba a la izquierda
-                // está llena o es contorno.
-                let near = [(0, -1), (-1, 0), (1, 0), (0, 1)].iter().find_map(|&(dx, dy)| base(at(x + dx, y + dy)));
-                if let Some(b) = near {
-                    out.push(Px { x: x as u8, y: y as u8, rgb: mix(b, 0.42), alpha: 255 });
-                } else if filled(x - 1, y - 1) || filled(x - 2, y - 1) || filled(x - 1, y - 2) {
-                    out.push(Px { x: x as u8, y: y as u8, rgb: [0, 0, 0], alpha: 46 });
-                }
+    for _ in 0..3 {
+        caja(&a, &mut t, &mut fila, true);
+        caja(&t, &mut a, &mut fila, false);
+    }
+    a
+}
+
+/// Distancia (en celdas) de cada celda de la zona a su borde (chamfer 3-4).
+fn distancia(m: &[bool], n: usize) -> Vec<f32> {
+    const INF: i32 = 1 << 28;
+    let mut d: Vec<i32> = m.iter().map(|&b| if b { INF } else { 0 }).collect();
+    let at = |d: &Vec<i32>, x: i32, y: i32| if x < 0 || y < 0 || x >= n as i32 || y >= n as i32 { 0 } else { d[y as usize * n + x as usize] };
+    for y in 0..n as i32 {
+        for x in 0..n as i32 {
+            let i = y as usize * n + x as usize;
+            if d[i] > 0 {
+                let v = d[i].min(at(&d, x - 1, y) + 3).min(at(&d, x, y - 1) + 3).min(at(&d, x - 1, y - 1) + 4).min(at(&d, x + 1, y - 1) + 4);
+                d[i] = v;
             }
         }
     }
-    out
-}
-
-fn pixels(icon: Icon) -> Arc<Vec<Px>> {
-    static CACHE: OnceLock<Mutex<HashMap<Icon, Arc<Vec<Px>>>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut c = cache.lock().unwrap();
-    c.entry(icon)
-        .or_insert_with(|| {
-            static ARTS: OnceLock<HashMap<String, Vec<Vec<u8>>>> = OnceLock::new();
-            let arts = ARTS.get_or_init(parse_art);
-            Arc::new(arts.get(&format!("{icon:?}")).map(|r| shade(r)).unwrap_or_default())
-        })
-        .clone()
+    for y in (0..n as i32).rev() {
+        for x in (0..n as i32).rev() {
+            let i = y as usize * n + x as usize;
+            if d[i] > 0 {
+                let v = d[i].min(at(&d, x + 1, y) + 3).min(at(&d, x, y + 1) + 3).min(at(&d, x + 1, y + 1) + 4).min(at(&d, x - 1, y + 1) + 4);
+                d[i] = v;
+            }
+        }
+    }
+    d.iter().map(|&v| v as f32 / 3.0).collect()
 }
 
 /// Cómo pintar: a todo color, apagado (deshabilitado) o de un solo color.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Look {
+    /// A todo color, con sombra debajo.
     Color,
+    /// A todo color, sin sombra (botones pequeños, texto en línea).
+    Plain,
     Disabled,
     Tint(Color32),
 }
 
-/// Pinta `icon` en `rect` (cuadrado). Cada píxel del dibujo se alinea a los de la pantalla.
+/// Imagen RGBA (sin premultiplicar) de `out` × `out` píxeles: el ícono ocupa los
+/// 16/`LADO` centrales. `sombra`: sombra suave debajo.
+fn render(rows: &[Vec<u8>], out: usize, look: Look) -> Vec<u8> {
+    let n = out * SOBRE;
+    let p = n as f32 / LADO; // celdas por píxel del dibujo
+    // Índice de color de cada celda (vecino más cercano del dibujo).
+    let art = |gx: usize, gy: usize| -> u8 {
+        let ax = (gx as f32 + 0.5) / p - MARGEN;
+        let ay = (gy as f32 + 0.5) / p - MARGEN;
+        if ax < 0.0 || ay < 0.0 || ax >= 16.0 || ay >= 16.0 {
+            return b'.';
+        }
+        rows.get(ay as usize).and_then(|r| r.get(ax as usize)).copied().unwrap_or(b'.')
+    };
+    let idx: Vec<u8> = (0..n * n).map(|i| art(i % n, i / n)).collect();
+    let mut colores: Vec<u8> = idx.iter().copied().filter(|&c| base(c).is_some()).collect();
+    colores.sort_unstable();
+    colores.dedup();
+
+    let mut rgb = vec![[0.0f32; 3]; n * n];
+    let mut altura = vec![0.0f32; n * n];
+    let mut total = vec![0.0f32; n * n];
+    let mut cambio = vec![0.0f32; n * n];
+    for &c in &colores {
+        let crudo: Vec<f32> = idx.iter().map(|&k| (k == c) as u8 as f32).collect();
+        // Esquinas redondeadas.
+        let m: Vec<bool> = desenfocar(&crudo, n, p * 0.45).iter().map(|&v| v > 0.5).collect();
+        let d = distancia(&m, n);
+        let radio = p * 1.6;
+        let col = base(c).unwrap();
+        for i in 0..n * n {
+            if m[i] && total[i] == 0.0 {
+                let t = (d[i] / radio).min(1.0);
+                altura[i] = (1.0 - (1.0 - t) * (1.0 - t)).max(0.0).sqrt() * radio * 0.9;
+                rgb[i] = [col[0] as f32, col[1] as f32, col[2] as f32];
+                total[i] = 1.0;
+            }
+        }
+        // Línea fina donde cambia el color.
+        let e = desenfocar(&crudo, n, p * 0.25);
+        for i in 0..n * n {
+            cambio[i] = cambio[i].max((1.0 - (e[i] - 0.5).abs() * 6.0).clamp(0.0, 1.0));
+        }
+    }
+    let forma = desenfocar(&total, n, p * 0.15);
+    let fuera = desenfocar(&total, n, p * 0.55);
+    let peso = desenfocar(&total, n, p * 0.7);
+    let vecino: Vec<Vec<f32>> = (0..3).map(|k| desenfocar(&(0..n * n).map(|i| rgb[i][k] * total[i]).collect::<Vec<_>>(), n, p * 0.7)).collect();
+
+    let luz = {
+        let l = [-0.55f32, -0.65, 0.52];
+        let m = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
+        [l[0] / m, l[1] / m, l[2] / m]
+    };
+    let medio = {
+        let h = [luz[0], luz[1], luz[2] + 1.0];
+        let m = (h[0] * h[0] + h[1] * h[1] + h[2] * h[2]).sqrt();
+        [h[0] / m, h[1] / m, h[2] / m]
+    };
+    let mut col = vec![[0.0f32; 4]; n * n];
+    for y in 0..n {
+        for x in 0..n {
+            let i = y * n + x;
+            let h = |xx: usize, yy: usize| altura[yy.min(n - 1) * n + xx.min(n - 1)];
+            let gx = (h(x + 1, y) - h(x.saturating_sub(1), y)) / 2.0;
+            let gy = (h(x, y + 1) - h(x, y.saturating_sub(1))) / 2.0;
+            let (nx, ny, nz) = (-gx, -gy, 1.6f32);
+            let m = (nx * nx + ny * ny + nz * nz).sqrt();
+            let (nx, ny, nz) = (nx / m, ny / m, nz / m);
+            let dif = (nx * luz[0] + ny * luz[1] + nz * luz[2]).max(0.0);
+            let esp = (nx * medio[0] + ny * medio[1] + nz * medio[2]).max(0.0).powi(28);
+            let f = 0.55 + 0.55 * dif;
+            let mut c = [rgb[i][0] * f + 115.0 * esp, rgb[i][1] * f + 115.0 * esp, rgb[i][2] * f + 115.0 * esp];
+            // Contorno exterior: el color de la zona vecina oscurecido.
+            let anillo = ((fuera[i] - forma[i]) * 3.0).clamp(0.0, 1.0);
+            let w = peso[i].max(1e-3);
+            for k in 0..3 {
+                let oscuro = vecino[k][i] / w * 0.40;
+                c[k] = c[k] * (1.0 - anillo) + oscuro * anillo;
+                c[k] *= 1.0 - 0.55 * cambio[i] * total[i];
+            }
+            col[i] = [c[0].clamp(0.0, 255.0), c[1].clamp(0.0, 255.0), c[2].clamp(0.0, 255.0), forma[i].max(anillo)];
+        }
+    }
+    // Aspecto.
+    match look {
+        Look::Disabled => {
+            for c in &mut col {
+                let g = c[0] * 0.3 + c[1] * 0.6 + c[2] * 0.1;
+                *c = [g, g, g, c[3] * 0.38];
+            }
+        }
+        Look::Tint(t) => {
+            for (i, c) in col.iter_mut().enumerate() {
+                let a = forma[i];
+                *c = [t.r() as f32, t.g() as f32, t.b() as f32, a * t.a() as f32 / 255.0];
+            }
+        }
+        _ => {}
+    }
+    // Sombra suave debajo (abajo y un poco a la derecha).
+    let sombra = if look == Look::Color {
+        let a: Vec<f32> = col.iter().map(|c| c[3]).collect();
+        let s = desenfocar(&a, n, p * 0.9);
+        let (dx, dy) = ((p * 0.5) as usize, (p * 1.0) as usize);
+        let mut o = vec![0.0f32; n * n];
+        for y in dy..n {
+            for x in dx..n {
+                o[y * n + x] = s[(y - dy) * n + x - dx] * 0.30;
+            }
+        }
+        Some(o)
+    } else {
+        None
+    };
+    // Reducir 4×4 → 1 (premultiplicado) y componer sobre la sombra.
+    let mut px = vec![0u8; out * out * 4];
+    for oy in 0..out {
+        for ox in 0..out {
+            let (mut r, mut g, mut b, mut a, mut sa) = (0.0f32, 0.0, 0.0, 0.0, 0.0);
+            for sy in 0..SOBRE {
+                for sx in 0..SOBRE {
+                    let i = (oy * SOBRE + sy) * n + ox * SOBRE + sx;
+                    let c = col[i];
+                    r += c[0] * c[3];
+                    g += c[1] * c[3];
+                    b += c[2] * c[3];
+                    a += c[3];
+                    if let Some(s) = &sombra {
+                        sa += s[i];
+                    }
+                }
+            }
+            let k = (SOBRE * SOBRE) as f32;
+            let (r, g, b, a, sa) = (r / k, g / k, b / k, a / k, sa / k);
+            // Ícono sobre la sombra (color de la sombra: casi negro azulado).
+            let fa = a + sa * (1.0 - a);
+            let (fr, fg, fb) = if fa > 0.0 {
+                ((r + 20.0 * sa * (1.0 - a)) / fa, (g + 20.0 * sa * (1.0 - a)) / fa, (b + 30.0 * sa * (1.0 - a)) / fa)
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            let j = (oy * out + ox) * 4;
+            px[j..j + 4].copy_from_slice(&[fr.round().clamp(0.0, 255.0) as u8, fg.round().clamp(0.0, 255.0) as u8, fb.round().clamp(0.0, 255.0) as u8, (fa * 255.0).round().clamp(0.0, 255.0) as u8]);
+        }
+    }
+    px
+}
+
+/// Clave del caché de texturas.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Clave {
+    icon: Icon,
+    aspecto: u8,
+    tinte: [u8; 4],
+    px: u16,
+}
+
+fn textura(ctx: &eframe::egui::Context, icon: Icon, look: Look, px: usize) -> TextureHandle {
+    static CACHE: OnceLock<Mutex<HashMap<Clave, TextureHandle>>> = OnceLock::new();
+    let (aspecto, tinte) = match look {
+        Look::Color => (0, [0; 4]),
+        Look::Plain => (1, [0; 4]),
+        Look::Disabled => (2, [0; 4]),
+        Look::Tint(t) => (3, t.to_array()),
+    };
+    let clave = Clave { icon, aspecto, tinte, px: px as u16 };
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(t) = cache.lock().unwrap().get(&clave) {
+        return t.clone();
+    }
+    let out = ((px as f32) * LADO / 16.0).ceil() as usize;
+    let rgba = render(&rows_of(icon), out, look);
+    let img = ColorImage::from_rgba_unmultiplied([out, out], &rgba);
+    let t = ctx.load_texture(format!("icono-{icon:?}-{aspecto}-{px}"), img, TextureOptions::LINEAR);
+    cache.lock().unwrap().insert(clave, t.clone());
+    t
+}
+
+/// Pinta `icon` en `rect` (cuadrado), en 3D, al tamaño exacto en píxeles de la pantalla.
 pub fn paint_look(p: &Painter, rect: Rect, icon: Icon, look: Look) {
     let ppp = p.pixels_per_point();
     let side = rect.width().min(rect.height());
-    // Tamaño del «píxel» del dibujo en píxeles reales: entero si se puede (nítido).
-    let real = ((side * ppp) / 16.0).floor().max(1.0);
-    let k = real / ppp;
-    let o = rect.center() - Vec2::splat(8.0 * k);
+    let px = (side * ppp).round().max(8.0) as usize;
+    let tex = textura(p.ctx(), icon, look, px);
+    let out = tex.size()[0] as f32 / ppp;
+    let o = rect.center() - Vec2::splat(out / 2.0);
+    // Alineado a los píxeles de la pantalla: nítido.
     let o = pos2((o.x * ppp).round() / ppp, (o.y * ppp).round() / ppp);
-    let mut mesh = Mesh::default();
-    for px in pixels(icon).iter() {
-        let col = match look {
-            Look::Color => Color32::from_rgba_unmultiplied(px.rgb[0], px.rgb[1], px.rgb[2], px.alpha),
-            Look::Disabled => {
-                let g = (px.rgb[0] as u32 * 3 + px.rgb[1] as u32 * 6 + px.rgb[2] as u32) / 10;
-                Color32::from_rgba_unmultiplied(g as u8, g as u8, g as u8, (px.alpha as u32 * 90 / 255) as u8)
-            }
-            Look::Tint(t) => {
-                if px.alpha < 255 {
-                    continue;
-                }
-                t
-            }
-        };
-        let r = Rect::from_min_size(o + vec2(px.x as f32, px.y as f32) * k, Vec2::splat(k));
-        mesh.add_colored_rect(r, col);
-    }
-    p.add(Shape::mesh(mesh));
+    p.image(tex.id(), Rect::from_min_size(o, Vec2::splat(out)), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
 }
 
-/// Pinta `icon` a todo color.
+/// Pinta `icon` a todo color (con sombra).
 pub fn paint(p: &Painter, rect: Rect, icon: Icon) {
     paint_look(p, rect, icon, Look::Color);
 }
@@ -1252,7 +1432,7 @@ impl Widget for IconButton {
                 // Al pulsar, el ícono «se hunde» un píxel.
                 let down = if enabled && resp.is_pointer_button_down_on() { 1.0 } else { 0.0 };
                 let r = Rect::from_center_size(pos2(x + s / 2.0, rect.center().y + down), Vec2::splat(s));
-                paint_look(ui.painter(), r, icon, if primary { Look::Tint(Color32::WHITE) } else if enabled { Look::Color } else { Look::Disabled });
+                paint_look(ui.painter(), r, icon, if primary { Look::Tint(Color32::WHITE) } else if !enabled { Look::Disabled } else if self.small { Look::Plain } else { Look::Color });
                 x += s + gap;
             }
             if let Some(g) = galley {
@@ -1298,29 +1478,30 @@ mod tests {
                 assert!(r.iter().all(|&c| c == b'.' || base(c).is_some()), "{name}, fila {i}: color desconocido");
             }
         }
-        // ICONOS_PNG=archivo.png guarda una hoja con todos (a 2×) para verlos.
+        // ICONOS_PNG=archivo.png guarda una hoja con todos (a 32 px, con su sombra)
+        // sobre grafito claro (izquierda) y oscuro (derecha) para verlos.
         if let Ok(path) = std::env::var("ICONOS_PNG") {
-            let (cols, cell) = (12usize, 40usize);
-            let n = Icon::ALL.len().div_ceil(cols);
-            let size = cols * cell;
+            let (cols, cell) = (8usize, 56usize);
+            let size = cols * cell * 2;
             let mut rgba = vec![0u8; size * size * 4];
             for y in 0..size {
                 for x in 0..size {
-                    // Mitad izquierda clara, derecha oscura.
-                    let g = if y < n * cell / 2 + 1000 && x < size / 2 { 236 } else { 40 };
-                    rgba[(y * size + x) * 4..][..4].copy_from_slice(&[g, g, g, 255]);
+                    let g: [u8; 3] = if x < size / 2 { [0xf1, 0xf1, 0xf3] } else { [0x1a, 0x1a, 0x1d] };
+                    rgba[(y * size + x) * 4..][..4].copy_from_slice(&[g[0], g[1], g[2], 255]);
                 }
             }
+            let out = (32.0 * LADO / 16.0).ceil() as usize;
             for (i, icon) in Icon::ALL.iter().enumerate() {
-                let (ox, oy) = ((i % cols) * cell + 4, (i / cols) * cell + 4);
-                for p in shade(&arts[&format!("{icon:?}")]) {
-                    for dy in 0..2 {
-                        for dx in 0..2 {
-                            let (x, y) = (ox + p.x as usize * 2 + dx, oy + p.y as usize * 2 + dy);
-                            let j = (y * size + x) * 4;
-                            let a = p.alpha as u32;
+                let im = render(&arts[&format!("{icon:?}")], out, Look::Color);
+                for mitad in 0..2 {
+                    let (ox, oy) = ((i % cols) * cell + 6 + mitad * size / 2, (i / cols) * cell + 6);
+                    for y in 0..out {
+                        for x in 0..out {
+                            let s = &im[(y * out + x) * 4..][..4];
+                            let j = ((oy + y) * size + ox + x) * 4;
+                            let a = s[3] as u32;
                             for k in 0..3 {
-                                rgba[j + k] = ((p.rgb[k] as u32 * a + rgba[j + k] as u32 * (255 - a)) / 255) as u8;
+                                rgba[j + k] = ((s[k] as u32 * a + rgba[j + k] as u32 * (255 - a)) / 255) as u8;
                             }
                         }
                     }
