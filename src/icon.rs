@@ -104,7 +104,7 @@ impl Canvas {
     }
 }
 
-/// RGBA del logotipo de `m` a `size` px.
+/// RGBA del logotipo de `m` a `size` px (con su sombra: no añadir otra al dibujarlo).
 fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
     // Sobremuestreo: bordes suaves sin depender de nada más.
     let ss = if size <= 64 { 4 } else if size <= 256 { 3 } else { 2 };
@@ -122,6 +122,18 @@ fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
         let qy = (py - center).abs() - (half - radius);
         (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - radius
     };
+    // Sombra suave bajo el cuadrado (parece que flota): el mismo cuadrado algo más
+    // abajo, difuminado, en el margen transparente. En 16 px solo ensuciaría.
+    let (sombra_y, difuso, opacidad) = (s * 0.022, s * 0.028, if size >= 24 { 0.42 } else { 0.0 });
+    for y in 0..w {
+        for x in 0..w {
+            let d = inside(x as f32 + 0.5, y as f32 + 0.5 - sombra_y);
+            let a = opacidad / (1.0 + (d / (difuso * 0.45)).exp());
+            if a > 0.002 {
+                cv.px[y * w + x] = [12.0, 14.0, 22.0, a];
+            }
+        }
+    }
     for y in 0..w {
         for x in 0..w {
             let d = inside(x as f32 + 0.5, y as f32 + 0.5);

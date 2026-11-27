@@ -600,10 +600,13 @@ pub fn logo(ctx: &Context, cache: &mut Option<TextureHandle>) -> TextureHandle {
 /// apoyado en la ventana).
 pub fn imagen_logo(ui: &mut Ui, logo: &TextureHandle, lado: f32) -> eframe::egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(lado, lado), eframe::egui::Sense::hover());
-    // El cuadrado blanco ocupa el 82 % central del lienzo (márgenes de macOS).
-    let cuadro = rect.shrink(lado * 0.09);
-    let sombra = eframe::egui::epaint::Shadow { offset: [0, (lado * 0.05) as i8], blur: (lado * 0.14) as u8, spread: 0, color: Color32::from_black_alpha(if ui.visuals().dark_mode { 110 } else { 55 }) };
-    ui.painter().add(sombra.as_shape(cuadro, eframe::egui::CornerRadius::same((cuadro.width() * 0.225) as u8)));
+    // El logotipo ya trae su sombra suave (icon.rs); en oscuro se refuerza un poco
+    // para que se note el «flotar» sobre el fondo gris.
+    if ui.visuals().dark_mode {
+        let cuadro = rect.shrink(lado * 0.09);
+        let sombra = eframe::egui::epaint::Shadow { offset: [0, (lado * 0.04) as i8], blur: (lado * 0.12) as u8, spread: 0, color: Color32::from_black_alpha(70) };
+        ui.painter().add(sombra.as_shape(cuadro, eframe::egui::CornerRadius::same((cuadro.width() * 0.225) as u8)));
+    }
     ui.painter().image(logo.id(), rect, eframe::egui::Rect::from_min_max(eframe::egui::pos2(0.0, 0.0), eframe::egui::pos2(1.0, 1.0)), Color32::WHITE);
     resp
 }
