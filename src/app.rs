@@ -2999,7 +2999,9 @@ impl App {
     /// Barra superior en una sola fila: archivo y edición | búsqueda |
     /// reemplazar y avanzada | (a la derecha) encoding y ajustes.
     fn toolbar(&mut self, ui: &mut Ui) {
-        let h = ui.spacing().interact_size.y + 2.0;
+        // Alto de la fila = el de un `IconButton` (interact_size + 4) y un poco de aire: si es menor,
+        // el marco de los botones elegidos (☰, Editar…) se sale por abajo y el panel lo recorta.
+        let h = ui.spacing().interact_size.y + 6.0;
         let full = ui.available_rect_before_wrap();
         let full = Rect::from_min_size(full.min, vec2(full.width(), h));
         ui.allocate_rect(full, Sense::hover());
@@ -5142,9 +5144,9 @@ impl eframe::App for App {
         }
 
         Panel::top("toolbar").show(ui, |ui| {
-            ui.add_space(3.0);
+            ui.add_space(2.0);
             self.toolbar(ui);
-            ui.add_space(1.0);
+            ui.add_space(2.0);
         });
         if self.show_sidebar {
             self.sidebar_rect = Panel::left("sidebar").resizable(true).default_size(240.0).min_size(140.0).show(ui, |ui| self.sidebar(ui)).response.rect;
