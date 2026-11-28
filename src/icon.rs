@@ -106,11 +106,24 @@ impl Canvas {
 
 /// RGBA del logotipo de `m` a `size` px (con su sombra: no añadir otra al dibujarlo).
 fn render_marca(m: &Marca, size: usize) -> Vec<u8> {
-    render_con(m, size, PLACA_DEGRADADA)
+    render_con(m, size, PLACA)
 }
 
-/// Placa con degradado y luz de borde (propuesta estética); `false` = blanco plano.
-const PLACA_DEGRADADA: bool = true;
+/// Fondo del cuadrado del logotipo.
+#[derive(Clone, Copy, PartialEq)]
+#[allow(dead_code)]
+enum Placa {
+    /// Blanco plano.
+    Blanca,
+    /// De blanco arriba a gris frío con un toque del color de la app abajo.
+    Degradada,
+    /// Pastel del color de la app (más intenso abajo).
+    Tinte,
+    /// Grafito oscuro (zinc 700 → 900).
+    Grafito,
+}
+
+const PLACA: Placa = Placa::Tinte;
 
 /// Desenfoque de caja (3 pasadas ≈ gaussiano) del canal `a` de un lienzo `w`×`w`.
 fn desenfocar(a: &mut [f32], w: usize, r: usize) {
@@ -149,7 +162,7 @@ fn desenfocar(a: &mut [f32], w: usize, r: usize) {
     }
 }
 
-fn render_con(m: &Marca, size: usize, degradado: bool) -> Vec<u8> {
+fn render_con(m: &Marca, size: usize, placa: Placa) -> Vec<u8> {
     // Sobremuestreo: bordes suaves sin depender de nada más.
     let ss = if size <= 64 { 4 } else if size <= 256 { 3 } else { 2 };
     let w = size * ss;
@@ -188,16 +201,24 @@ fn render_con(m: &Marca, size: usize, degradado: bool) -> Vec<u8> {
             if d <= 0.0 {
                 // Filo gris muy suave: se distingue sobre fondos blancos.
                 let edge = (-d / (s * 0.010)).clamp(0.0, 1.0);
-                if degradado {
-                    // De blanco arriba a un gris frío con un toque del color de la app abajo, y una
-                    // luz fina en el borde de arriba (como los íconos de macOS).
+                if placa != Placa::Blanca {
+                    // Degradado de arriba abajo y una luz fina en el borde de arriba (como los
+                    // íconos de macOS); el filo se oscurece en las claras y se aclara en la oscura.
                     let v = ((y as f32 - (center - half)) / (2.0 * half)).clamp(0.0, 1.0);
-                    let abajo = [232.0 + 0.04 * m.color[0] as f32, 234.0 + 0.04 * m.color[1] as f32, 240.0 + 0.04 * m.color[2] as f32];
+                    let col = m.color.map(|c| c as f32);
+                    let mezcla = |t: f32| col.map(|c| 255.0 + (c - 255.0) * t);
+                    let (arriba, abajo, curva) = match placa {
+                        Placa::Tinte => (mezcla(0.07), mezcla(0.20), v),
+                        Placa::Grafito => ([63.0, 63.0, 70.0], [24.0, 24.0, 27.0], v),
+                        _ => ([255.0; 3], [232.0 + 0.04 * col[0], 234.0 + 0.04 * col[1], 240.0 + 0.04 * col[2]], v * v),
+                    };
+                    let oscura = placa == Placa::Grafito;
                     let luz = if v < 0.5 { (1.0 - (-d / (s * 0.006)).clamp(0.0, 1.0)) * (1.0 - 2.0 * v) } else { 0.0 };
                     let mut c = [0.0; 3];
                     for (i, ci) in c.iter_mut().enumerate() {
-                        let base = 255.0 + (abajo[i].min(255.0) - 255.0) * v * v;
-                        *ci = (base - (1.0 - edge) * 30.0 * (1.0 - luz)).min(255.0);
+                        let base = arriba[i] + (abajo[i].min(255.0) - arriba[i]) * curva;
+                        let filo = if oscura { 25.0 * (1.0 - edge) + 60.0 * luz } else { -(1.0 - edge) * 30.0 * (1.0 - luz) };
+                        *ci = (base + filo).clamp(0.0, 255.0);
                     }
                     cv.px[y * w + x] = [c[0], c[1], c[2], 1.0];
                 } else {
@@ -458,9 +479,9 @@ mod tests {
         let ic = app_icon();
         assert_eq!((ic.width, ic.height, ic.rgba.len()), (512, 512, 512 * 512 * 4));
         assert_eq!(ic.rgba[3], 0, "esquina transparente");
-        // Fondo blanco y opaco junto al borde interior.
+        // Fondo claro y opaco junto al borde interior.
         let i = (60 * 512 + 256) * 4;
-        assert!(ic.rgba[i..i + 3].iter().all(|&v| v >= 248) && ic.rgba[i + 3] == 255, "{:?}", &ic.rgba[i..i + 4]);
+        assert!(ic.rgba[i..i + 3].iter().all(|&v| v >= 200) && ic.rgba[i + 3] == 255, "{:?}", &ic.rgba[i..i + 4]);
         let p = png(32);
         assert_eq!(&p[..8], b"\x89PNG\r\n\x1a\n");
         // LOGO_PNG=carpeta guarda los logotipos de las tres aplicaciones para verlos.
@@ -469,7 +490,9 @@ mod tests {
                 let m = Marca { nombre: n, descripcion: || "", letra: l, color: c, hecho_con: "" };
                 for s in [512, 64, 32, 16] {
                     std::fs::write(format!("{dir}/{n}{s}.png"), png_of(&render_marca(&m, s), s)).unwrap();
-                    std::fs::write(format!("{dir}/{n}{s}-plano.png"), png_of(&render_con(&m, s, false), s)).unwrap();
+                    for (sufijo, placa) in [("blanca", Placa::Blanca), ("degradada", Placa::Degradada), ("tinte", Placa::Tinte), ("grafito", Placa::Grafito)] {
+                        std::fs::write(format!("{dir}/{n}{s}-{sufijo}.png"), png_of(&render_con(&m, s, placa), s)).unwrap();
+                    }
                 }
             }
         }
