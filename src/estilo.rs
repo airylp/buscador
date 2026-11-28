@@ -332,7 +332,17 @@ fn paleta_tailwind(v: &mut eframe::egui::Visuals, dark: bool) {
         (hex(0xffffff), hex(0xf4f4f5), hex(0xe4e4e7))
     };
     w.inactive.weak_bg_fill = inactivo;
-    w.inactive.bg_fill = inactivo;
+    // `bg_fill` en reposo es el carril de los deslizadores (y el fondo de casillas y radios):
+    // un poco más hundido que la tarjeta para que la barra se vea.
+    w.inactive.bg_fill = if dark && g {
+        hex(0x45454d)
+    } else if dark {
+        hex(0x3a3a41)
+    } else if g {
+        hex(0xdedee2)
+    } else {
+        hex(0xe4e4e7)
+    };
     w.inactive.bg_stroke = Stroke::new(1.0, p.borde);
     w.inactive.fg_stroke = Stroke::new(1.0, p.texto);
     w.hovered.weak_bg_fill = encima;
